@@ -2,7 +2,7 @@ import type { BrushShape, DitherPatternId, Point, RGBA } from '../types'
 import { stampPoints } from './brush'
 import { shouldDrawWithDither } from './dithering'
 import { isInBounds } from './pixelBuffer'
-import { bresenhamLinePoints } from './pixelPerfect'
+import { bresenhamLinePoints, filterPixelPerfectPoints } from './pixelPerfect'
 
 export interface LineDrawOptions {
   width: number
@@ -50,9 +50,9 @@ export function evaluateCubicBezier(
 }
 
 /**
- * Rasterize cubic Bezier curve into discrete integer pixel coordinates without gaps.
+ * Raw 8-connected integer rasterization of a cubic Bezier curve before pixel-perfect pruning.
  */
-export function rasterizeCubicBezierPoints(
+export function rasterizeCubicBezierRawPoints(
   p0: Point,
   p1: Point,
   p2: Point,
@@ -63,7 +63,7 @@ export function rasterizeCubicBezierPoints(
     Math.hypot(p2.x - p1.x, p2.y - p1.y) +
     Math.hypot(p3.x - p2.x, p3.y - p2.y)
 
-  const segments = Math.max(32, Math.min(2048, Math.ceil(approxLength * 4)))
+  const segments = Math.max(48, Math.min(2048, Math.ceil(approxLength * 6)))
   const points: Point[] = []
 
   let prevX = Math.round(p0.x)
@@ -90,7 +90,70 @@ export function rasterizeCubicBezierPoints(
 }
 
 /**
- * Draw cubic Bezier curve onto buffer using shared brush size, shape, and dithering.
+ * Spec v2 Section 9:
+ * Generate a 1px Pixel-Perfect cubic Bezier centerline:
+ * - Eliminates L-shaped corner jaggies and redundant 2x2 pixel clumps
+ * - Preserves 8-connected continuity from P0 to P3
+ * - Zero anti-aliasing (strictly integer coordinates)
+ */
+export function rasterizeCubicBezierPoints(
+  p0: Point,
+  p1: Point,
+  p2: Point,
+  p3: Point
+): Point[] {
+  const raw = rasterizeCubicBezierRawPoints(p0, p1, p2, p3)
+  if (raw.length <= 2) return raw
+
+  // Pass 1: Standard sequential L-corner removal
+  const pass1 = filterPixelPerfectPoints(raw)
+  if (pass1.length <= 2) return pass1
+
+  // Pass 2: Suppress any remaining redundant corners or tight turn 2x2 clumps
+  // while strictly preserving start point, end point, and 8-neighbor path connectivity.
+  const out: Point[] = [pass1[0]]
+  for (let i = 1; i < pass1.length - 1; i++) {
+    const prev = out[out.length - 1]
+    const curr = pass1[i]
+    const next = pass1[i + 1]
+
+    // Skip exact duplicate if any
+    if (curr.x === prev.x && curr.y === prev.y) continue
+
+    // If prev and next are already 8-connected (|dx|<=1 && |dy|<=1) and curr forms an L-elbow
+    // (i.e. orthogonal to both prev and next, or collapsing a tight hairpin 2x2), prune curr
+    const dxPN = Math.abs(next.x - prev.x)
+    const dyPN = Math.abs(next.y - prev.y)
+    const prevNext8Connected = dxPN <= 1 && dyPN <= 1 && (dxPN > 0 || dyPN > 0)
+
+    const currOrthPrev =
+      (curr.x === prev.x && Math.abs(curr.y - prev.y) === 1) ||
+      (curr.y === prev.y && Math.abs(curr.x - prev.x) === 1)
+    const currOrthNext =
+      (curr.x === next.x && Math.abs(curr.y - next.y) === 1) ||
+      (curr.y === next.y && Math.abs(curr.x - next.x) === 1)
+
+    if (prevNext8Connected && currOrthPrev && currOrthNext) {
+      continue
+    }
+
+    out.push(curr)
+  }
+
+  const last = pass1[pass1.length - 1]
+  const tail = out[out.length - 1]
+  if (tail.x !== last.x || tail.y !== last.y) {
+    out.push(last)
+  }
+
+  return out
+}
+
+/**
+ * Draw cubic Bezier curve onto buffer (Spec v2 Section 9):
+ * - Size 1: draws the exact 1px pixel-perfect curve.
+ * - Size >= 2: first generates the exact Size-1 pixel-perfect centerline, then thickens along
+ *   that centerline using the selected brush shape ('circle' | 'square') and dithering.
  */
 export function drawCubicBezier(
   buffer: Uint8ClampedArray,
@@ -100,8 +163,8 @@ export function drawCubicBezier(
   p3: Point,
   options: LineDrawOptions
 ): void {
-  const pts = rasterizeCubicBezierPoints(p0, p1, p2, p3)
-  stampPoints(buffer, pts, options)
+  const centerline1px = rasterizeCubicBezierPoints(p0, p1, p2, p3)
+  stampPoints(buffer, centerline1px, options)
 }
 
 export interface BoundingBox {
@@ -209,7 +272,6 @@ export function rasterizeRectangle(
 
 /**
  * Compute boolean mask of filled ellipse inside bounds [0..w-1, 0..h-1] with exact quadrant symmetry.
- * Uses pixel-center normalized ellipse equation so both even and odd diameters are crisp & symmetric.
  */
 export function buildFilledEllipseMask(w: number, h: number): Uint8Array {
   const mask = new Uint8Array(w * h)
@@ -222,7 +284,6 @@ export function buildFilledEllipseMask(w: number, h: number): Uint8Array {
 
   const cx = (w - 1) / 2
   const cy = (h - 1) / 2
-  // Use half-width / half-height in pixel grid units so extreme rows/cols touch the bounding box cleanly
   const rx = w / 2
   const ry = h / 2
 
@@ -262,7 +323,6 @@ export function rasterizeEllipse(
     return
   }
 
-  // Outline: subtract inner ellipse eroded by `stroke` on all sides so outline is clean 8-connected ring
   const innerW = bw - stroke * 2
   const innerH = bh - stroke * 2
   const inner = buildFilledEllipseMask(innerW, innerH)

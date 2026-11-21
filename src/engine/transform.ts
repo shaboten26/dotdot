@@ -69,6 +69,29 @@ export function rasterizeTransformedShape(state: FloatingShapeState): Transforme
   const origCenterX = offsetX + sw / 2
   const origCenterY = offsetY + sh / 2
 
+  // Fast path: 0° rotation preserves exact source pixels 1:1
+  if (normDeg === 0) {
+    return {
+      buffer: new Uint8ClampedArray(sourceBuffer),
+      width: sw,
+      height: sh,
+      left: offsetX,
+      top: offsetY,
+    }
+  }
+
+  // Special case: 1x1 pixel shape is rotationally invariant around its center!
+  // Using (sw-1)/2 === 0 with ceil(cos+sin) === 2 would otherwise offset a 1x1 pixel out of center.
+  if (sw === 1 && sh === 1) {
+    return {
+      buffer: new Uint8ClampedArray(sourceBuffer),
+      width: 1,
+      height: 1,
+      left: offsetX,
+      top: offsetY,
+    }
+  }
+
   if (normDeg % 90 === 0) {
     const turns = Math.round(normDeg / 90)
     const exact = rotateExact90(sourceBuffer, sw, sh, turns)

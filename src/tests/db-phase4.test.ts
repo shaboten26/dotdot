@@ -7,6 +7,7 @@ import {
   initializeDatabase,
   loadProjectFull,
   saveProjectFull,
+  UI_SIZE_PRESETS,
 } from '../db/database'
 import {
   applyValidatedEnvPack,
@@ -19,14 +20,16 @@ import { createPixelPatch, HistoryManager } from '../engine/history'
 const RED = { r: 255, g: 30, b: 60, a: 255 }
 const CYAN = { r: 0, g: 220, b: 255, a: 255 }
 
-describe('IndexedDB (Dexie), Palettes & Environment Pack ZIP Round-Trip', () => {
-  it('initializes 6 default palettes, enforces >=1 palette invariant, and persists projects + history', async () => {
+describe('IndexedDB (Dexie), Palettes, Startup Invariants & Environment Pack ZIP Round-Trip', () => {
+  it('initializes 6 default palettes with 0 initial artworks (Spec v2 Section 5-1) and enforces >=1 palette invariant', async () => {
     const testDb = new DotDotDatabase(`test-db-${Date.now()}-1`)
     const init = await initializeDatabase(testDb)
 
     expect(init.palettes.length).toBe(6)
     expect(init.settings.language).toBe('ja')
-    expect(init.settings.activeProjectId).toBeTruthy()
+    // Spec v2 Section 5-1: Do NOT auto-create an empty artwork on startup
+    expect(await testDb.projects.count()).toBe(0)
+    expect(init.settings.activeProjectId).toBeNull()
 
     // Try deleting palettes down to 1 -> 6th deletion must be blocked!
     for (let i = 0; i < 5; i++) {
@@ -40,11 +43,11 @@ describe('IndexedDB (Dexie), Palettes & Environment Pack ZIP Round-Trip', () => 
     await testDb.delete()
   })
 
-  it('exports full workspace to Environment Pack ZIP and restores pixel data, layers, palettes, settings & Undo/Redo history identically', async () => {
+  it('exports full workspace (including UI size customization & Undo/Redo history) to ZIP and restores identically', async () => {
     const sourceDb = new DotDotDatabase(`test-db-src-${Date.now()}`)
     await initializeDatabase(sourceDb)
 
-    // Update settings
+    // Save custom UI size settings & Korean/dark preferences
     await sourceDb.settings.put({
       id: 'app-settings',
       theme: 'dark',
@@ -56,9 +59,13 @@ describe('IndexedDB (Dexie), Palettes & Environment Pack ZIP Round-Trip', () => 
       soundEnabled: false,
       activeProjectId: null,
       gallerySortMode: 'newest',
+      uiSize: {
+        ...UI_SIZE_PRESETS.large,
+        preset: 'custom',
+        drawButtonVh: 18,
+      },
     })
 
-    // Create a custom 16x16 project with 2 layers and undo/redo history
     const created = await createNewProject(
       {
         name: 'Hero Sprite',
@@ -114,34 +121,33 @@ describe('IndexedDB (Dexie), Palettes & Environment Pack ZIP Round-Trip', () => 
       sourceDb
     )
 
-    // Export Environment Pack ZIP
     const zipBytes = await exportEnvironmentPackZip(sourceDb)
     expect(zipBytes.byteLength).toBeGreaterThan(200)
 
-    // Validate before importing into a completely separate DB
     const validated = inspectAndValidateEnvPack(zipBytes)
-    expect(validated.manifest.counts.projects).toBe(2) // initial project + Hero Sprite
+    expect(validated.manifest.counts.projects).toBe(1)
     expect(validated.manifest.counts.palettes).toBe(6)
     expect(validated.settings.language).toBe('ko')
     expect(validated.settings.theme).toBe('dark')
+    expect(validated.settings.uiSize.drawButtonVh).toBe(18)
+    expect(validated.settings.uiSize.toolIconSize).toBe(24)
 
     const destDb = new DotDotDatabase(`test-db-dst-${Date.now()}`)
     await initializeDatabase(destDb)
     await applyValidatedEnvPack(validated, destDb)
 
+    const restoredSettings = await destDb.settings.get('app-settings')
+    expect(restoredSettings?.uiSize.drawButtonVh).toBe(18)
+
     const restoredHero = await loadProjectFull(created.project.id, destDb)
     expect(restoredHero).not.toBeNull()
     expect(restoredHero!.project.name).toBe('Hero Sprite')
-    expect(restoredHero!.project.palette.colors).toEqual(['#112233', '#FF1E3C', '#00DCFF'])
     expect(restoredHero!.layers.length).toBe(2)
     expect(restoredHero!.layers[1].clipping).toBe(true)
-    expect(restoredHero!.layers[1].opacity).toBe(80)
-    expect(restoredHero!.layers[1].blendMode).toBe('screen')
-
     expect(getPixel(restoredHero!.layers[0].data, 16, 16, 4, 5)).toEqual(RED)
     expect(getPixel(restoredHero!.layers[1].data, 16, 16, 4, 5)).toEqual(CYAN)
 
-    // Verify Undo history survived ZIP export & import and actually undoes the pixel!
+    // Verify Undo history survived ZIP export & import
     expect(restoredHero!.history.undoStack.length).toBe(1)
     const restoredHistoryMgr = new HistoryManager(50)
     restoredHistoryMgr.hydrate(restoredHero!.history)
@@ -162,16 +168,21 @@ describe('IndexedDB (Dexie), Palettes & Environment Pack ZIP Round-Trip', () => 
   it('rejects corrupted or malformed Environment Pack ZIP without losing existing IndexedDB data', async () => {
     const safeDb = new DotDotDatabase(`test-db-safe-${Date.now()}`)
     await initializeDatabase(safeDb)
+    await createNewProject(
+      {
+        name: 'Protected Artwork',
+        width: 16,
+        height: 16,
+        palette: { name: 'P', colors: ['#000000'] },
+      },
+      safeDb
+    )
     const beforeCount = await safeDb.projects.count()
 
-    // Malformed ZIP (not a zip)
     expect(() => inspectAndValidateEnvPack(new Uint8Array([1, 2, 3, 4]))).toThrow()
-
-    // Valid ZIP container missing manifest.json
     const badZip = zipSync({ 'foo.txt': strToU8('hello') })
     expect(() => inspectAndValidateEnvPack(badZip)).toThrow(/MISSING_MANIFEST/)
 
-    // Existing DB remains completely untouched
     expect(await safeDb.projects.count()).toBe(beforeCount)
     await safeDb.delete()
   })

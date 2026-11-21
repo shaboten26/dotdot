@@ -7,6 +7,15 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     target: 'es2022',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'react-router'],
+          'motion-vendor': ['motion'],
+          'storage-vendor': ['dexie', 'fflate'],
+        },
+      },
+    },
   },
   test: {
     environment: 'jsdom',

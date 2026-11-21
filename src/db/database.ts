@@ -8,6 +8,8 @@ import type {
   ProjectPalette,
   ProjectRecord,
   SerializedHistoryEntry,
+  UiSizeConfig,
+  UiSizePreset,
 } from '../types'
 import { buildInitialPalettes } from './defaultPalettes'
 import { createPixelBuffer, MAX_CANVAS_SIZE, MIN_CANVAS_SIZE } from '../engine/pixelBuffer'
@@ -34,6 +36,46 @@ export class DotDotDatabase extends Dexie {
 
 export const db = new DotDotDatabase()
 
+export const UI_SIZE_PRESETS: Record<Exclude<UiSizePreset, 'custom'>, UiSizeConfig> = {
+  compact: {
+    preset: 'compact',
+    overallScale: 92,
+    toolIconSize: 16,
+    toolButtonHeight: 44,
+    toolLabelSize: 10,
+    swatchSize: 30,
+    checkboxSize: 16,
+    uiGap: 4,
+    drawButtonVh: 12,
+  },
+  standard: {
+    preset: 'standard',
+    overallScale: 100,
+    toolIconSize: 20,
+    toolButtonHeight: 48,
+    toolLabelSize: 11,
+    swatchSize: 34,
+    checkboxSize: 20,
+    uiGap: 6,
+    drawButtonVh: 15,
+  },
+  large: {
+    preset: 'large',
+    overallScale: 110,
+    toolIconSize: 24,
+    toolButtonHeight: 56,
+    toolLabelSize: 13,
+    swatchSize: 40,
+    checkboxSize: 24,
+    uiGap: 8,
+    drawButtonVh: 17,
+  },
+}
+
+export const DEFAULT_UI_SIZE_CONFIG: UiSizeConfig = {
+  ...UI_SIZE_PRESETS.standard,
+}
+
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   id: 'app-settings',
   theme: 'system',
@@ -45,6 +87,20 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   soundEnabled: false,
   activeProjectId: null,
   gallerySortMode: 'manual',
+  uiSize: { ...DEFAULT_UI_SIZE_CONFIG },
+}
+
+export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSettings {
+  const uiSize: UiSizeConfig = {
+    ...DEFAULT_UI_SIZE_CONFIG,
+    ...(raw?.uiSize ?? {}),
+  }
+  return {
+    ...DEFAULT_APP_SETTINGS,
+    ...(raw ?? {}),
+    id: 'app-settings',
+    uiSize,
+  }
 }
 
 export function generateId(prefix = 'id'): string {
@@ -66,17 +122,17 @@ export function isQuotaError(err: unknown): boolean {
 }
 
 /**
- * Ensure settings, initial palettes (at least 6 on first launch, never 0), and an initial project exist.
+ * Spec v2 Section 5-1:
+ * Initialize settings & 6 default palettes ONLY.
+ * Do NOT auto-create an empty canvas on startup; users begin on the Artwork Gallery screen
+ * and create a project explicitly (or pick an existing one).
  */
 export async function initializeDatabase(targetDb: DotDotDatabase = db): Promise<{
   settings: AppSettings
   palettes: PaletteData[]
 }> {
-  let settings = await targetDb.settings.get('app-settings')
-  if (!settings) {
-    settings = { ...DEFAULT_APP_SETTINGS }
-    await targetDb.settings.put(settings)
-  }
+  const storedSettings = await targetDb.settings.get('app-settings')
+  let settings = normalizeAppSettings(storedSettings)
 
   let palettes = await targetDb.palettes.orderBy('order').toArray()
   if (palettes.length === 0) {
@@ -84,38 +140,16 @@ export async function initializeDatabase(targetDb: DotDotDatabase = db): Promise
     await targetDb.palettes.bulkPut(palettes)
   }
 
-  const projectCount = await targetDb.projects.count()
-  if (projectCount === 0) {
-    const firstProject = await createNewProject(
-      {
-        name: 'Untitled 01',
-        width: 32,
-        height: 32,
-        palette: {
-          name: palettes[0].name,
-          colors: [...palettes[0].colors],
-          sourcePaletteId: palettes[0].id,
-        },
-      },
-      targetDb
-    )
-    settings = { ...settings, activeProjectId: firstProject.project.id }
-    await targetDb.settings.put(settings)
-  } else if (!settings.activeProjectId) {
-    const first = await targetDb.projects.orderBy('order').first()
-    if (first) {
-      settings = { ...settings, activeProjectId: first.id }
-      await targetDb.settings.put(settings)
-    }
-  } else {
+  // Validate activeProjectId if one was previously saved
+  if (settings.activeProjectId) {
     const exists = await targetDb.projects.get(settings.activeProjectId)
     if (!exists) {
       const first = await targetDb.projects.orderBy('order').first()
       settings = { ...settings, activeProjectId: first?.id ?? null }
-      await targetDb.settings.put(settings)
     }
   }
 
+  await targetDb.settings.put(settings)
   return { settings, palettes }
 }
 
@@ -208,7 +242,7 @@ export async function createNewProject(
       const currentSettings = await targetDb.settings.get('app-settings')
       if (currentSettings) {
         await targetDb.settings.put({
-          ...currentSettings,
+          ...normalizeAppSettings(currentSettings),
           activeProjectId: projectId,
         })
       }
@@ -270,11 +304,6 @@ export interface SaveProjectPayload {
   }
 }
 
-/**
- * Atomically persist committed project state, layer buffers, thumbnail PNG, and history.
- * If storage quota is exceeded while saving large history, retries saving project & pixels
- * with trimmed history so artwork data is NEVER lost (Section 14-2).
- */
 export async function saveProjectFull(
   payload: SaveProjectPayload,
   targetDb: DotDotDatabase = db
@@ -321,7 +350,6 @@ export async function saveProjectFull(
       [targetDb.projects, targetDb.layerPixels, targetDb.histories],
       async () => {
         await targetDb.projects.put(updatedProject)
-        // Remove orphan layer pixel rows for deleted layers
         const existingRows = await targetDb.layerPixels
           .where('projectId')
           .equals(project.id)
@@ -349,7 +377,6 @@ export async function saveProjectFull(
     return { savedAt: now, quotaTrimmed: false }
   } catch (err) {
     if (isQuotaError(err) && history) {
-      // Trim oldest half of history and retry so pixel work is preserved
       const halfUndo = history.undoStack.slice(Math.ceil(history.undoStack.length / 2))
       await writeTx(halfUndo, [])
       return { savedAt: now, quotaTrimmed: true }
@@ -374,7 +401,7 @@ export async function deleteProjectById(
       if (settings && settings.activeProjectId === projectId) {
         const remaining = await targetDb.projects.orderBy('order').first()
         await targetDb.settings.put({
-          ...settings,
+          ...normalizeAppSettings(settings),
           activeProjectId: remaining?.id ?? null,
         })
       }
@@ -382,9 +409,6 @@ export async function deleteProjectById(
   )
 }
 
-/**
- * Delete a palette from the library ONLY if more than 1 palette exists (Section 10-3 & 13-3).
- */
 export async function deleteLibraryPalette(
   paletteId: string,
   targetDb: DotDotDatabase = db

@@ -30,6 +30,7 @@ import {
   captureCanvasSnapshot,
   createPixelPatch,
   HistoryManager,
+  type EditorRuntimeStateForHistory,
 } from '../engine/history'
 import type { FloatingShapeState, LayerRuntime } from '../types'
 
@@ -276,7 +277,7 @@ describe('Sparse Diff HistoryManager (Undo/Redo, Limits & Serialization)', () =>
     const mgr2 = new HistoryManager(2)
     mgr2.hydrate(serialized)
 
-    let runtimeState = {
+    let runtimeState: EditorRuntimeStateForHistory = {
       width: 4,
       height: 4,
       layers: [
@@ -285,7 +286,7 @@ describe('Sparse Diff HistoryManager (Undo/Redo, Limits & Serialization)', () =>
           name: 'L1',
           visible: true,
           opacity: 100,
-          blendMode: 'normal' as const,
+          blendMode: 'normal',
           clipping: false,
           data: buf3,
         },

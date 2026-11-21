@@ -107,28 +107,48 @@ export type ThemeMode = 'light' | 'dark' | 'system'
 
 export type LanguageCode = 'ja' | 'en' | 'ko'
 
+export type UiSizePreset = 'compact' | 'standard' | 'large' | 'custom'
+
+export interface UiSizeConfig {
+  preset: UiSizePreset
+  /** Overall UI scale percentage (85 - 125) */
+  overallScale: number
+  /** Pixel icon size in CSS px (integer multiple of 8/16 preferred: 16, 20, 24, 32) */
+  toolIconSize: number
+  /** Tool button minimum height in CSS px (44 - 68) */
+  toolButtonHeight: number
+  /** Tool short label font size in CSS px (10 - 15) */
+  toolLabelSize: number
+  /** Palette color swatch size in CSS px (28 - 48) */
+  swatchSize: number
+  /** Pixel checkbox size in CSS px (16 - 28) */
+  checkboxSize: number
+  /** Spacing gap between UI elements in CSS px (4 - 12) */
+  uiGap: number
+  /** Draw button height percentage of viewport height (10 - 20, default 15%) */
+  drawButtonVh: number
+}
+
 export interface AppSettings {
   id: 'app-settings'
   theme: ThemeMode
   language: LanguageCode
-  historyLimit: number | 'unlimited' // e.g., 50, 100, 200, 'unlimited'
+  historyLimit: number | 'unlimited'
   showGrid: boolean
   checkerboardDark: boolean
   confirmDestructive: boolean
   soundEnabled: boolean
   activeProjectId: string | null
   gallerySortMode: 'manual' | 'newest' | 'oldest' | 'updated' | 'name'
+  uiSize: UiSizeConfig
 }
 
 export interface FloatingShapeState {
-  /** Original rasterized shape buffer (untransformed, relative to originWidth x originHeight) */
   sourceBuffer: Uint8ClampedArray
   sourceWidth: number
   sourceHeight: number
-  /** Center position on canvas (can be fractional by 0.5 depending on parity, offset tracked in ints) */
   offsetX: number
   offsetY: number
-  /** Cumulative rotation in degrees (multiples of 5 or 90, computed from original buffer every time) */
   rotationDeg: number
 }
 
@@ -172,14 +192,10 @@ export interface ToolSettings {
   outlineColor: string
 }
 
-/** Compact diff entry for history */
 export interface PixelPatch {
   layerId: string
-  /** Packed indices (pixel index = y * width + x) */
   indices: Uint32Array
-  /** Packed before RGBA (4 bytes per index) */
   before: Uint8Array
-  /** Packed after RGBA (4 bytes per index) */
   after: Uint8Array
 }
 

@@ -10,7 +10,7 @@ import type {
   SerializedHistoryEntry,
   SerializedPixelPatch,
 } from '../types'
-import { DEFAULT_APP_SETTINGS, DotDotDatabase, db } from './database'
+import { DEFAULT_APP_SETTINGS, DotDotDatabase, db, normalizeAppSettings } from './database'
 import { exportCompositePngBytes } from '../engine/compositor'
 
 export const ENV_PACK_FORMAT = 'dotdot-environment-pack'
@@ -360,11 +360,7 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
     throw new Error('MISSING_SETTINGS: settings.json not found in archive')
   }
   const parsedSettings = JSON.parse(strFromU8(settingsRaw)) as Partial<AppSettings>
-  const settings: AppSettings = {
-    ...DEFAULT_APP_SETTINGS,
-    ...parsedSettings,
-    id: 'app-settings',
-  }
+  const settings: AppSettings = normalizeAppSettings(parsedSettings)
 
   // Parse and validate palettes (must have at least 1 palette)
   const palettePaths = Object.keys(files)

@@ -1,0 +1,234 @@
+@import "@fontsource/dotgothic16/400.css";
+@import "@fontsource/silkscreen/400.css";
+@import "@fontsource/silkscreen/700.css";
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Retro, calm, low-saturation pixel-art studio palette (Spec v2 Section 1 & 2)
+ * Light theme: warm stone / parchment gray-white (no harsh pure #ffffff glare)
+ * Dark theme: muted plum-charcoal / dusk slate (no harsh pure #000000 void)
+ * Accents: muted lavender-purple, calm sage-teal, dusty rose
+ */
+:root {
+  --bg-app: #e9e5dc;
+  --bg-surface: #f4f1ea;
+  --bg-elevated: #e1dcd1;
+  --bg-panel: #fbf9f4;
+  --text-primary: #2b2733;
+  --text-secondary: #686274;
+  --border-pixel: #4a4358;
+  --border-subtle: #c8c1b4;
+  --shadow-pixel: #aba394;
+
+  --accent-primary: #6b5ea8;
+  --accent-primary-hover: #5b4e96;
+  --accent-primary-fg: #f8f6f2;
+  --accent-primary-shadow: #3f356b;
+
+  --accent-teal: #46827a;
+  --accent-teal-fg: #f6faf9;
+  --accent-teal-shadow: #2b544f;
+
+  --accent-rose: #b05d72;
+  --accent-rose-fg: #fcf6f8;
+  --accent-rose-shadow: #703545;
+
+  --canvas-well: #d7d2c6;
+
+  /* Dynamic UI customization variables (updated from AppSettings.uiSize) */
+  --ui-scale: 1;
+  --tool-icon-size: 20px;
+  --tool-btn-height: 48px;
+  --tool-label-size: 11px;
+  --swatch-size: 34px;
+  --checkbox-size: 20px;
+  --ui-gap: 6px;
+  --draw-btn-vh: 15dvh;
+}
+
+.dark {
+  --bg-app: #181521;
+  --bg-surface: #221e2e;
+  --bg-elevated: #2d283c;
+  --bg-panel: #272335;
+  --text-primary: #eae6f2;
+  --text-secondary: #a29ab5;
+  --border-pixel: #696082;
+  --border-subtle: #3b354d;
+  --shadow-pixel: #0e0c14;
+
+  --accent-primary: #8476c4;
+  --accent-primary-hover: #9386cf;
+  --accent-primary-fg: #16131f;
+  --accent-primary-shadow: #443a73;
+
+  --accent-teal: #579b91;
+  --accent-teal-fg: #111f1d;
+  --accent-teal-shadow: #2c5750;
+
+  --accent-rose: #c47388;
+  --accent-rose-fg: #1e1115;
+  --accent-rose-shadow: #6b3645;
+
+  --canvas-well: #13111a;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  font-family: "DotGothic16", "Silkscreen", "Apple SD Gothic Neo", "Malgun Gothic",
+    "Hiragino Sans", "Noto Sans JP", monospace, sans-serif;
+  font-size: calc(16px * var(--ui-scale));
+  line-height: 1.35;
+  letter-spacing: 0.02em;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+/* Crisp pixel art rendering */
+.pixelated {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+/* Retro Pixel UI Surfaces & Buttons (sharp corners, 2px pixel borders, offset shadow, press sink) */
+.pixel-card {
+  background-color: var(--bg-surface);
+  border: 2px solid var(--border-pixel);
+  box-shadow: 3px 3px 0px var(--shadow-pixel);
+}
+
+.pixel-panel {
+  background-color: var(--bg-panel);
+  border: 2px solid var(--border-pixel);
+  box-shadow: 4px 4px 0px var(--shadow-pixel);
+}
+
+.pixel-btn {
+  position: relative;
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 2px solid var(--border-pixel);
+  box-shadow: 2px 2px 0px var(--shadow-pixel);
+  transition: transform 60ms steps(2), box-shadow 60ms steps(2), background-color 80ms linear;
+  cursor: pointer;
+}
+
+.pixel-btn:hover:not(:disabled) {
+  background-color: var(--bg-panel);
+}
+
+.pixel-btn:active:not(:disabled),
+.pixel-btn[data-pressed="true"] {
+  transform: translate(2px, 2px);
+  box-shadow: 0px 0px 0px var(--shadow-pixel);
+}
+
+.pixel-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.pixel-btn-active {
+  background-color: var(--accent-primary);
+  color: var(--accent-primary-fg);
+  border: 2px solid var(--border-pixel);
+  box-shadow: 2px 2px 0px var(--accent-primary-shadow);
+}
+
+.pixel-btn-active:hover:not(:disabled) {
+  background-color: var(--accent-primary-hover);
+}
+
+.pixel-btn-teal {
+  background-color: var(--accent-teal);
+  color: var(--accent-teal-fg);
+  border: 2px solid var(--border-pixel);
+  box-shadow: 2px 2px 0px var(--accent-teal-shadow);
+}
+
+.pixel-btn-danger {
+  background-color: var(--accent-rose);
+  color: var(--accent-rose-fg);
+  border: 2px solid var(--border-pixel);
+  box-shadow: 2px 2px 0px var(--accent-rose-shadow);
+}
+
+/* Bold Retro Draw / Push Button (Spec v2 Section 6) */
+.pixel-draw-btn {
+  background-color: var(--accent-primary);
+  color: var(--accent-primary-fg);
+  border: 3px solid var(--border-pixel);
+  box-shadow: 0px 5px 0px var(--accent-primary-shadow), 4px 5px 0px var(--shadow-pixel);
+  transition: transform 50ms steps(2), box-shadow 50ms steps(2);
+  cursor: pointer;
+}
+
+.pixel-draw-btn:active,
+.pixel-draw-btn[data-holding="true"] {
+  transform: translateY(4px);
+  box-shadow: 0px 1px 0px var(--accent-primary-shadow), 1px 1px 0px var(--shadow-pixel);
+}
+
+.pixel-draw-btn-confirm {
+  background-color: var(--accent-teal);
+  color: var(--accent-teal-fg);
+  border: 3px solid var(--border-pixel);
+  box-shadow: 0px 5px 0px var(--accent-teal-shadow), 4px 5px 0px var(--shadow-pixel);
+}
+
+.pixel-input {
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  border: 2px solid var(--border-pixel);
+  outline: none;
+}
+
+.pixel-input:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 2px 2px 0px var(--accent-primary-shadow);
+}
+
+/* Hide scrollbars cleanly on horizontal strips while keeping scroll functional */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Safe area helpers for iPhone / Android standalone PWA */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.pl-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+.pr-safe {
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation-duration: 0.001ms !important;
+  }
+}

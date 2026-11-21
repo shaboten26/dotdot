@@ -22,3 +22,15 @@ if (typeof globalThis.ImageData === 'undefined') {
   // @ts-expect-error polyfill for test environment
   globalThis.ImageData = PolyfillImageData
 }
+
+// Polyfill CSS.escape for React 19 <ViewTransition> in jsdom
+if (typeof globalThis.CSS === 'undefined') {
+  // @ts-expect-error polyfill for test environment
+  globalThis.CSS = {
+    escape: (ident: string) => String(ident).replace(/[^a-zA-Z0-9_-]/g, '\\$&'),
+  }
+} else if (typeof globalThis.CSS.escape !== 'function') {
+  globalThis.CSS.escape = (ident: string) =>
+    String(ident).replace(/[^a-zA-Z0-9_-]/g, '\\$&')
+}
+
