@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Wrangler & Cloudflare
+.wrangler/
+.dev.vars
+
+# Environment
+.env
+.env.*
+
+# Logs & PM2
+.pm2/
+pids/
+logs/
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Test / Coverage
+coverage/
+playwright-report/
+test-results/
+
+# Archives
+*.backup
+*.bak
+*.tar.gz
+*.zip
