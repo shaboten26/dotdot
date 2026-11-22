@@ -18,6 +18,7 @@ import {
   ExportPngModal,
   type ExportPngInitialIntent,
 } from '../components/editor/EditorModals'
+import { PixelMusicModal } from '../components/music/PixelMusicModal'
 import {
   useViewTransitionNavigate,
   VTButtonLink,
@@ -49,6 +50,7 @@ export function ProjectDetailPage() {
   const [exportOpen, setExportOpen] = useState(false)
   const [exportIntent, setExportIntent] =
     useState<ExportPngInitialIntent>('download')
+  const [musicOpen, setMusicOpen] = useState(false)
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
 
   useEffect(() => {
@@ -274,6 +276,22 @@ export function ProjectDetailPage() {
                 <span>{t('duplicate')}</span>
               </button>
             </div>
+
+            <button
+              type="button"
+              onClick={() => setMusicOpen(true)}
+              className="w-full min-h-[46px] px-4 pixel-btn text-xs sm:text-sm font-bold flex items-center justify-center gap-2"
+              data-testid="detail-open-music-btn"
+            >
+              <PixelIcon name="music" size={16} />
+              <span>
+                {language === 'ja'
+                  ? '8bit音楽に変換して聴く (.wav対応)'
+                  : language === 'ko'
+                    ? '8비트 음악으로 변환 (.wav)'
+                    : 'Convert to 8-bit Music (.wav)'}
+              </span>
+            </button>
           </div>
 
           {/* Metadata Card */}
@@ -365,6 +383,16 @@ export function ProjectDetailPage() {
           onClose={() => setExportOpen(false)}
           onDownloaded={() => showToast(t('toastExportedPng'), 'success')}
           onShared={() => showToast(t('toastSharedPng'), 'success')}
+        />
+
+        <PixelMusicModal
+          open={musicOpen}
+          projectName={project.name}
+          width={project.width}
+          height={project.height}
+          layers={layers}
+          paletteColors={project.palette.colors}
+          onClose={() => setMusicOpen(false)}
         />
 
         <ConfirmDialog
