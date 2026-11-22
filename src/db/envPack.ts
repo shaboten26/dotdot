@@ -3,7 +3,9 @@ import type {
   AppSettings,
   CanvasSnapshot,
   LayerMeta,
+  LayerOffsetTransition,
   LayerPixelRecord,
+  LayerRuntime,
   PaletteData,
   ProjectHistoryRecord,
   ProjectRecord,
@@ -12,6 +14,7 @@ import type {
 } from '../types'
 import { DEFAULT_APP_SETTINGS, DotDotDatabase, db, normalizeAppSettings } from './database'
 import { exportCompositePngBytes } from '../engine/compositor'
+import { normalizeLayerGeometry } from '../engine/pixelBuffer'
 
 export const ENV_PACK_FORMAT = 'dotdot-environment-pack'
 export const ENV_PACK_VERSION = 1
@@ -36,6 +39,18 @@ interface EncodedPixelPatchJson {
   indicesB64: string
   beforeB64: string
   afterB64: string
+  beforeGeometry?: {
+    offsetX: number
+    offsetY: number
+    dataWidth: number
+    dataHeight: number
+  }
+  afterGeometry?: {
+    offsetX: number
+    offsetY: number
+    dataWidth: number
+    dataHeight: number
+  }
 }
 
 interface EncodedSnapshotJson {
@@ -52,8 +67,10 @@ interface EncodedHistoryEntryJson {
   id: string
   label: string
   timestamp: number
-  kind: 'pixel-diff' | 'structure' | 'selection' | 'palette'
+  kind: 'pixel-diff' | 'structure' | 'selection' | 'palette' | 'layer-offset'
   pixelPatches?: EncodedPixelPatchJson[]
+  layerOffsetChange?: LayerOffsetTransition
+  layerOffsetChanges?: LayerOffsetTransition[]
   beforeStructure?: EncodedSnapshotJson
   afterStructure?: EncodedSnapshotJson
   beforeSelectionB64?: string | null
@@ -124,7 +141,15 @@ function decodeSnapshot(enc?: EncodedSnapshotJson): CanvasSnapshot | undefined {
     activeLayerId: enc.activeLayerId,
     layers: enc.layers.map((l) => {
       const data = base64ToBytes(l.dataB64)
-      if (data.byteLength !== enc.width * enc.height * 4) {
+      const expectedW =
+        typeof l.meta.dataWidth === 'number' && l.meta.dataWidth > 0
+          ? l.meta.dataWidth
+          : enc.width
+      const expectedH =
+        typeof l.meta.dataHeight === 'number' && l.meta.dataHeight > 0
+          ? l.meta.dataHeight
+          : enc.height
+      if (data.byteLength !== expectedW * expectedH * 4) {
         throw new Error('Corrupted snapshot layer dimensions in history')
       }
       return {
@@ -146,7 +171,11 @@ function encodeHistoryStack(stack: SerializedHistoryEntry[]): Uint8Array {
       indicesB64: bytesToBase64(uint32ToBytes(p.indices)),
       beforeB64: bytesToBase64(p.before),
       afterB64: bytesToBase64(p.after),
+      beforeGeometry: p.beforeGeometry,
+      afterGeometry: p.afterGeometry,
     })),
+    layerOffsetChange: e.layerOffsetChange,
+    layerOffsetChanges: e.layerOffsetChanges,
     beforeStructure: encodeSnapshot(e.beforeStructure),
     afterStructure: encodeSnapshot(e.afterStructure),
     beforeSelectionB64:
@@ -186,6 +215,8 @@ function decodeHistoryStack(raw: Uint8Array): SerializedHistoryEntry[] {
         indices,
         before,
         after,
+        beforeGeometry: p.beforeGeometry,
+        afterGeometry: p.afterGeometry,
       }
     })
 
@@ -195,6 +226,8 @@ function decodeHistoryStack(raw: Uint8Array): SerializedHistoryEntry[] {
       timestamp: e.timestamp,
       kind: e.kind,
       pixelPatches,
+      layerOffsetChange: e.layerOffsetChange,
+    layerOffsetChanges: e.layerOffsetChanges,
       beforeStructure: decodeSnapshot(e.beforeStructure),
       afterStructure: decodeSnapshot(e.afterStructure),
       beforeSelection:
@@ -216,21 +249,23 @@ function decodeHistoryStack(raw: Uint8Array): SerializedHistoryEntry[] {
 }
 
 /**
- * Export entire dotdot state (projects, layers, pixel data, palettes, settings, order, metadata, undo/redo history)
+ * Export entire dotdot state (projects, layers including off-canvas pixels, palettes, settings + customCanvasPresets, order, metadata, undo/redo history)
  * into a structured ZIP archive (`environment-pack.zip`).
  */
 export async function exportEnvironmentPackZip(
   targetDb: DotDotDatabase = db
 ): Promise<Uint8Array> {
-  const settings = (await targetDb.settings.get('app-settings')) ?? DEFAULT_APP_SETTINGS
+  const settings = normalizeAppSettings(
+    (await targetDb.settings.get('app-settings')) ?? DEFAULT_APP_SETTINGS
+  )
   const palettes = await targetDb.palettes.orderBy('order').toArray()
   const projects = await targetDb.projects.orderBy('order').toArray()
   const allPixels = await targetDb.layerPixels.toArray()
   const allHistories = await targetDb.histories.toArray()
 
-  const pixelByKey = new Map<string, Uint8Array>()
+  const pixelByKey = new Map<string, LayerPixelRecord>()
   for (const row of allPixels) {
-    pixelByKey.set(row.key, row.data)
+    pixelByKey.set(row.key, row)
   }
 
   const historyByProject = new Map<string, ProjectHistoryRecord>()
@@ -242,7 +277,6 @@ export async function exportEnvironmentPackZip(
   let totalLayers = 0
   let totalHistoryEntries = 0
 
-  // Palettes
   palettes.forEach((pal, idx) => {
     const fileIdx = String(idx + 1).padStart(3, '0')
     zipEntries[`palettes/palette-${fileIdx}.json`] = strToU8(
@@ -250,21 +284,44 @@ export async function exportEnvironmentPackZip(
     )
   })
 
-  // Projects, raw layer pixel binaries, and undo/redo history binaries
   for (let i = 0; i < projects.length; i++) {
     const proj = projects[i]
     const dirName = `projects/${proj.id}`
-    const { thumbnailPng: _thumb, ...serializableProject } = proj
+    const normalizedLayersMeta = proj.layers.map((layerMeta) => {
+      const row = pixelByKey.get(`${proj.id}:${layerMeta.id}`)
+      const dw = layerMeta.dataWidth ?? row?.dataWidth ?? proj.width
+      const dh = layerMeta.dataHeight ?? row?.dataHeight ?? proj.height
+      const ox = layerMeta.offsetX ?? row?.offsetX ?? 0
+      const oy = layerMeta.offsetY ?? row?.offsetY ?? 0
+      return {
+        ...layerMeta,
+        offsetX: ox,
+        offsetY: oy,
+        dataWidth: dw,
+        dataHeight: dh,
+      }
+    })
 
+    const { thumbnailPng: _thumb, ...serializableProject } = proj
     zipEntries[`${dirName}/project.json`] = strToU8(
-      JSON.stringify(serializableProject, null, 2)
+      JSON.stringify(
+        {
+          ...serializableProject,
+          layers: normalizedLayersMeta,
+        },
+        null,
+        2
+      )
     )
 
-    for (const layerMeta of proj.layers) {
+    for (const layerMeta of normalizedLayersMeta) {
       totalLayers++
-      const raw =
-        pixelByKey.get(`${proj.id}:${layerMeta.id}`) ??
-        new Uint8Array(proj.width * proj.height * 4)
+      const row = pixelByKey.get(`${proj.id}:${layerMeta.id}`)
+      const expectedLen =
+        (layerMeta.dataWidth ?? proj.width) *
+        (layerMeta.dataHeight ?? proj.height) *
+        4
+      const raw = row?.data ?? new Uint8Array(expectedLen)
       zipEntries[`${dirName}/layers/${layerMeta.id}.bin`] = raw
     }
 
@@ -282,7 +339,7 @@ export async function exportEnvironmentPackZip(
   const manifest: EnvPackManifest = {
     format: ENV_PACK_FORMAT,
     formatVersion: ENV_PACK_VERSION,
-    appVersion: '1.0.0',
+    appVersion: '2.1.0',
     exportedAt: Date.now(),
     projectOrder: projects.map((p) => p.id),
     paletteOrder: palettes.map((p) => p.id),
@@ -320,10 +377,6 @@ export interface ValidatedEnvPack {
   histories: ProjectHistoryRecord[]
 }
 
-/**
- * Unpack and strictly validate an Environment Pack ZIP in memory BEFORE touching IndexedDB.
- * Throws a descriptive Error if the archive is corrupted, malformed, or violates invariants.
- */
 export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPack {
   if (!zipBytes || zipBytes.byteLength < 22) {
     throw new Error('INVALID_ZIP: Archive is empty or too small')
@@ -362,7 +415,6 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
   const parsedSettings = JSON.parse(strFromU8(settingsRaw)) as Partial<AppSettings>
   const settings: AppSettings = normalizeAppSettings(parsedSettings)
 
-  // Parse and validate palettes (must have at least 1 palette)
   const palettePaths = Object.keys(files)
     .filter((k) => k.startsWith('palettes/') && k.endsWith('.json'))
     .sort()
@@ -389,7 +441,6 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
     }
   })
 
-  // Parse and validate all projects referenced in manifest.projectOrder (or projects/*/project.json)
   const projectJsonPaths = Object.keys(files).filter(
     (k) => k.startsWith('projects/') && k.endsWith('/project.json')
   )
@@ -421,8 +472,8 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
     }
 
     const baseDir = `projects/${proj.id}`
-    const expectedBytes = proj.width * proj.height * 4
-    const runtimeLayersForThumb = []
+    const runtimeLayersForThumb: LayerRuntime[] = []
+    const normalizedMetaList: LayerMeta[] = []
 
     for (const layerMeta of proj.layers) {
       const layerBinPath = `${baseDir}/layers/${layerMeta.id}.bin`
@@ -430,6 +481,19 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
       if (!layerBin) {
         throw new Error(`MISSING_LAYER_BIN: Missing layer binary ${layerBinPath}`)
       }
+
+      const geo = normalizeLayerGeometry(
+        {
+          offsetX: layerMeta.offsetX,
+          offsetY: layerMeta.offsetY,
+          dataWidth: layerMeta.dataWidth,
+          dataHeight: layerMeta.dataHeight,
+          data: new Uint8ClampedArray(0),
+        },
+        proj.width,
+        proj.height
+      )
+      const expectedBytes = geo.dataWidth * geo.dataHeight * 4
       if (layerBin.byteLength !== expectedBytes) {
         throw new Error(
           `CORRUPT_LAYER_BIN: Expected ${expectedBytes} bytes, got ${layerBin.byteLength} in ${layerBinPath}`
@@ -442,15 +506,31 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
         projectId: proj.id,
         layerId: layerMeta.id,
         data: copy,
+        offsetX: geo.offsetX,
+        offsetY: geo.offsetY,
+        dataWidth: geo.dataWidth,
+        dataHeight: geo.dataHeight,
       })
 
-      runtimeLayersForThumb.push({
+      const normalizedMeta: LayerMeta = {
         ...layerMeta,
+        offsetX: geo.offsetX,
+        offsetY: geo.offsetY,
+        dataWidth: geo.dataWidth,
+        dataHeight: geo.dataHeight,
+      }
+      normalizedMetaList.push(normalizedMeta)
+
+      runtimeLayersForThumb.push({
+        ...normalizedMeta,
+        offsetX: geo.offsetX,
+        offsetY: geo.offsetY,
+        dataWidth: geo.dataWidth,
+        dataHeight: geo.dataHeight,
         data: new Uint8ClampedArray(copy),
       })
     }
 
-    // Regenerate lossless 1x thumbnail PNG for gallery
     const { png: thumbnailPng } = exportCompositePngBytes(
       runtimeLayersForThumb,
       proj.width,
@@ -460,6 +540,7 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
 
     projects.push({
       ...proj,
+      layers: normalizedMetaList,
       thumbnailPng,
     })
 
@@ -476,7 +557,6 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
     })
   }
 
-  // Sort projects and palettes according to order
   projects.sort((a, b) => a.order - b.order)
   palettes.sort((a, b) => a.order - b.order)
 
@@ -490,11 +570,6 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
   }
 }
 
-/**
- * Atomically replace all IndexedDB data with a pre-validated Environment Pack.
- * Because validation already succeeded in memory and writes occur inside a single Dexie transaction,
- * existing user data is never partially wiped on error.
- */
 export async function applyValidatedEnvPack(
   pack: ValidatedEnvPack,
   targetDb: DotDotDatabase = db

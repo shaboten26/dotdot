@@ -24,6 +24,7 @@ import { useI18n } from '../i18n/I18nContext'
 import { ConfirmDialog } from '../components/common/Modal'
 import { PixelIcon } from '../components/common/PixelIcon'
 import { PixelCheckbox } from '../components/common/PixelCheckbox'
+import { PixelSlider } from '../components/common/PixelSlider'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
 import { VTButtonLink } from '../components/common/ViewTransitionNav'
 
@@ -48,9 +49,10 @@ export function SettingsPage() {
     removeLibraryPalette,
     reorderLibraryPalettes,
     reloadWorkspaceState,
+    markEnvPackExported,
     showToast,
   } = useApp()
-  const { t } = useI18n()
+  const { t, language } = useI18n()
 
   const [storageInfo, setStorageInfo] = useState<StorageStatusInfo>({
     usageBytes: null,
@@ -61,6 +63,7 @@ export function SettingsPage() {
   const [customLimitInput, setCustomLimitInput] = useState<number>(() =>
     typeof settings.historyLimit === 'number' ? settings.historyLimit : 100
   )
+  const [previewChecked, setPreviewChecked] = useState(true)
 
   const [editingPalette, setEditingPalette] = useState<PaletteData | null>(null)
   const [editingColorIdx, setEditingColorIdx] = useState(0)
@@ -86,6 +89,21 @@ export function SettingsPage() {
     }
   }, [settings.historyLimit])
 
+  const formatDateTime = (ms: number | null) => {
+    if (!ms) return t('neverExportedLabel')
+    try {
+      return new Intl.DateTimeFormat(
+        language === 'ja' ? 'ja-JP' : language === 'ko' ? 'ko-KR' : 'en-US',
+        {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        }
+      ).format(new Date(ms))
+    } catch {
+      return new Date(ms).toLocaleString()
+    }
+  }
+
   const handleRequestPersist = async () => {
     const res = await requestStoragePersistence()
     await refreshStorage()
@@ -96,6 +114,10 @@ export function SettingsPage() {
     }
   }
 
+  /**
+   * Section 11: ONLY Environment Pack ZIP generation updates `lastExportAt`!
+   * PNG download/share never touches `lastExportAt`.
+   */
   const handleExportEnvPack = async () => {
     const zipBytes = await exportEnvironmentPackZip()
     const blob = new Blob([zipBytes.slice().buffer], { type: 'application/zip' })
@@ -108,6 +130,7 @@ export function SettingsPage() {
     a.click()
     a.remove()
     window.setTimeout(() => URL.revokeObjectURL(url), 2000)
+    await markEnvPackExported()
     showToast(t('toastExportedZip'), 'success')
   }
 
@@ -265,7 +288,7 @@ export function SettingsPage() {
             </div>
           </section>
 
-          {/* 2. Spec v2 Section 12: UI Size Customization (Presets + Individual Controls + Reset) */}
+          {/* 2. UI Size Customization + Live UI Preview + PixelSliders with +-1 */}
           <section className="pixel-card p-4 space-y-4" data-testid="ui-size-section">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <SectionTitle icon="resize" title={t('sectionUiSize')} />
@@ -277,6 +300,82 @@ export function SettingsPage() {
               >
                 {t('uiResetDefaults')}
               </button>
+            </div>
+
+            {/* Live UI Preview Box (updates in real time using actual CSS variables!) */}
+            <div
+              className="p-3 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-2.5"
+              data-testid="ui-size-live-preview"
+            >
+              <div className="text-[11px] font-bold text-[var(--text-secondary)]">
+                {t('uiLivePreviewTitle')}
+              </div>
+
+              <div
+                style={{ gap: 'var(--ui-gap, 6px)' }}
+                className="grid grid-cols-3"
+              >
+                {[
+                  { icon: 'pen' as const, label: t('toolPen'), active: true },
+                  { icon: 'line' as const, label: t('lineStraight'), active: false },
+                  { icon: 'layers' as const, label: t('toolLayers'), active: false },
+                ].map((sample, i) => (
+                  <div
+                    key={i}
+                    style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
+                    className={`px-1.5 py-1 flex flex-col items-center justify-center gap-0.5 ${
+                      sample.active ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+                    }`}
+                  >
+                    <PixelIcon name={sample.icon} />
+                    <span
+                      style={{ fontSize: 'var(--tool-label-size, 11px)' }}
+                      className="leading-none font-bold truncate max-w-full"
+                    >
+                      {sample.label}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div
+                  style={{ gap: 'var(--ui-gap, 6px)' }}
+                  className="flex items-center"
+                >
+                  {['#292533', '#7E72B8', '#52948B', '#D9A066'].map((hex, i) => (
+                    <span
+                      key={hex}
+                      style={{
+                        width: 'var(--swatch-size, 34px)',
+                        height: 'var(--swatch-size, 34px)',
+                        backgroundColor: hex,
+                      }}
+                      className={`inline-block border-2 ${
+                        i === 1
+                          ? 'border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)]'
+                          : 'border-[var(--border-pixel)]'
+                      }`}
+                    />
+                  ))}
+                </div>
+
+                <PixelCheckbox
+                  checked={previewChecked}
+                  onChange={setPreviewChecked}
+                  label={t('pixelPerfect')}
+                />
+              </div>
+
+              <div
+                style={{
+                  height: 'clamp(44px, calc(var(--draw-btn-vh, 15dvh) * 0.45), 76px)',
+                }}
+                className="w-full pixel-draw-btn flex items-center justify-center gap-2 text-sm font-bold select-none"
+              >
+                <PixelIcon name="pen" size={16} />
+                <span>{t('draw')}</span>
+              </div>
             </div>
 
             {/* Presets: Compact / Standard / Large */}
@@ -307,7 +406,7 @@ export function SettingsPage() {
               })}
             </div>
 
-            {/* Individual Sliders */}
+            {/* Individual PixelSliders with [-]/[+] Step Buttons */}
             <div className="space-y-2.5 pt-1">
               <UiSliderRow
                 label={t('uiOverallScale')}
@@ -325,7 +424,7 @@ export function SettingsPage() {
                 value={ui.toolIconSize}
                 min={16}
                 max={32}
-                step={4}
+                step={2}
                 unit="px"
                 onChange={(v) =>
                   void updateUiSize({ preset: 'custom', toolIconSize: v })
@@ -380,7 +479,7 @@ export function SettingsPage() {
                 value={ui.uiGap}
                 min={4}
                 max={12}
-                step={2}
+                step={1}
                 unit="px"
                 onChange={(v) =>
                   void updateUiSize({ preset: 'custom', uiGap: v })
@@ -400,7 +499,7 @@ export function SettingsPage() {
             </div>
           </section>
 
-          {/* 3. Editor Preferences & History Limit (PixelCheckbox everywhere) */}
+          {/* 3. Editor Preferences & History Limit */}
           <section className="pixel-card p-4 space-y-3.5">
             <SectionTitle icon="settings" title={t('sectionEditorPrefs')} />
 
@@ -458,6 +557,12 @@ export function SettingsPage() {
             </div>
 
             <div className="flex flex-col gap-1 pt-1">
+              <PixelCheckbox
+                checked={settings.eyedropperDoubleTap}
+                onChange={(v) => void updateSettings({ eyedropperDoubleTap: v })}
+                label={`${t('toolEyedropper')}: ${t('eyedropperDoubleTapLabel')}`}
+                testId="settings-eyedropper-doubletap"
+              />
               <PixelCheckbox
                 checked={settings.confirmDestructive}
                 onChange={(v) => void updateSettings({ confirmDestructive: v })}
@@ -678,13 +783,25 @@ export function SettingsPage() {
             </p>
           </section>
 
-          {/* 6. Environment Pack (ZIP Export / Import) */}
+          {/* 6. Environment Pack (ZIP Export / Import + Last Export Timestamp) */}
           <section className="pixel-card p-4 space-y-3">
             <SectionTitle icon="download" title={t('sectionEnvPack')} />
 
             <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
               {t('envPackDesc')}
             </p>
+
+            <div className="p-2.5 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] flex items-center justify-between text-xs">
+              <span className="text-[var(--text-secondary)]">
+                {t('lastExportAtLabel')}
+              </span>
+              <span
+                className="font-bold text-[var(--text-primary)]"
+                data-testid="last-export-at-value"
+              >
+                {formatDateTime(settings.backupMeta?.lastExportAt ?? null)}
+              </span>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
               <button
@@ -724,7 +841,7 @@ export function SettingsPage() {
             <div className="text-xs space-y-1.5 text-[var(--text-secondary)]">
               <div className="flex justify-between">
                 <span>{t('appVersionLabel')}</span>
-                <span className="font-bold text-[var(--text-primary)]">2.0.0</span>
+                <span className="font-bold text-[var(--text-primary)]">2.1.0</span>
               </div>
               <div className="flex justify-between">
                 <span>{t('storageEngineLabel')}</span>
@@ -758,6 +875,7 @@ export function SettingsPage() {
               sourcePaletteId: editingPalette.id,
             }}
             selectedIndex={editingColorIdx}
+            checkerDark={settings.checkerboardDark}
             libraryPalettes={palettes}
             onSelectColor={setEditingColorIdx}
             onUpdatePalette={(next, nextIdx) => {
@@ -873,18 +991,21 @@ function UiSliderRow({
   onChange: (next: number) => void
 }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-xs text-[var(--text-primary)] min-w-[130px]">{label}</span>
-      <input
-        type="range"
+    <div className="flex items-center justify-between gap-2.5">
+      <span className="text-xs text-[var(--text-primary)] min-w-[120px] shrink-0">
+        {label}
+      </span>
+      <PixelSlider
         min={min}
         max={max}
         step={step}
         value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="flex-1 max-w-[180px] accent-[var(--accent-primary)]"
+        unit={unit}
+        ariaLabel={label}
+        onChange={onChange}
+        className="flex-1 max-w-[220px]"
       />
-      <span className="w-14 text-right text-xs font-bold shrink-0">
+      <span className="w-12 text-right text-xs font-bold shrink-0">
         {value}
         {unit}
       </span>

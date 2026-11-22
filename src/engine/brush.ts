@@ -99,10 +99,17 @@ export function stampBrushAt(
     } else {
       if (!shouldDrawWithDither(dither, px, py)) continue
       const idx = pIndex * 4
-      buffer[idx] = color.r
-      buffer[idx + 1] = color.g
-      buffer[idx + 2] = color.b
-      buffer[idx + 3] = color.a
+      if (color.a === 0) {
+        buffer[idx] = 0
+        buffer[idx + 1] = 0
+        buffer[idx + 2] = 0
+        buffer[idx + 3] = 0
+      } else {
+        buffer[idx] = color.r
+        buffer[idx + 1] = color.g
+        buffer[idx + 2] = color.b
+        buffer[idx + 3] = color.a
+      }
     }
   }
 }

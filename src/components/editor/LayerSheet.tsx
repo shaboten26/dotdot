@@ -1,10 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import type { BlendMode, LayerRuntime } from '../../types'
 import { MAX_LAYERS } from '../../engine/compositor'
 import { ALL_BLEND_MODES } from '../../state/useEditorController'
 import { Modal } from '../common/Modal'
 import { PixelIcon } from '../common/PixelIcon'
 import { PixelCheckbox } from '../common/PixelCheckbox'
+import { PixelSlider } from '../common/PixelSlider'
+import { PixelSelect } from '../common/PixelSelect'
+import { LayerBufferThumbnail } from '../common/PixelThumbnail'
+import { useLongPressReorder } from '../../utils/useLongPressReorder'
+import { useApp } from '../../state/AppContext'
 import { useI18n } from '../../i18n/I18nContext'
 import type { TranslationKey } from '../../i18n/translations'
 
@@ -22,30 +28,59 @@ const BLEND_LABEL_KEYS: Record<BlendMode, TranslationKey> = {
 interface LayerSheetProps {
   open: boolean
   onClose: () => void
+  canvasWidth: number
+  canvasHeight: number
+  checkerDark?: boolean
   layers: LayerRuntime[]
   activeLayerId: string
+  selectedLayerIds: string[]
   onSelectLayer: (id: string) => void
+  onToggleLayerSelected: (id: string) => void
+  onClearLayerSelection: () => void
+  onStartMultiLayerMoveOnCanvas: () => void
+  onDuplicateSelectedLayers: () => void
+  onMergeSelectedLayers: () => void
+  onDeleteSelectedLayers: () => void
   onAddLayer: () => void
   onDuplicateLayer: (id: string) => void
   onDeleteLayer: (id: string) => void
   onMergeDown: (id: string) => void
   onUpdateLayer: (
     id: string,
-    patch: Partial<Pick<LayerRuntime, 'name' | 'visible' | 'opacity' | 'blendMode' | 'clipping'>>
+    patch: Partial<
+      Pick<LayerRuntime, 'name' | 'visible' | 'opacity' | 'blendMode' | 'clipping'>
+    >
   ) => void
   onReorderLayers: (orderedBottomToTopIds: string[]) => void
   onClearLayer: (id: string) => void
   onCopyLayer: (id: string) => void
   onFlipLayer: (id: string, dir: 'horizontal' | 'vertical') => void
-  onMoveLayer: (id: string, dx: number, dy: number) => void
+  onStartLayerMoveOnCanvas: (id: string) => void
 }
 
+/**
+ * Redesigned Layer Panel:
+ * - Independent per-layer checkbox selection (`selectedLayerIds`) that NEVER changes `activeLayerId`
+ * - Conditional Batch Action Bar when >=1 layer is checked (Count + Clear + Batch Move + compact Batch More menu)
+ * - Layer rename input auto-selects full existing text on focus (`select()`), saves on Enter, cancels on Escape, rejects empty names
+ * - Long-press & drag reordering with drop placeholder
+ */
 export function LayerSheet({
   open,
   onClose,
+  canvasWidth,
+  canvasHeight,
+  checkerDark = false,
   layers,
   activeLayerId,
+  selectedLayerIds,
   onSelectLayer,
+  onToggleLayerSelected,
+  onClearLayerSelection,
+  onStartMultiLayerMoveOnCanvas,
+  onDuplicateSelectedLayers,
+  onMergeSelectedLayers,
+  onDeleteSelectedLayers,
   onAddLayer,
   onDuplicateLayer,
   onDeleteLayer,
@@ -55,26 +90,61 @@ export function LayerSheet({
   onClearLayer,
   onCopyLayer,
   onFlipLayer,
-  onMoveLayer,
+  onStartLayerMoveOnCanvas,
 }: LayerSheetProps) {
   const { t } = useI18n()
-  const [dragLayerId, setDragLayerId] = useState<string | null>(null)
-  const [showMovePad, setShowMovePad] = useState(false)
+  const { reducedMotion } = useApp()
 
   const displayLayers = [...layers].reverse()
-  const activeIndexBottomUp = layers.findIndex((l) => l.id === activeLayerId)
-  const activeLayer = layers[activeIndexBottomUp] ?? layers[0]
-  const isBottomLayer = activeIndexBottomUp <= 0
+  const displayIds = displayLayers.map((l) => l.id)
   const atMaxLayers = layers.length >= MAX_LAYERS
+  const selectedSet = new Set(selectedLayerIds)
+  const checkedCount = displayLayers.filter((l) => selectedSet.has(l.id)).length
 
-  const moveLayerOrderByStep = (layerId: string, deltaBottomUp: 1 | -1) => {
-    const idx = layers.findIndex((l) => l.id === layerId)
-    const target = idx + deltaBottomUp
-    if (idx < 0 || target < 0 || target >= layers.length) return
-    const ids = layers.map((l) => l.id)
-    const [moved] = ids.splice(idx, 1)
-    ids.splice(target, 0, moved)
-    onReorderLayers(ids)
+  const [menuLayerId, setMenuLayerId] = useState<string | null>(null)
+  const [batchMenuOpen, setBatchMenuOpen] = useState(false)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  const renameInputRef = useRef<HTMLInputElement | null>(null)
+  const listScrollRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!open) {
+      setMenuLayerId(null)
+      setBatchMenuOpen(false)
+      setRenamingId(null)
+    }
+  }, [open])
+
+  // Auto-focus and select full layer name whenever inline rename opens
+  useEffect(() => {
+    if (renamingId && renameInputRef.current) {
+      const el = renameInputRef.current
+      el.focus()
+      el.select()
+    }
+  }, [renamingId])
+
+  const { dragState, getItemProps, shouldSuppressClick } = useLongPressReorder({
+    ids: displayIds,
+    enabled: menuLayerId === null && renamingId === null && layers.length > 1,
+    onReorder: (nextTopToBottomIds) => {
+      onReorderLayers([...nextTopToBottomIds].reverse())
+    },
+    scrollContainerRef: listScrollRef,
+  })
+
+  const blendOptions = ALL_BLEND_MODES.map((bm) => ({
+    value: bm,
+    label: t(BLEND_LABEL_KEYS[bm]),
+  }))
+
+  const commitInlineRename = (layerId: string, originalName: string) => {
+    const trimmed = renameDraft.trim()
+    setRenamingId(null)
+    if (trimmed.length > 0 && trimmed !== originalName) {
+      onUpdateLayer(layerId, { name: trimmed })
+    }
   }
 
   return (
@@ -85,52 +155,131 @@ export function LayerSheet({
       maxWidthClass="max-w-lg"
     >
       <div className="space-y-3">
-        {/* Layer Primary Actions (>= 44px touch targets) */}
-        <div className="grid grid-cols-4 gap-1.5">
+        {/* Clean Top Bar: Add Layer + Drag Reorder Hint */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <button
             type="button"
             disabled={atMaxLayers}
             onClick={onAddLayer}
-            className="pixel-btn pixel-btn-active min-h-[44px] px-2 text-xs font-bold flex items-center justify-center gap-1"
+            className="pixel-btn pixel-btn-active min-h-[42px] px-3.5 text-xs font-bold flex items-center gap-1.5"
             data-testid="add-layer-btn"
           >
             <PixelIcon name="plus" size={14} />
-            <span className="truncate">{t('addLayer')}</span>
+            <span>{t('addLayer')}</span>
           </button>
 
-          <button
-            type="button"
-            disabled={atMaxLayers || !activeLayer}
-            onClick={() => activeLayer && onDuplicateLayer(activeLayer.id)}
-            className="pixel-btn min-h-[44px] px-2 text-xs font-bold flex items-center justify-center gap-1"
-            data-testid="dup-layer-btn"
-          >
-            <PixelIcon name="copy" size={14} />
-            <span className="truncate">{t('duplicateLayer')}</span>
-          </button>
-
-          <button
-            type="button"
-            disabled={isBottomLayer || !activeLayer}
-            onClick={() => activeLayer && onMergeDown(activeLayer.id)}
-            className="pixel-btn min-h-[44px] px-2 text-xs font-bold flex items-center justify-center gap-1"
-            data-testid="merge-down-btn"
-          >
-            <PixelIcon name="merge" size={14} />
-            <span className="truncate">{t('mergeDown')}</span>
-          </button>
-
-          <button
-            type="button"
-            disabled={layers.length <= 1 || !activeLayer}
-            onClick={() => activeLayer && onDeleteLayer(activeLayer.id)}
-            className="pixel-btn pixel-btn-danger min-h-[44px] px-2 text-xs font-bold flex items-center justify-center gap-1"
-            data-testid="del-layer-btn"
-          >
-            <PixelIcon name="trash" size={14} />
-            <span className="truncate">{t('deleteLayer')}</span>
-          </button>
+          <span className="text-[11px] text-[var(--text-secondary)]">
+            {t('layerReorderHint')}
+          </span>
         </div>
+
+        {/* Multi-Layer Batch Action Bar (shown ONLY when >=1 layer is checked) */}
+        {checkedCount > 0 && (
+          <div
+            className="p-2.5 bg-[var(--bg-elevated)] border-2 border-[var(--accent-teal)] space-y-2"
+            data-testid="layer-batch-bar"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs">
+                <span
+                  className="font-bold text-[var(--accent-teal)]"
+                  data-testid="layer-selected-count"
+                >
+                  {t('selectedLayersCount')}: {checkedCount}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBatchMenuOpen(false)
+                    onClearLayerSelection()
+                  }}
+                  className="pixel-btn min-h-[30px] px-2 text-[11px] font-bold"
+                  data-testid="clear-layer-selection-btn"
+                >
+                  {t('clearLayerSelection')}
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBatchMenuOpen(false)
+                    onClose()
+                    onStartMultiLayerMoveOnCanvas()
+                  }}
+                  className="pixel-btn pixel-btn-teal min-h-[36px] px-3 text-xs font-bold flex items-center gap-1.5"
+                  data-testid="batch-move-layers-btn"
+                >
+                  <PixelIcon name="move" size={14} />
+                  <span>{t('batchMoveLayers')}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setBatchMenuOpen((v) => !v)}
+                  aria-expanded={batchMenuOpen}
+                  aria-label={t('batchMoreActions')}
+                  className={`min-w-[36px] min-h-[36px] flex items-center justify-center ${
+                    batchMenuOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+                  }`}
+                  data-testid="batch-more-btn"
+                >
+                  <PixelIcon name="more" size={15} />
+                </button>
+              </div>
+            </div>
+
+            {batchMenuOpen && (
+              <div
+                className="grid grid-cols-3 gap-1.5 pt-2 border-t border-[var(--border-subtle)]"
+                data-testid="batch-more-menu"
+              >
+                <button
+                  type="button"
+                  disabled={layers.length + checkedCount > MAX_LAYERS}
+                  onClick={() => {
+                    setBatchMenuOpen(false)
+                    onDuplicateSelectedLayers()
+                  }}
+                  className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center justify-center gap-1"
+                  data-testid="batch-duplicate-btn"
+                >
+                  <PixelIcon name="copy" size={13} />
+                  <span className="truncate">{t('duplicateLayer')}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={checkedCount < 2}
+                  onClick={() => {
+                    setBatchMenuOpen(false)
+                    onMergeSelectedLayers()
+                  }}
+                  className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center justify-center gap-1"
+                  data-testid="batch-merge-btn"
+                >
+                  <PixelIcon name="merge" size={13} />
+                  <span className="truncate">{t('batchMergeLayers')}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={layers.length - checkedCount < 1}
+                  onClick={() => {
+                    setBatchMenuOpen(false)
+                    onDeleteSelectedLayers()
+                  }}
+                  className="pixel-btn pixel-btn-danger min-h-[36px] px-2 text-xs font-bold flex items-center justify-center gap-1"
+                  data-testid="batch-delete-btn"
+                >
+                  <PixelIcon name="trash" size={13} />
+                  <span className="truncate">{t('deleteLayer')}</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {atMaxLayers && (
           <p className="text-xs font-bold text-[var(--accent-rose)]">
@@ -138,244 +287,384 @@ export function LayerSheet({
           </p>
         )}
 
-        {/* Active Layer Settings */}
-        {activeLayer && (
-          <div className="p-3 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <input
-                type="text"
-                value={activeLayer.name}
-                onChange={(e) =>
-                  onUpdateLayer(activeLayer.id, { name: e.target.value })
-                }
-                className="flex-1 min-w-[120px] min-h-[36px] px-2.5 text-xs font-bold pixel-input"
-                aria-label={t('rename')}
-              />
-
-              <PixelCheckbox
-                checked={activeLayer.clipping}
-                disabled={isBottomLayer}
-                onChange={(next) =>
-                  onUpdateLayer(activeLayer.id, { clipping: next })
-                }
-                label={t('clipping')}
-                testId="toggle-clipping-btn"
-              />
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex items-center gap-2 flex-1 min-w-[160px]">
-                <span className="text-xs shrink-0">
-                  {t('opacity')}: <strong>{activeLayer.opacity}%</strong>
-                </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={activeLayer.opacity}
-                  onChange={(e) =>
-                    onUpdateLayer(activeLayer.id, { opacity: Number(e.target.value) })
-                  }
-                  className="flex-1 accent-[var(--accent-primary)]"
-                />
-              </div>
-
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs text-[var(--text-secondary)]">
-                  {t('blendMode')}:
-                </span>
-                <select
-                  value={activeLayer.blendMode}
-                  onChange={(e) =>
-                    onUpdateLayer(activeLayer.id, {
-                      blendMode: e.target.value as BlendMode,
-                    })
-                  }
-                  className="min-h-[34px] px-2 text-xs font-bold pixel-input"
-                  data-testid="blend-mode-select"
-                >
-                  {ALL_BLEND_MODES.map((bm) => (
-                    <option key={bm} value={bm}>
-                      {t(BLEND_LABEL_KEYS[bm])}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-1 pt-1.5 border-t border-[var(--border-subtle)]">
-              <button
-                type="button"
-                onClick={() => onClearLayer(activeLayer.id)}
-                className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
-              >
-                <PixelIcon name="eraser" size={14} />
-                {t('clearLayer')}
-              </button>
-              <button
-                type="button"
-                onClick={() => onCopyLayer(activeLayer.id)}
-                className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
-              >
-                <PixelIcon name="copy" size={14} />
-                {t('copy')}
-              </button>
-              <button
-                type="button"
-                onClick={() => onFlipLayer(activeLayer.id, 'horizontal')}
-                className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
-              >
-                <PixelIcon name="flipH" size={14} />
-                {t('flipH')}
-              </button>
-              <button
-                type="button"
-                onClick={() => onFlipLayer(activeLayer.id, 'vertical')}
-                className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
-              >
-                <PixelIcon name="flipV" size={14} />
-                {t('flipV')}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowMovePad((v) => !v)}
-                className={`min-h-[36px] px-2 text-xs font-bold flex items-center gap-1 ${
-                  showMovePad ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-                }`}
-              >
-                <PixelIcon name="move" size={14} />
-                {t('moveLayer')}
-              </button>
-            </div>
-
-            {showMovePad && (
-              <div className="flex items-center justify-center gap-1.5 pt-1">
-                <button
-                  type="button"
-                  onClick={() => onMoveLayer(activeLayer.id, -1, 0)}
-                  className="pixel-btn min-h-[36px] px-2.5 flex items-center gap-1 text-xs font-bold"
-                >
-                  <PixelIcon name="arrowLeft" size={14} /> -1X
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onMoveLayer(activeLayer.id, 0, -1)}
-                  className="pixel-btn min-h-[36px] px-2.5 flex items-center gap-1 text-xs font-bold"
-                >
-                  <PixelIcon name="arrowUp" size={14} /> -1Y
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onMoveLayer(activeLayer.id, 0, 1)}
-                  className="pixel-btn min-h-[36px] px-2.5 flex items-center gap-1 text-xs font-bold"
-                >
-                  <PixelIcon name="arrowDown" size={14} /> +1Y
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onMoveLayer(activeLayer.id, 1, 0)}
-                  className="pixel-btn min-h-[36px] px-2.5 flex items-center gap-1 text-xs font-bold"
-                >
-                  <PixelIcon name="arrowRight" size={14} /> +1X
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Layer Stack List */}
-        <div className="space-y-1.5 max-h-60 overflow-y-auto pr-0.5">
+        {/* Layer Stack List (Top layer at top) */}
+        <div
+          ref={listScrollRef}
+          className="space-y-2 max-h-[60dvh] overflow-y-auto pr-0.5"
+          data-testid="layer-list-container"
+        >
           {displayLayers.map((layer) => {
-            const isSelected = layer.id === activeLayer?.id
+            const isSelected = layer.id === activeLayerId
+            const isChecked = selectedSet.has(layer.id)
             const bottomUpIdx = layers.findIndex((l) => l.id === layer.id)
+            const isBottomLayer = bottomUpIdx <= 0
+            const menuOpen = menuLayerId === layer.id
+            const isDraggingThis = dragState?.draggingId === layer.id
+            const isDropTarget =
+              dragState !== null &&
+              dragState.overId === layer.id &&
+              dragState.draggingId !== layer.id
+            const hasOffset =
+              (layer.offsetX ?? 0) !== 0 || (layer.offsetY ?? 0) !== 0
 
             return (
               <div
                 key={layer.id}
-                draggable
-                onDragStart={() => setDragLayerId(layer.id)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => {
-                  if (!dragLayerId || dragLayerId === layer.id) return
-                  const ids = layers.map((l) => l.id)
-                  const fromIdx = ids.indexOf(dragLayerId)
-                  const toIdx = ids.indexOf(layer.id)
-                  if (fromIdx < 0 || toIdx < 0) return
-                  ids.splice(fromIdx, 1)
-                  ids.splice(toIdx, 0, dragLayerId)
-                  setDragLayerId(null)
-                  onReorderLayers(ids)
-                }}
-                onClick={() => onSelectLayer(layer.id)}
-                className={`flex items-center gap-2 px-2.5 py-2 cursor-pointer border-2 ${
-                  isSelected
-                    ? 'bg-[var(--bg-panel)] border-[var(--accent-primary)] shadow-[2px_2px_0px_var(--accent-primary-shadow)]'
-                    : 'bg-[var(--bg-elevated)] border-[var(--border-pixel)]'
-                }`}
+                {...getItemProps(layer.id)}
+                className={`relative border-2 transition-colors ${
+                  isDropTarget
+                    ? 'border-[var(--accent-teal)] outline-2 outline-dashed outline-[var(--accent-teal)] bg-[var(--bg-panel)]'
+                    : isSelected
+                      ? 'bg-[var(--bg-panel)] border-[var(--accent-primary)]'
+                      : 'bg-[var(--bg-elevated)] border-[var(--border-pixel)]'
+                } ${isDraggingThis ? 'opacity-65' : ''}`}
                 data-testid={`layer-row-${layer.id}`}
               >
-                {/* Selection marker square (not relying on color alone) */}
-                <span
-                  className={`w-2.5 h-2.5 border border-[var(--border-pixel)] shrink-0 ${
-                    isSelected ? 'bg-[var(--accent-primary)]' : 'bg-transparent'
-                  }`}
-                  aria-hidden="true"
-                />
-
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onUpdateLayer(layer.id, { visible: !layer.visible })
-                  }}
-                  className="pixel-btn min-w-[36px] min-h-[36px] flex items-center justify-center shrink-0"
-                  aria-label={layer.visible ? t('layerVisible') : t('layerHidden')}
-                  data-testid={`layer-vis-${layer.id}`}
-                >
-                  <PixelIcon
-                    name={layer.visible ? 'eye' : 'eyeOff'}
-                    size={16}
-                  />
-                </button>
-
-                {layer.clipping && (
-                  <PixelIcon
-                    name="clip"
-                    size={14}
-                    className="text-[var(--accent-primary)]"
+                {isDropTarget && (
+                  <div
+                    className="h-1.5 w-full bg-[var(--accent-teal)]"
+                    data-testid={`layer-drop-indicator-${layer.id}`}
                   />
                 )}
 
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs font-bold truncate">{layer.name}</div>
-                  <div className="text-[10px] text-[var(--text-secondary)]">
-                    {t(BLEND_LABEL_KEYS[layer.blendMode])} · {layer.opacity}%
+                <div
+                  onClick={() => {
+                    if (shouldSuppressClick()) return
+                    onSelectLayer(layer.id)
+                  }}
+                  className="flex items-center gap-2 px-2 py-2 cursor-pointer select-none"
+                >
+                  {/* 0. Independent Multi-Select Checkbox (NEVER changes activeLayerId!) */}
+                  <div
+                    data-no-reorder="true"
+                    onClick={(e) => e.stopPropagation()}
+                    className="shrink-0"
+                  >
+                    <PixelCheckbox
+                      checked={isChecked}
+                      onChange={() => onToggleLayerSelected(layer.id)}
+                      ariaLabel={`Select ${layer.name}`}
+                      testId={`layer-check-${layer.id}`}
+                    />
                   </div>
+
+                  {/* 1. Real Pixel Data Thumbnail (46x46px) */}
+                  <div className="relative shrink-0">
+                    <LayerBufferThumbnail
+                      layer={layer}
+                      canvasWidth={canvasWidth}
+                      canvasHeight={canvasHeight}
+                      checkerDark={checkerDark}
+                      size={46}
+                    />
+                    {isSelected && (
+                      <span
+                        className="absolute -top-1 -left-1 w-3.5 h-3.5 bg-[var(--accent-primary)] text-[var(--accent-primary-fg)] border border-[var(--border-strong)] flex items-center justify-center"
+                        aria-hidden="true"
+                      >
+                        <PixelIcon name="check" size={9} />
+                      </span>
+                    )}
+                  </div>
+
+                  {/* 2 & 3. Layer Name + Concise Auxiliary Metadata */}
+                  <div className="flex-1 min-w-0 space-y-0.5">
+                    {renamingId === layer.id ? (
+                      <input
+                        ref={renameInputRef}
+                        type="text"
+                        autoFocus
+                        data-no-reorder="true"
+                        value={renameDraft}
+                        onFocus={(e) => e.currentTarget.select()}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setRenameDraft(e.target.value)}
+                        onBlur={() => commitInlineRename(layer.id, layer.name)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            commitInlineRename(layer.id, layer.name)
+                          } else if (e.key === 'Escape') {
+                            e.preventDefault()
+                            setRenamingId(null)
+                          }
+                        }}
+                        className="w-full min-h-[34px] px-2 text-xs font-bold pixel-input"
+                        data-testid={`layer-rename-input-${layer.id}`}
+                      />
+                    ) : (
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        {layer.clipping && (
+                          <PixelIcon
+                            name="clip"
+                            size={12}
+                            className="text-[var(--accent-primary)]"
+                          />
+                        )}
+                        <span className="text-xs font-bold truncate">
+                          {layer.name}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-[var(--text-secondary)]">
+                      <span>{t(BLEND_LABEL_KEYS[layer.blendMode])}</span>
+                      <span>·</span>
+                      <span>{layer.opacity}%</span>
+                      {hasOffset && (
+                        <>
+                          <span>·</span>
+                          <span className="text-[var(--accent-teal)]">
+                            {t('layerOffsetBadge')}: {layer.offsetX},{layer.offsetY}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 4. Direct Visibility Toggle */}
+                  <button
+                    type="button"
+                    data-no-reorder="true"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onUpdateLayer(layer.id, { visible: !layer.visible })
+                    }}
+                    className={`min-w-[40px] min-h-[40px] flex items-center justify-center shrink-0 ${
+                      layer.visible ? 'pixel-btn' : 'pixel-btn opacity-75'
+                    }`}
+                    aria-label={layer.visible ? t('layerVisible') : t('layerHidden')}
+                    title={layer.visible ? t('layerVisible') : t('layerHidden')}
+                    data-testid={`layer-vis-${layer.id}`}
+                  >
+                    <PixelIcon
+                      name={layer.visible ? 'eye' : 'eyeOff'}
+                      size={16}
+                    />
+                  </button>
+
+                  {/* 5. Three-Dots Menu Button (Rightmost edge) */}
+                  <button
+                    type="button"
+                    data-no-reorder="true"
+                    aria-expanded={menuOpen}
+                    aria-label={t('moreActions')}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onSelectLayer(layer.id)
+                      setMenuLayerId((prev) => (prev === layer.id ? null : layer.id))
+                    }}
+                    className={`min-w-[40px] min-h-[40px] flex items-center justify-center shrink-0 ${
+                      menuOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+                    }`}
+                    data-testid={`layer-more-${layer.id}`}
+                  >
+                    <PixelIcon name="more" size={16} />
+                  </button>
                 </div>
 
-                <div
-                  className="flex items-center gap-1 shrink-0"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    type="button"
-                    disabled={bottomUpIdx >= layers.length - 1}
-                    onClick={() => moveLayerOrderByStep(layer.id, 1)}
-                    title={t('moveUp')}
-                    className="pixel-btn min-w-[34px] min-h-[34px] flex items-center justify-center"
-                  >
-                    <PixelIcon name="arrowUp" size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    disabled={bottomUpIdx <= 0}
-                    onClick={() => moveLayerOrderByStep(layer.id, -1)}
-                    title={t('moveDown')}
-                    className="pixel-btn min-w-[34px] min-h-[34px] flex items-center justify-center"
-                  >
-                    <PixelIcon name="arrowDown" size={14} />
-                  </button>
-                </div>
+                {/* Grouped Three-Dots Layer Action Drawer */}
+                <AnimatePresence>
+                  {menuOpen && (
+                    <motion.div
+                      data-no-reorder="true"
+                      onClick={(e) => e.stopPropagation()}
+                      initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: -4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                      transition={{ duration: reducedMotion ? 0 : 0.1 }}
+                      className="px-3 py-3 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] space-y-3"
+                      data-testid={`layer-menu-${layer.id}`}
+                    >
+                      {/* Group A: Opacity, Blend Mode & Clipping */}
+                      <div className="space-y-2.5 pb-2.5 border-b border-[var(--border-subtle)]">
+                        <div className="text-[10px] font-bold text-[var(--text-secondary)]">
+                          {t('layerMenuBlend')}
+                        </div>
+
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-bold text-[var(--text-secondary)]">
+                              {t('opacity')}
+                            </span>
+                            <span className="font-bold text-[var(--text-primary)]">
+                              {layer.opacity}%
+                            </span>
+                          </div>
+                          <PixelSlider
+                            min={0}
+                            max={100}
+                            value={layer.opacity}
+                            unit="%"
+                            ariaLabel={t('opacity')}
+                            onChange={(val) =>
+                              onUpdateLayer(layer.id, { opacity: val })
+                            }
+                            testId="layer-opacity-slider"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <span className="block text-xs font-bold text-[var(--text-secondary)]">
+                            {t('blendMode')}
+                          </span>
+                          <PixelSelect<BlendMode>
+                            value={layer.blendMode}
+                            options={blendOptions}
+                            onChange={(bm) =>
+                              onUpdateLayer(layer.id, { blendMode: bm })
+                            }
+                            ariaLabel={t('blendMode')}
+                            className="w-full"
+                            testId="blend-mode-select"
+                          />
+                        </div>
+
+                        <PixelCheckbox
+                          checked={layer.clipping}
+                          disabled={isBottomLayer}
+                          onChange={(next) =>
+                            onUpdateLayer(layer.id, { clipping: next })
+                          }
+                          label={t('clipping')}
+                          testId="toggle-clipping-btn"
+                        />
+                      </div>
+
+                      {/* Group B: Rename / Duplicate / Copy / Merge Down */}
+                      <div className="space-y-1.5 pb-2.5 border-b border-[var(--border-subtle)]">
+                        <div className="text-[10px] font-bold text-[var(--text-secondary)]">
+                          {t('layerMenuBasic')}
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRenameDraft(layer.name)
+                              setRenamingId(layer.id)
+                              setMenuLayerId(null)
+                            }}
+                            className="pixel-btn min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1.5"
+                            data-testid="layer-action-rename"
+                          >
+                            <PixelIcon name="edit" size={14} />
+                            <span className="truncate">{t('rename')}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={atMaxLayers}
+                            onClick={() => {
+                              onDuplicateLayer(layer.id)
+                              setMenuLayerId(null)
+                            }}
+                            className="pixel-btn min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1.5"
+                            data-testid="dup-layer-btn"
+                          >
+                            <PixelIcon name="copy" size={14} />
+                            <span className="truncate">{t('duplicateLayer')}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={isBottomLayer}
+                            onClick={() => {
+                              onMergeDown(layer.id)
+                              setMenuLayerId(null)
+                            }}
+                            className="pixel-btn min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1.5"
+                            data-testid="merge-down-btn"
+                          >
+                            <PixelIcon name="merge" size={14} />
+                            <span className="truncate">{t('mergeDown')}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onCopyLayer(layer.id)
+                              setMenuLayerId(null)
+                            }}
+                            className="pixel-btn min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1.5"
+                          >
+                            <PixelIcon name="paste" size={14} />
+                            <span className="truncate">{t('copyLayer')}</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Group C: Transform & Canvas Move */}
+                      <div className="space-y-1.5 pb-2.5 border-b border-[var(--border-subtle)]">
+                        <div className="text-[10px] font-bold text-[var(--text-secondary)]">
+                          {t('layerMenuTransform')}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMenuLayerId(null)
+                            onClose()
+                            onStartLayerMoveOnCanvas(layer.id)
+                          }}
+                          className="w-full pixel-btn pixel-btn-teal min-h-[40px] px-3 text-xs font-bold flex items-center justify-center gap-2"
+                          data-testid="start-layer-move-btn"
+                        >
+                          <PixelIcon name="move" size={14} />
+                          <span>{t('moveLayerCanvas')}</span>
+                        </button>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => onFlipLayer(layer.id, 'horizontal')}
+                            className="pixel-btn min-h-[38px] px-2.5 text-xs font-bold flex items-center justify-center gap-1.5"
+                            data-testid="layer-flip-h-btn"
+                          >
+                            <PixelIcon name="flipH" size={14} />
+                            <span className="truncate">{t('flipH')}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onFlipLayer(layer.id, 'vertical')}
+                            className="pixel-btn min-h-[38px] px-2.5 text-xs font-bold flex items-center justify-center gap-1.5"
+                            data-testid="layer-flip-v-btn"
+                          >
+                            <PixelIcon name="flipV" size={14} />
+                            <span className="truncate">{t('flipV')}</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Group D: Clear & Delete */}
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onClearLayer(layer.id)
+                            setMenuLayerId(null)
+                          }}
+                          className="pixel-btn min-h-[38px] px-2.5 text-xs font-bold flex items-center justify-center gap-1.5"
+                          data-testid="clear-layer-btn"
+                        >
+                          <PixelIcon name="eraser" size={14} />
+                          <span className="truncate">{t('clearLayer')}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={layers.length <= 1}
+                          onClick={() => {
+                            setMenuLayerId(null)
+                            onDeleteLayer(layer.id)
+                          }}
+                          className="pixel-btn pixel-btn-danger min-h-[38px] px-2.5 text-xs font-bold flex items-center justify-center gap-1.5"
+                          data-testid="del-layer-btn"
+                        >
+                          <PixelIcon name="trash" size={14} />
+                          <span className="truncate">{t('deleteLayer')}</span>
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             )
           })}

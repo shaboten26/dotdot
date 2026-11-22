@@ -1,7 +1,11 @@
-import { describe, expect, it, beforeAll } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, expect, it, beforeAll, afterEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { App } from '../App'
 import { db } from '../db/database'
+
+afterEach(() => {
+  cleanup()
+})
 
 beforeAll(() => {
   HTMLCanvasElement.prototype.getContext = (() => {
@@ -9,6 +13,9 @@ beforeAll(() => {
       save: () => {},
       restore: () => {},
       scale: () => {},
+      translate: () => {},
+      setTransform: () => {},
+      resetTransform: () => {},
       clearRect: () => {},
       fillRect: () => {},
       strokeRect: () => {},
@@ -38,18 +45,20 @@ beforeAll(() => {
   }
 })
 
-describe('Spec v2 Full React UI Workflow Integration Tests', () => {
-  it('starts on Empty Gallery, creates artwork -> Editor, toggles tool options on re-tap, uses PixelCheckbox for Shape Fill, transforms, edits Layers/Palette/UI Sizes, and switches 3 languages & themes', async () => {
+describe('Full React UI Workflow Integration Tests', () => {
+  it('starts on Empty Gallery, creates artwork -> Editor, toggles tool options on re-tap, uses Transparent Slot & Multi-Layer selection, navigates Gallery -> Viewing Screen -> Editor, and tests PNG 4000px export & Settings', async () => {
     window.history.pushState({}, '', '/')
     render(<App />)
 
-    // 1. Spec v2 Section 5-1: App starts on Gallery with Empty State (no auto-created empty canvas)
+    // 1. App starts on Gallery with Empty State (no auto-created empty canvas)
     const emptyCreateBtn = await screen.findByTestId('empty-create-artwork-btn')
     expect(emptyCreateBtn).toBeTruthy()
     expect(await db.projects.count()).toBe(0)
 
-    // 2. Open New Artwork modal, pick 24x24, create -> navigates to /editor/:id
+    // 2. Open New Artwork modal, verify 5 standard presets, pick 24x24, create -> navigates to /editor/:id
     fireEvent.click(emptyCreateBtn)
+    expect(screen.getByTestId('builtin-preset-16x16')).toBeTruthy()
+    expect(screen.getByTestId('builtin-preset-128x128')).toBeTruthy()
     fireEvent.change(screen.getByTestId('new-project-name-input'), {
       target: { value: 'Retro Cat' },
     })
@@ -61,18 +70,18 @@ describe('Spec v2 Full React UI Workflow Integration Tests', () => {
     })
     fireEvent.click(screen.getByTestId('confirm-create-artwork-btn'))
 
-    // 3. Editor loads with localized large Draw button ('描く') & tool detail panel CLOSED initially (Spec v2 Section 6 & 7)
+    // 3. Editor loads with Draw button & Transparent Color Slot at leftmost position
     const drawBtn = await screen.findByTestId('draw-button')
     expect(drawBtn.textContent).toContain('描く')
     expect(screen.queryByTestId('tool-detail-panel')).toBeNull()
+    expect(screen.getByTestId('quick-color-transparent')).toBeTruthy()
 
-    // 4. Spec v2 Section 7: Re-tapping active tool ('pen') opens detail panel; tapping again closes it!
+    // 4. Re-tapping active tool ('pen') opens detail panel; tapping again closes it
     const penBtn = screen.getByTestId('tool-pen')
     fireEvent.click(penBtn)
     expect(await screen.findByTestId('tool-detail-panel')).toBeTruthy()
     expect(screen.getByTestId('toggle-pixel-perfect').getAttribute('aria-checked')).toBe('true')
 
-    // Tap active pen again -> closes detail panel
     fireEvent.click(penBtn)
     await waitFor(() => {
       expect(screen.queryByTestId('tool-detail-panel')).toBeNull()
@@ -87,13 +96,12 @@ describe('Spec v2 Full React UI Workflow Integration Tests', () => {
       expect(screen.queryByTestId('tool-detail-panel')).toBeNull()
     })
 
-    // Tap 'shape' a second time -> opens Shape detail panel with single 'Fill' PixelCheckbox (Spec v2 Section 8)
+    // Tap 'shape' a second time -> opens Shape detail panel with 'Fill' PixelCheckbox
     fireEvent.click(shapeBtn)
     const fillCheckbox = await screen.findByTestId('shape-filled-checkbox')
     expect(fillCheckbox.getAttribute('aria-checked')).toBe('false')
     fireEvent.click(fillCheckbox)
     expect(fillCheckbox.getAttribute('aria-checked')).toBe('true')
-    // Close shape options by tapping shape again
     fireEvent.click(shapeBtn)
 
     // 5. Place shape in 2 steps via Draw button -> Floating Transform Bar -> Rotate 5° & 90° -> Commit -> Undo & Redo
@@ -120,13 +128,15 @@ describe('Spec v2 Full React UI Workflow Integration Tests', () => {
     })
     fireEvent.click(redoBtn)
 
-    // 6. Layers Sheet: Add layer & toggle Clipping PixelCheckbox
+    // 6. Layers Sheet: Add layer, open 3-dots menu & toggle Clipping PixelCheckbox
     fireEvent.click(screen.getByTestId('open-layers-btn'))
     fireEvent.click(await screen.findByTestId('add-layer-btn'))
     await waitFor(() => {
       expect(screen.getByTestId('open-layers-btn').textContent).toContain('2')
     })
-    const clipCheck = screen.getByTestId('toggle-clipping-btn')
+    const moreButtons = screen.getAllByLabelText('その他の操作')
+    fireEvent.click(moreButtons[0]!)
+    const clipCheck = await screen.findByTestId('toggle-clipping-btn')
     fireEvent.click(clipCheck)
     expect(clipCheck.getAttribute('aria-checked')).toBe('true')
     fireEvent.keyDown(window, { key: 'Escape' })
@@ -139,22 +149,29 @@ describe('Spec v2 Full React UI Workflow Integration Tests', () => {
     })
     fireEvent.keyDown(window, { key: 'Escape' })
 
-    // 8. Navigate back to Gallery -> open Artwork Detail -> check PNG export scales for 24x24
+    // 8. Navigate back to Gallery -> tapping artwork tile MUST open Project Viewing Screen (`/project/:id`)!
     fireEvent.click(screen.getByTestId('nav-gallery-btn'))
     const createdProj = (await db.projects.toArray())[0]!
-    fireEvent.click(await screen.findByTestId(`gallery-detail-${createdProj.id}`))
-    fireEvent.click(await screen.findByTestId('detail-export-png-btn'))
-    const scaleSelect = (await screen.findByTestId(
-      'export-scale-select'
-    )) as HTMLSelectElement
-    expect(scaleSelect.options[0].textContent).toContain('1x (24×24px)')
-    expect(scaleSelect.options.length).toBe(83)
+    fireEvent.click(await screen.findByTestId(`gallery-tile-${createdProj.id}`))
+
+    // Verify we are on Project Viewing Screen (`/project/:id`), NOT directly in Editor!
+    expect(await screen.findByTestId('detail-open-editor-btn')).toBeTruthy()
+    expect(screen.getByTestId('detail-download-png-btn')).toBeTruthy()
+    expect(screen.getByTestId('detail-share-png-btn')).toBeTruthy()
+
+    // Open PNG Export modal -> verify default ~2000px scale for 24x24 (83x = 1992x1992px) and max <= 4000px
+    fireEvent.click(screen.getByTestId('detail-download-png-btn'))
+    const outSize = await screen.findByTestId('export-output-size')
+    expect(outSize.textContent).toContain('1992 × 1992 px (83x)')
+    expect(screen.getByTestId('download-png-btn')).toBeTruthy()
+    expect(screen.getByTestId('share-png-btn')).toBeTruthy()
     fireEvent.keyDown(window, { key: 'Escape' })
 
-    // 9. Navigate to Settings -> Test UI Size Presets (Spec v2 Section 12), Languages (ko / en), and Dark/Light themes
+    // 9. Navigate to Settings -> Test Live UI Size Preview, Presets, Languages (ko / en), and Dark/Light themes
     fireEvent.click(screen.getByTestId('detail-back-btn'))
     fireEvent.click(await screen.findByTestId('gallery-settings-btn'))
 
+    expect(await screen.findByTestId('ui-size-live-preview')).toBeTruthy()
     const largePresetBtn = await screen.findByTestId('ui-preset-large')
     fireEvent.click(largePresetBtn)
     await waitFor(() => {

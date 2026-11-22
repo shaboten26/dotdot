@@ -46,6 +46,10 @@ describe('Phase 6 Integration: i18n Completeness, 50-Layer Compositing & Viewpor
         opacity: 100,
         blendMode: 'normal',
         clipping: false,
+        offsetX: 0,
+        offsetY: 0,
+        dataWidth: w,
+        dataHeight: h,
         data: buf,
       })
     }
@@ -66,7 +70,6 @@ describe('Phase 6 Integration: i18n Completeness, 50-Layer Compositing & Viewpor
     const afterPixel = screenToCanvasPixel(focusX, focusY, zoomed)
     expect(afterPixel).toEqual(beforePixel)
 
-    // Extreme off-screen pan gets clamped back so user never loses the canvas
     const clamped = clampViewportTransform(
       { scale: 8, panX: -99999, panY: 99999 },
       32,

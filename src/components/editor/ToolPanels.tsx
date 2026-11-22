@@ -1,15 +1,21 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type {
-  DitherPatternId,
-  FloatingShapeState,
-  ToolId,
-  ToolSettings,
+import {
+  TRANSPARENT_COLOR_INDEX,
+  type ActiveMoveSession,
+  type DitherPatternId,
+  type FloatingShapeState,
+  type GradientSteps,
+  type ToolId,
+  type ToolSettings,
 } from '../../types'
 import { ALL_DITHER_PATTERN_IDS } from '../../engine/dithering'
+import { resolveToolIconName } from '../../utils/toolIcon'
 import { PixelIcon, type PixelIconName } from '../common/PixelIcon'
 import { PixelCheckbox } from '../common/PixelCheckbox'
-import { DitherSwatch } from '../common/PixelThumbnail'
+import { PixelSlider } from '../common/PixelSlider'
+import { PixelSelect } from '../common/PixelSelect'
+import { DitherSwatch, getCheckerboardStyle } from '../common/PixelThumbnail'
 import { useI18n } from '../../i18n/I18nContext'
 import { useApp } from '../../state/AppContext'
 import type { TranslationKey } from '../../i18n/translations'
@@ -25,26 +31,31 @@ const DITHER_LABEL_KEYS: Record<DitherPatternId, TranslationKey> = {
   8: 'dither8',
 }
 
+const BRUSH_SIZE_PRESET_VALUES = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32] as const
+
 interface PaletteBarProps {
   colors: string[]
   selectedIndex: number
+  checkerDark?: boolean
   onSelectColor: (index: number) => void
   onOpenPaletteSheet: () => void
 }
 
 /**
- * Spec v2 Section 4-4:
- * Dotpict-inspired Palette Swatch Bar:
- * - Active color is marked NOT by color alone, but by a crisp double pixel border + top pixel pointer mark!
- * - Large Palette Edit button (>= 44x44px) at left.
+ * Flat Dotpict-inspired Palette Swatch Bar:
+ * - Fixed leftmost Transparent Color Slot (`TRANSPARENT_COLOR_INDEX = -1`) outside normal 256-color cap & scroll
+ * - Active color is marked by crisp double pixel border + pixel checkmark badge (zero shadows)
  */
 export function PaletteBar({
   colors,
   selectedIndex,
+  checkerDark = false,
   onSelectColor,
   onOpenPaletteSheet,
 }: PaletteBarProps) {
   const { t } = useI18n()
+  const isTransparentSelected = selectedIndex === TRANSPARENT_COLOR_INDEX
+
   return (
     <div
       style={{ gap: 'var(--ui-gap, 6px)' }}
@@ -67,9 +78,44 @@ export function PaletteBar({
         </span>
       </button>
 
+      {/* Fixed Leftmost Transparent Color Slot (excluded from 256-color cap & horizontal scroll) */}
+      <button
+        type="button"
+        onClick={() => onSelectColor(TRANSPARENT_COLOR_INDEX)}
+        title={`${t('transparentSlotLabel')} — ${t('transparentSlotHint')}`}
+        aria-label={t('transparentSlotLabel')}
+        aria-pressed={isTransparentSelected}
+        style={{
+          width: 'var(--swatch-size, 34px)',
+          height: 'var(--swatch-size, 34px)',
+          minWidth: 'var(--swatch-size, 34px)',
+          ...getCheckerboardStyle(checkerDark, 8),
+        }}
+        className={`relative shrink-0 cursor-pointer flex items-center justify-center transition-transform duration-75 ${
+          isTransparentSelected
+            ? 'border-2 border-[var(--border-strong)] outline-2 outline-offset-1 outline-[var(--accent-primary)] -translate-y-0.5'
+            : 'border-2 border-[var(--border-pixel)] opacity-90 hover:opacity-100'
+        }`}
+        data-testid="quick-color-transparent"
+      >
+        <PixelIcon
+          name="transparent"
+          size={16}
+          className="text-[var(--accent-rose)]"
+        />
+        {isTransparentSelected && (
+          <span
+            className="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 bg-[var(--bg-panel)] border border-[var(--border-strong)] flex items-center justify-center text-[var(--text-primary)]"
+            aria-hidden="true"
+          >
+            <PixelIcon name="check" size={10} />
+          </span>
+        )}
+      </button>
+
       <div
         style={{ gap: 'var(--ui-gap, 6px)' }}
-        className="flex items-center overflow-x-auto no-scrollbar py-1 flex-1"
+        className="flex items-center overflow-x-auto no-scrollbar py-1 flex-1 min-w-0"
       >
         {colors.map((hex, idx) => {
           const active = idx === selectedIndex
@@ -84,19 +130,18 @@ export function PaletteBar({
                 minWidth: 'var(--swatch-size, 34px)',
                 backgroundColor: hex,
               }}
-              className={`relative shrink-0 cursor-pointer ${
+              className={`relative shrink-0 cursor-pointer transition-transform duration-75 ${
                 active
-                  ? 'border-2 border-[var(--text-primary)] outline-2 outline-offset-1 outline-[var(--accent-primary)] -translate-y-0.5'
+                  ? 'border-2 border-[var(--border-strong)] outline-2 outline-offset-1 outline-[var(--accent-primary)] -translate-y-0.5'
                   : 'border-2 border-[var(--border-pixel)] opacity-90 hover:opacity-100'
               }`}
               aria-pressed={active}
               aria-label={`Color ${idx + 1} ${hex}`}
               data-testid={`quick-color-${idx}`}
             >
-              {/* Pixel check badge inside top-right corner so selection never relies on color alone */}
               {active && (
                 <span
-                  className="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 bg-[var(--bg-panel)] border border-[var(--border-pixel)] flex items-center justify-center text-[var(--text-primary)]"
+                  className="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 bg-[var(--bg-panel)] border border-[var(--border-strong)] flex items-center justify-center text-[var(--text-primary)]"
                   aria-hidden="true"
                 >
                   <PixelIcon name="check" size={10} />
@@ -112,6 +157,7 @@ export function PaletteBar({
 
 interface MultiRowToolGridProps {
   tool: ToolId
+  toolSettings: ToolSettings
   optionsOpen: boolean
   canUndo: boolean
   canRedo: boolean
@@ -124,14 +170,14 @@ interface MultiRowToolGridProps {
 }
 
 /**
- * Spec v2 Section 4-3, 7, 13:
- * - Organized 2-row grid of tools with pixel-art icon + short label underneath
- * - Minimum 44x44px hit targets
- * - Tap unselected tool -> selects tool (closes previous detail panel)
- * - Tap ALREADY selected tool -> toggles its detail settings panel open/closed!
+ * Multi-row Tool Grid dynamically reflects active sub-modes/shapes via `resolveToolIconName`:
+ * - Straight Line -> `line` icon; Bezier -> `bezier` icon
+ * - Rectangle -> `rect` icon; Circle/Ellipse -> `ellipse` icon
+ * - Select Wand / Rect / Ellipse -> `wand` / `rect` / `ellipse` icon
  */
 export function MultiRowToolGrid({
   tool,
+  toolSettings,
   optionsOpen,
   canUndo,
   canRedo,
@@ -150,13 +196,50 @@ export function MultiRowToolGrid({
     label: string
     hasDetail: boolean
   }> = [
-    { id: 'pen', icon: 'pen', label: t('toolPen'), hasDetail: true },
-    { id: 'eraser', icon: 'eraser', label: t('toolEraser'), hasDetail: true },
-    { id: 'fill', icon: 'fill', label: t('toolFill'), hasDetail: true },
-    { id: 'line', icon: 'bezier', label: t('toolLine'), hasDetail: true },
-    { id: 'shape', icon: 'rect', label: t('toolShape'), hasDetail: true },
-    { id: 'select', icon: 'select', label: t('toolSelect'), hasDetail: true },
-    { id: 'eyedropper', icon: 'eyedropper', label: t('toolEyedropper'), hasDetail: false },
+    {
+      id: 'pen',
+      icon: resolveToolIconName('pen', toolSettings),
+      label: t('toolPen'),
+      hasDetail: true,
+    },
+    {
+      id: 'eraser',
+      icon: resolveToolIconName('eraser', toolSettings),
+      label: t('toolEraser'),
+      hasDetail: true,
+    },
+    {
+      id: 'fill',
+      icon: resolveToolIconName('fill', toolSettings),
+      label: t('toolFill'),
+      hasDetail: true,
+    },
+    {
+      id: 'line',
+      icon: resolveToolIconName('line', toolSettings),
+      label:
+        toolSettings.lineType === 'bezier' ? t('lineBezier') : t('lineStraight'),
+      hasDetail: true,
+    },
+    {
+      id: 'shape',
+      icon: resolveToolIconName('shape', toolSettings),
+      label:
+        toolSettings.shapeType === 'ellipse' ? t('shapeEllipse') : t('shapeRect'),
+      hasDetail: true,
+    },
+    {
+      id: 'select',
+      icon: resolveToolIconName('select', toolSettings),
+      label: t('toolSelect'),
+      hasDetail: true,
+    },
+    {
+      id: 'eyedropper',
+      icon: resolveToolIconName('eyedropper', toolSettings),
+      label: t('toolEyedropper'),
+      hasDetail: true,
+    },
   ]
 
   return (
@@ -187,7 +270,6 @@ export function MultiRowToolGrid({
               {item.label}
             </span>
 
-            {/* Visual state marker (not relying on color alone): corner indicator showing re-tap opens/closes options */}
             {active && item.hasDetail && (
               <span
                 className="absolute top-0.5 right-0.5 w-3 h-3 flex items-center justify-center opacity-90"
@@ -202,7 +284,7 @@ export function MultiRowToolGrid({
 
             {item.id === 'select' && hasSelection && !active && (
               <span
-                className="absolute top-0.5 right-0.5 w-2.5 h-2.5 bg-[var(--accent-teal)] border border-[var(--border-pixel)]"
+                className="absolute top-0.5 right-0.5 w-2.5 h-2.5 bg-[var(--accent-teal)] border border-[var(--border-strong)]"
                 aria-hidden="true"
               />
             )}
@@ -210,7 +292,6 @@ export function MultiRowToolGrid({
         )
       })}
 
-      {/* Undo / Redo / Layers occupy the remaining 3 cells of the 2x5 grid with full >=44px hit areas */}
       <button
         type="button"
         onClick={onUndo}
@@ -288,11 +369,11 @@ export function FloatingTransformBar({
       className="px-2.5 py-2 bg-[var(--bg-panel)] border-t-2 border-[var(--border-pixel)] space-y-2 shrink-0"
       data-testid="transform-panel"
     >
-      <div className="flex items-center justify-between text-xs">
+      <div className="flex items-center justify-between text-xs gap-2">
         <span className="font-bold text-[var(--accent-primary)]">
           {t('transformTitle')} ({((floatingShape.rotationDeg % 360) + 360) % 360}°)
         </span>
-        <span className="text-[11px] text-[var(--text-secondary)] truncate max-w-[56%]">
+        <span className="text-[11px] text-[var(--text-secondary)] truncate">
           {t('transformHint')}
         </span>
       </div>
@@ -374,14 +455,8 @@ export function FloatingTransformBar({
           </button>
         </div>
 
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={onDiscard}
-            className="pixel-btn pixel-btn-danger min-h-[38px] px-2.5 text-xs font-bold"
-          >
-            {t('discardTransform')}
-          </button>
+        {/* Commit + Rightmost Discard */}
+        <div className="flex items-center gap-1.5 ml-auto">
           <button
             type="button"
             onClick={onCommit}
@@ -390,6 +465,124 @@ export function FloatingTransformBar({
           >
             <PixelIcon name="check" size={14} />
             {t('confirm')}
+          </button>
+          <button
+            type="button"
+            onClick={onDiscard}
+            className="pixel-btn pixel-btn-danger min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1"
+            data-testid="discard-shape-btn"
+          >
+            <PixelIcon name="close" size={14} />
+            {t('discardTransform')}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface ActiveMoveBarProps {
+  moveSession: ActiveMoveSession
+  onMoveStep: (dx: number, dy: number) => void
+  onCommit: () => void
+  onCancel: () => void
+}
+
+/**
+ * Unified Move Bar for Selection Move, Single-Layer Move, and Multi-Layer Batch Move!
+ */
+export function ActiveMoveBar({
+  moveSession,
+  onMoveStep,
+  onCommit,
+  onCancel,
+}: ActiveMoveBarProps) {
+  const { t } = useI18n()
+  const title =
+    moveSession.mode === 'multi-layer'
+      ? `${t('moveMultiLayersTitle')} (${moveSession.layerIds.length})`
+      : moveSession.mode === 'layer'
+        ? t('moveLayerTitle')
+        : t('moveSelectionTitle')
+
+  return (
+    <div
+      className="px-2.5 py-2 bg-[var(--bg-panel)] border-t-2 border-[var(--border-pixel)] space-y-2 shrink-0"
+      data-testid="active-move-bar"
+    >
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="font-bold text-[var(--accent-teal)] flex items-center gap-1.5">
+          <PixelIcon name="move" size={14} />
+          <span>
+            {title} ({moveSession.dx >= 0 ? '+' : ''}
+            {moveSession.dx}, {moveSession.dy >= 0 ? '+' : ''}
+            {moveSession.dy})
+          </span>
+        </span>
+        <span className="text-[11px] text-[var(--text-secondary)] truncate">
+          {t('moveDragHint')}
+        </span>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-1.5">
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onMoveStep(-1, 0)}
+            className="pixel-btn min-w-[38px] min-h-[38px] flex items-center justify-center"
+            aria-label="Move Left 1px"
+            data-testid="move-step-left"
+          >
+            <PixelIcon name="arrowLeft" size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={() => onMoveStep(0, -1)}
+            className="pixel-btn min-w-[38px] min-h-[38px] flex items-center justify-center"
+            aria-label="Move Up 1px"
+            data-testid="move-step-up"
+          >
+            <PixelIcon name="arrowUp" size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={() => onMoveStep(0, 1)}
+            className="pixel-btn min-w-[38px] min-h-[38px] flex items-center justify-center"
+            aria-label="Move Down 1px"
+            data-testid="move-step-down"
+          >
+            <PixelIcon name="arrowDown" size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={() => onMoveStep(1, 0)}
+            className="pixel-btn min-w-[38px] min-h-[38px] flex items-center justify-center"
+            aria-label="Move Right 1px"
+            data-testid="move-step-right"
+          >
+            <PixelIcon name="arrowRight" size={14} />
+          </button>
+        </div>
+
+        {/* Commit + Rightmost Cancel */}
+        <div className="flex items-center gap-1.5 ml-auto">
+          <button
+            type="button"
+            onClick={onCommit}
+            className="pixel-btn pixel-btn-teal min-h-[38px] px-3 text-xs font-bold flex items-center gap-1"
+            data-testid="commit-move-btn"
+          >
+            <PixelIcon name="check" size={14} />
+            {t('commitMoveBtn')}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="pixel-btn pixel-btn-danger min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1"
+            data-testid="cancel-move-btn"
+          >
+            <PixelIcon name="close" size={14} />
+            {t('cancelMoveBtn')}
           </button>
         </div>
       </div>
@@ -402,10 +595,13 @@ interface ToolDetailPopoverProps {
   onClose: () => void
   tool: ToolId
   settings: ToolSettings
-  activeHexColor: string
+  paletteColors: string[]
+  eyedropperDoubleTap: boolean
+  onToggleEyedropperDoubleTap: (next: boolean) => void
   hasSelection: boolean
   hasClipboard: boolean
   onChange: (patch: Partial<ToolSettings>) => void
+  onStartSelectionMove: () => void
   onNudgeSelection: (dx: number, dy: number) => void
   onApplyOutline: () => void
   onCut: () => void
@@ -416,21 +612,18 @@ interface ToolDetailPopoverProps {
   onClearSelection: () => void
 }
 
-/**
- * Spec v2 Section 7 & 8:
- * Compact floating tool detail popover positioned directly above the tool grid
- * so it NEVER shrinks the canvas layout, NEVER hides the active canvas cursor or Draw button,
- * and allows immediate drawing even while open!
- */
 export function ToolDetailPopover({
   open,
   onClose,
   tool,
   settings,
-  activeHexColor,
+  paletteColors,
+  eyedropperDoubleTap,
+  onToggleEyedropperDoubleTap,
   hasSelection,
   hasClipboard,
   onChange,
+  onStartSelectionMove,
   onNudgeSelection,
   onApplyOutline,
   onCut,
@@ -444,7 +637,10 @@ export function ToolDetailPopover({
   const { reducedMotion } = useApp()
   const [showOutlineConfig, setShowOutlineConfig] = useState(false)
 
-  if (tool === 'eyedropper' && !hasSelection) return null
+  const sizePresetOptions = BRUSH_SIZE_PRESET_VALUES.map((sz) => ({
+    value: sz,
+    label: `${sz}px`,
+  }))
 
   const renderDitherPicker = (
     current: DitherPatternId,
@@ -452,9 +648,12 @@ export function ToolDetailPopover({
   ) => (
     <div className="space-y-1">
       <div className="text-[11px] text-[var(--text-secondary)]">
-        {t('dithering')}: <strong className="text-[var(--text-primary)]">{t(DITHER_LABEL_KEYS[current])}</strong>
+        {t('dithering')}:{' '}
+        <strong className="text-[var(--text-primary)]">
+          {t(DITHER_LABEL_KEYS[current])}
+        </strong>
       </div>
-      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+      <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
         {ALL_DITHER_PATTERN_IDS.map((id) => (
           <button
             key={id}
@@ -464,11 +663,7 @@ export function ToolDetailPopover({
             className="flex flex-col items-center gap-0.5 shrink-0 cursor-pointer"
             data-testid={`dither-opt-${id}`}
           >
-            <DitherSwatch
-              patternId={id}
-              active={current === id}
-              color={activeHexColor}
-            />
+            <DitherSwatch patternId={id} active={current === id} />
             <span className="text-[10px] font-bold">{id}</span>
           </button>
         ))}
@@ -480,16 +675,17 @@ export function ToolDetailPopover({
     <AnimatePresence>
       {open && (
         <motion.div
-          initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 10 }}
+          initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8 }}
+          exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
           transition={{ duration: reducedMotion ? 0 : 0.12 }}
-          className="absolute bottom-full left-2 right-2 mb-1.5 z-30 pixel-panel p-3 space-y-2.5 max-h-[42dvh] overflow-y-auto"
+          className="absolute bottom-full left-2 right-2 mb-1.5 z-30 pixel-panel p-3 space-y-2.5 max-h-[46dvh] overflow-y-auto"
           data-testid="tool-detail-panel"
         >
           <div className="flex items-center justify-between pb-1 border-b border-[var(--border-subtle)]">
-            <span className="text-xs font-bold text-[var(--accent-primary)]">
-              {t('toolOptions')}
+            <span className="text-xs font-bold text-[var(--accent-primary)] flex items-center gap-1.5">
+              <PixelIcon name={resolveToolIconName(tool, settings)} size={14} />
+              <span>{t('toolOptions')}</span>
             </span>
             <button
               type="button"
@@ -503,22 +699,33 @@ export function ToolDetailPopover({
 
           {/* PEN */}
           {tool === 'pen' && (
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs">
-                    {t('size')}: <strong>{settings.penSize}px</strong>
-                  </span>
-                  <input
-                    type="range"
-                    min={1}
-                    max={32}
-                    value={settings.penSize}
-                    onChange={(e) => onChange({ penSize: Number(e.target.value) })}
-                    className="w-28 accent-[var(--accent-primary)]"
-                  />
-                </div>
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs shrink-0">
+                  {t('size')}: <strong>{settings.penSize}px</strong>
+                </span>
+                <PixelSlider
+                  min={1}
+                  max={32}
+                  value={settings.penSize}
+                  unit="px"
+                  ariaLabel={t('size')}
+                  onChange={(v) => onChange({ penSize: v })}
+                  className="flex-1 min-w-[140px]"
+                  testId="pen-size-slider"
+                />
+                <PixelSelect<number>
+                  value={settings.penSize}
+                  options={sizePresetOptions}
+                  onChange={(v) => onChange({ penSize: v })}
+                  ariaLabel={t('sizePresets')}
+                  align="right"
+                  className="w-20"
+                  testId="pen-size-preset-select"
+                />
+              </div>
 
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
@@ -545,14 +752,14 @@ export function ToolDetailPopover({
                     {t('shapeCircle')}
                   </button>
                 </div>
-              </div>
 
-              <PixelCheckbox
-                checked={settings.pixelPerfect}
-                onChange={(next) => onChange({ pixelPerfect: next })}
-                label={t('pixelPerfect')}
-                testId="toggle-pixel-perfect"
-              />
+                <PixelCheckbox
+                  checked={settings.pixelPerfect}
+                  onChange={(next) => onChange({ pixelPerfect: next })}
+                  label={t('pixelPerfect')}
+                  testId="toggle-pixel-perfect"
+                />
+              </div>
 
               {renderDitherPicker(settings.penDither, (id) =>
                 onChange({ penDither: id })
@@ -562,18 +769,28 @@ export function ToolDetailPopover({
 
           {/* ERASER */}
           {tool === 'eraser' && (
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="text-xs">
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs shrink-0">
                   {t('size')}: <strong>{settings.eraserSize}px</strong>
                 </span>
-                <input
-                  type="range"
+                <PixelSlider
                   min={1}
                   max={32}
                   value={settings.eraserSize}
-                  onChange={(e) => onChange({ eraserSize: Number(e.target.value) })}
-                  className="w-32 accent-[var(--accent-primary)]"
+                  unit="px"
+                  ariaLabel={t('size')}
+                  onChange={(v) => onChange({ eraserSize: v })}
+                  className="flex-1 min-w-[140px]"
+                  testId="eraser-size-slider"
+                />
+                <PixelSelect<number>
+                  value={settings.eraserSize}
+                  options={sizePresetOptions}
+                  onChange={(v) => onChange({ eraserSize: v })}
+                  ariaLabel={t('sizePresets')}
+                  align="right"
+                  className="w-20"
                 />
               </div>
 
@@ -606,9 +823,24 @@ export function ToolDetailPopover({
             </div>
           )}
 
+          {/* EYEDROPPER (Section 9: Double-tap activation toggle) */}
+          {tool === 'eyedropper' && (
+            <div className="space-y-1.5">
+              <PixelCheckbox
+                checked={eyedropperDoubleTap}
+                onChange={onToggleEyedropperDoubleTap}
+                label={t('eyedropperDoubleTapLabel')}
+                testId="toggle-eyedropper-doubletap"
+              />
+              <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                {t('eyedropperDoubleTapDesc')}
+              </p>
+            </div>
+          )}
+
           {/* FILL */}
           {tool === 'fill' && (
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-1">
                   <button
@@ -619,6 +851,7 @@ export function ToolDetailPopover({
                         ? 'pixel-btn pixel-btn-active'
                         : 'pixel-btn'
                     }`}
+                    data-testid="fill-mode-normal"
                   >
                     {t('fillNormal')}
                   </button>
@@ -636,30 +869,32 @@ export function ToolDetailPopover({
                   </button>
                 </div>
 
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => onChange({ fillConnectivity: 4 })}
-                    className={`min-h-[36px] px-2.5 text-xs font-bold ${
-                      settings.fillConnectivity === 4
-                        ? 'pixel-btn pixel-btn-active'
-                        : 'pixel-btn'
-                    }`}
-                  >
-                    {t('conn4')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onChange({ fillConnectivity: 8 })}
-                    className={`min-h-[36px] px-2.5 text-xs font-bold ${
-                      settings.fillConnectivity === 8
-                        ? 'pixel-btn pixel-btn-active'
-                        : 'pixel-btn'
-                    }`}
-                  >
-                    {t('conn8')}
-                  </button>
-                </div>
+                {settings.fillMode === 'normal' && (
+                  <div className="flex items-center gap-1" data-testid="fill-connectivity-group">
+                    <button
+                      type="button"
+                      onClick={() => onChange({ fillConnectivity: 4 })}
+                      className={`min-h-[36px] px-2.5 text-xs font-bold ${
+                        settings.fillConnectivity === 4
+                          ? 'pixel-btn pixel-btn-active'
+                          : 'pixel-btn'
+                      }`}
+                    >
+                      {t('conn4')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onChange({ fillConnectivity: 8 })}
+                      className={`min-h-[36px] px-2.5 text-xs font-bold ${
+                        settings.fillConnectivity === 8
+                          ? 'pixel-btn pixel-btn-active'
+                          : 'pixel-btn'
+                      }`}
+                    >
+                      {t('conn8')}
+                    </button>
+                  </div>
+                )}
               </div>
 
               {settings.fillMode === 'normal' ? (
@@ -667,40 +902,29 @@ export function ToolDetailPopover({
                   onChange({ fillDither: id })
                 )
               ) : (
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs text-[var(--text-secondary)]">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-[var(--text-secondary)] shrink-0">
                     {t('gradientSteps')}:
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => onChange({ gradientSteps: 4 })}
-                    className={`min-h-[36px] px-2.5 text-xs font-bold ${
-                      settings.gradientSteps === 4
-                        ? 'pixel-btn pixel-btn-active'
-                        : 'pixel-btn'
-                    }`}
-                  >
-                    {t('grad4Steps')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onChange({ gradientSteps: 8 })}
-                    className={`min-h-[36px] px-2.5 text-xs font-bold ${
-                      settings.gradientSteps === 8
-                        ? 'pixel-btn pixel-btn-active'
-                        : 'pixel-btn'
-                    }`}
-                  >
-                    {t('grad8Steps')}
-                  </button>
+                  <PixelSelect<GradientSteps>
+                    value={settings.gradientSteps}
+                    options={[
+                      { value: 4, label: t('grad4Steps') },
+                      { value: 8, label: t('grad8Steps') },
+                    ]}
+                    onChange={(v) => onChange({ gradientSteps: v })}
+                    ariaLabel={t('gradientSteps')}
+                    className="flex-1 max-w-[220px]"
+                    testId="gradient-steps-select"
+                  />
                 </div>
               )}
             </div>
           )}
 
-          {/* LINE & PIXEL-PERFECT BEZIER */}
+          {/* LINE & PIXEL-PERFECT BEZIER (Section 2: Line size/shape/dither/pixelPerfect) */}
           {tool === 'line' && (
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-1">
                   <button
@@ -711,6 +935,7 @@ export function ToolDetailPopover({
                         ? 'pixel-btn pixel-btn-active'
                         : 'pixel-btn'
                     }`}
+                    data-testid="line-type-straight"
                   >
                     <PixelIcon name="line" size={14} />
                     {t('lineStraight')}
@@ -739,6 +964,7 @@ export function ToolDetailPopover({
                         ? 'pixel-btn pixel-btn-active'
                         : 'pixel-btn'
                     }`}
+                    data-testid="line-shape-square"
                   >
                     <PixelIcon name="rect" size={14} />
                     {t('shapeSquare')}
@@ -751,6 +977,7 @@ export function ToolDetailPopover({
                         ? 'pixel-btn pixel-btn-active'
                         : 'pixel-btn'
                     }`}
+                    data-testid="line-shape-circle"
                   >
                     <PixelIcon name="ellipse" size={14} />
                     {t('shapeCircle')}
@@ -758,18 +985,28 @@ export function ToolDetailPopover({
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                <span className="text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs shrink-0">
                   {t('size')}: <strong>{settings.lineSize}px</strong>
                 </span>
-                <input
-                  type="range"
+                <PixelSlider
                   min={1}
                   max={32}
                   value={settings.lineSize}
-                  onChange={(e) => onChange({ lineSize: Number(e.target.value) })}
-                  className="flex-1 accent-[var(--accent-primary)]"
+                  unit="px"
+                  ariaLabel={t('size')}
+                  onChange={(v) => onChange({ lineSize: v })}
+                  className="flex-1 min-w-[140px]"
+                  testId="line-size-slider"
                 />
+                {settings.lineType === 'line' && (
+                  <PixelCheckbox
+                    checked={settings.linePixelPerfect}
+                    onChange={(next) => onChange({ linePixelPerfect: next })}
+                    label={t('pixelPerfect')}
+                    testId="toggle-line-pixel-perfect"
+                  />
+                )}
               </div>
 
               {renderDitherPicker(settings.lineDither, (id) =>
@@ -778,9 +1015,9 @@ export function ToolDetailPopover({
             </div>
           )}
 
-          {/* SHAPE (Spec v2 Section 8: Single 'Fill' PixelCheckbox + 'Fixed Ratio' PixelCheckbox) */}
+          {/* SHAPE */}
           {tool === 'shape' && (
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-1">
                   <button
@@ -791,6 +1028,7 @@ export function ToolDetailPopover({
                         ? 'pixel-btn pixel-btn-active'
                         : 'pixel-btn'
                     }`}
+                    data-testid="shape-type-rect"
                   >
                     <PixelIcon name="rect" size={14} />
                     {t('shapeRect')}
@@ -803,6 +1041,7 @@ export function ToolDetailPopover({
                         ? 'pixel-btn pixel-btn-active'
                         : 'pixel-btn'
                     }`}
+                    data-testid="shape-type-ellipse"
                   >
                     <PixelIcon name="ellipse" size={14} />
                     {t('shapeEllipse')}
@@ -827,16 +1066,17 @@ export function ToolDetailPopover({
 
               {!settings.shapeFilled && (
                 <div className="flex items-center gap-2">
-                  <span className="text-xs">
+                  <span className="text-xs shrink-0">
                     {t('strokeWidth')}: <strong>{settings.shapeSize}px</strong>
                   </span>
-                  <input
-                    type="range"
+                  <PixelSlider
                     min={1}
                     max={16}
                     value={settings.shapeSize}
-                    onChange={(e) => onChange({ shapeSize: Number(e.target.value) })}
-                    className="w-28 accent-[var(--accent-primary)]"
+                    unit="px"
+                    ariaLabel={t('strokeWidth')}
+                    onChange={(v) => onChange({ shapeSize: v })}
+                    className="flex-1"
                   />
                 </div>
               )}
@@ -849,7 +1089,7 @@ export function ToolDetailPopover({
 
           {/* SELECT & ACTIVE SELECTION ACTIONS */}
           {(tool === 'select' || hasSelection) && (
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {tool === 'select' && (
                 <div className="flex flex-wrap items-center justify-between gap-1.5">
                   <div className="flex items-center gap-1">
@@ -873,6 +1113,7 @@ export function ToolDetailPopover({
                           ? 'pixel-btn pixel-btn-active'
                           : 'pixel-btn'
                       }`}
+                      data-testid="select-type-rect"
                     >
                       <PixelIcon name="rect" size={14} />
                       {t('selectRect')}
@@ -920,7 +1161,21 @@ export function ToolDetailPopover({
                 </div>
               )}
 
-              <div className="flex flex-wrap items-center gap-1">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={!hasSelection}
+                  onClick={() => {
+                    onStartSelectionMove()
+                    onClose()
+                  }}
+                  className="pixel-btn pixel-btn-teal min-h-[40px] px-3 text-xs font-bold flex items-center gap-1.5"
+                  data-testid="start-selection-move-btn"
+                >
+                  <PixelIcon name="move" size={14} />
+                  <span>{t('startMoveBtn')}</span>
+                </button>
+
                 <button
                   type="button"
                   disabled={!hasSelection}
@@ -957,14 +1212,16 @@ export function ToolDetailPopover({
                 >
                   <PixelIcon name="arrowRight" size={14} />
                 </button>
+              </div>
 
+              <div className="flex flex-wrap items-center gap-1">
                 <button
                   type="button"
                   disabled={!hasSelection}
                   onClick={onCut}
                   className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
                 >
-                  <PixelIcon name="cut" size={14} />
+                  <PixelIcon name="cut" size={13} />
                   {t('cut')}
                 </button>
                 <button
@@ -973,7 +1230,7 @@ export function ToolDetailPopover({
                   onClick={onCopy}
                   className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
                 >
-                  <PixelIcon name="copy" size={14} />
+                  <PixelIcon name="copy" size={13} />
                   {t('copy')}
                 </button>
                 <button
@@ -982,17 +1239,16 @@ export function ToolDetailPopover({
                   onClick={onPaste}
                   className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
                 >
-                  <PixelIcon name="paste" size={14} />
+                  <PixelIcon name="paste" size={13} />
                   {t('paste')}
                 </button>
-
                 <button
                   type="button"
                   disabled={!hasSelection}
                   onClick={() => onFlipSelection('horizontal')}
                   className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
                 >
-                  <PixelIcon name="flipH" size={14} />
+                  <PixelIcon name="flipH" size={13} />
                   {t('flipH')}
                 </button>
                 <button
@@ -1001,21 +1257,20 @@ export function ToolDetailPopover({
                   onClick={() => onFlipSelection('vertical')}
                   className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
                 >
-                  <PixelIcon name="flipV" size={14} />
+                  <PixelIcon name="flipV" size={13} />
                   {t('flipV')}
                 </button>
-
                 <button
                   type="button"
                   disabled={!hasSelection}
                   onClick={() => setShowOutlineConfig((v) => !v)}
-                  className={`min-h-[36px] px-2.5 text-xs font-bold ${
+                  className={`min-h-[36px] px-2 text-xs font-bold ${
                     showOutlineConfig ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
                   }`}
+                  data-testid="toggle-outline-config-btn"
                 >
                   {t('outline')}
                 </button>
-
                 <button
                   type="button"
                   onClick={onInvertSelection}
@@ -1027,52 +1282,107 @@ export function ToolDetailPopover({
                   type="button"
                   disabled={!hasSelection}
                   onClick={onClearSelection}
-                  className="pixel-btn pixel-btn-danger min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
+                  className="pixel-btn pixel-btn-danger min-h-[36px] px-2 text-xs font-bold ml-auto"
                 >
-                  <PixelIcon name="trash" size={14} />
                   {t('clearSelection')}
                 </button>
               </div>
 
+              {/* Section 3: Selection Outline Color RESTRICTED strictly to current project palette swatches! */}
               {showOutlineConfig && hasSelection && (
-                <div className="p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-2">
+                <div
+                  className="p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-2"
+                  data-testid="outline-config-box"
+                >
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <PixelCheckbox
-                      checked={settings.outlineMode === 'pixelPerfect'}
-                      onChange={(next) =>
-                        onChange({ outlineMode: next ? 'pixelPerfect' : 'normal' })
-                      }
-                      label={t('outlinePP')}
-                    />
-
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs">
-                        {t('size')}: <strong>{settings.outlineSize}px</strong>
-                      </span>
-                      <input
-                        type="range"
-                        min={1}
-                        max={8}
-                        value={settings.outlineSize}
-                        onChange={(e) =>
-                          onChange({ outlineSize: Number(e.target.value) })
-                        }
-                        className="w-20 accent-[var(--accent-primary)]"
-                      />
-                      <input
-                        type="color"
-                        value={settings.outlineColor}
-                        onChange={(e) => onChange({ outlineColor: e.target.value })}
-                        className="w-7 h-7 border-2 border-[var(--border-pixel)] cursor-pointer bg-transparent"
-                      />
+                    <div className="flex items-center gap-1">
                       <button
                         type="button"
-                        onClick={onApplyOutline}
-                        className="pixel-btn pixel-btn-teal min-h-[34px] px-3 text-xs font-bold"
+                        onClick={() => onChange({ outlineMode: 'normal' })}
+                        className={`min-h-[32px] px-2 text-xs font-bold ${
+                          settings.outlineMode === 'normal'
+                            ? 'pixel-btn pixel-btn-active'
+                            : 'pixel-btn'
+                        }`}
                       >
-                        {t('outlineApply')}
+                        {t('outlineNormal')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onChange({ outlineMode: 'pixelPerfect' })}
+                        className={`min-h-[32px] px-2 text-xs font-bold ${
+                          settings.outlineMode === 'pixelPerfect'
+                            ? 'pixel-btn pixel-btn-active'
+                            : 'pixel-btn'
+                        }`}
+                      >
+                        {t('outlinePP')}
                       </button>
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={onApplyOutline}
+                      className="pixel-btn pixel-btn-teal min-h-[34px] px-3 text-xs font-bold"
+                      data-testid="apply-outline-btn"
+                    >
+                      {t('outlineApply')}
+                    </button>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-[11px] font-bold text-[var(--text-secondary)] block">
+                      {t('outlineColor')}
+                    </span>
+                    <div
+                      className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1"
+                      data-testid="outline-palette-swatches"
+                    >
+                      {paletteColors.map((hex, idx) => {
+                        const active =
+                          settings.outlineColor.toUpperCase() === hex.toUpperCase()
+                        return (
+                          <button
+                            key={`outline-${idx}-${hex}`}
+                            type="button"
+                            onClick={() => onChange({ outlineColor: hex })}
+                            style={{ backgroundColor: hex }}
+                            aria-pressed={active}
+                            aria-label={`${t('outlineColor')} ${idx + 1} ${hex}`}
+                            className={`relative w-7 h-7 shrink-0 cursor-pointer ${
+                              active
+                                ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)]'
+                                : 'border-2 border-[var(--border-pixel)]'
+                            }`}
+                            data-testid={`outline-swatch-${idx}`}
+                          >
+                            {active && (
+                              <span
+                                className="absolute -top-1 -right-1 w-3 h-3 bg-[var(--bg-panel)] border border-[var(--border-strong)] flex items-center justify-center text-[var(--text-primary)]"
+                                aria-hidden="true"
+                              >
+                                <PixelIcon name="check" size={8} />
+                              </span>
+                            )}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs shrink-0">
+                      {t('size')}: <strong>{settings.outlineSize}px</strong>
+                    </span>
+                    <PixelSlider
+                      min={1}
+                      max={8}
+                      value={settings.outlineSize}
+                      unit="px"
+                      ariaLabel={t('size')}
+                      onChange={(v) => onChange({ outlineSize: v })}
+                      className="flex-1"
+                    />
                   </div>
                 </div>
               )}

@@ -10,12 +10,14 @@ export interface LineDrawOptions {
   size: number
   shape: BrushShape
   dither: DitherPatternId
+  pixelPerfect?: boolean
   color: RGBA
   selectionMask?: Uint8Array | null
 }
 
 /**
  * Draw straight pixel line from p0 to p1 using shared brush & dithering engine.
+ * Supports out-of-canvas start/end coordinates and optional Pixel-Perfect L-corner filtering (Section 2 & 12).
  */
 export function drawLine(
   buffer: Uint8ClampedArray,
@@ -23,7 +25,8 @@ export function drawLine(
   p1: Point,
   options: LineDrawOptions
 ): void {
-  const pts = bresenhamLinePoints(p0.x, p0.y, p1.x, p1.y)
+  const rawPts = bresenhamLinePoints(p0.x, p0.y, p1.x, p1.y)
+  const pts = options.pixelPerfect ? filterPixelPerfectPoints(rawPts) : rawPts
   stampPoints(buffer, pts, options)
 }
 
@@ -235,10 +238,17 @@ function plotShapePixel(
   if (!shouldDrawWithDither(dither, x, y)) return
 
   const bIdx = pIdx * 4
-  buffer[bIdx] = color.r
-  buffer[bIdx + 1] = color.g
-  buffer[bIdx + 2] = color.b
-  buffer[bIdx + 3] = color.a
+  if (color.a === 0) {
+    buffer[bIdx] = 0
+    buffer[bIdx + 1] = 0
+    buffer[bIdx + 2] = 0
+    buffer[bIdx + 3] = 0
+  } else {
+    buffer[bIdx] = color.r
+    buffer[bIdx + 1] = color.g
+    buffer[bIdx + 2] = color.b
+    buffer[bIdx + 3] = color.a
+  }
 }
 
 /**

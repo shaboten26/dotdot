@@ -1,23 +1,35 @@
-import { ViewTransition, useEffect, useState } from 'react'
+import { ViewTransition, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router'
 import type { LayerRuntime, ProjectRecord } from '../types'
 import {
   db,
   deleteProjectById,
+  duplicateProjectById,
   loadProjectFull,
   saveProjectFull,
 } from '../db/database'
+import { exportCompositePngBytes } from '../engine/compositor'
 import { useApp } from '../state/AppContext'
 import { useI18n } from '../i18n/I18nContext'
 import { ConfirmDialog } from '../components/common/Modal'
 import { PixelIcon, PixelLoadingIndicator } from '../components/common/PixelIcon'
-import { PixelThumbnail } from '../components/common/PixelThumbnail'
-import { ExportPngModal } from '../components/editor/EditorModals'
+import { getCheckerboardStyle } from '../components/common/PixelThumbnail'
+import {
+  ExportPngModal,
+  type ExportPngInitialIntent,
+} from '../components/editor/EditorModals'
 import {
   useViewTransitionNavigate,
   VTButtonLink,
 } from '../components/common/ViewTransitionNav'
 
+/**
+ * Project Viewing Screen (`/project/:id`):
+ * - Section 10: Official destination when tapping an artwork in the Gallery!
+ * - Only tapping "編集する / Edit" transitions into `/editor/:id`.
+ * - Sections 14 & 15: Independent "ダウンロード" and "共有" PNG buttons with custom pixel icons.
+ * - Large, crisp, long-pressable `<img>` preview (preserves `<ViewTransition name={\`artwork-${id}\`}>`).
+ */
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
   const {
@@ -35,6 +47,8 @@ export function ProjectDetailPage() {
   const [editingName, setEditingName] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
   const [exportOpen, setExportOpen] = useState(false)
+  const [exportIntent, setExportIntent] =
+    useState<ExportPngInitialIntent>('download')
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
 
   useEffect(() => {
@@ -55,6 +69,35 @@ export function ProjectDetailPage() {
       cancelled = true
     }
   }, [id])
+
+  // Generate crisp preview PNG URL (long-press friendly on iOS Safari / PWA)
+  const previewPngBytes = useMemo(() => {
+    if (!project || layers.length === 0) return project?.thumbnailPng ?? null
+    const previewScale = Math.max(
+      1,
+      Math.min(16, Math.floor(1024 / Math.max(1, project.width, project.height)))
+    )
+    return exportCompositePngBytes(
+      layers,
+      project.width,
+      project.height,
+      previewScale
+    ).png
+  }, [project, layers])
+
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  useEffect(() => {
+    if (!previewPngBytes) {
+      setPreviewUrl(null)
+      return
+    }
+    const blob = new Blob([previewPngBytes.slice().buffer], { type: 'image/png' })
+    const url = URL.createObjectURL(blob)
+    setPreviewUrl(url)
+    return () => {
+      URL.revokeObjectURL(url)
+    }
+  }, [previewPngBytes])
 
   const formatDateTime = (ms: number) => {
     try {
@@ -88,6 +131,15 @@ export function ProjectDetailPage() {
     if (!project) return
     await updateSettings({ activeProjectId: project.id })
     vtNavigate(`/editor/${project.id}`)
+  }
+
+  const handleDuplicateArtwork = async () => {
+    if (!project) return
+    const duplicated = await duplicateProjectById(project.id, undefined, db)
+    if (!duplicated) return
+    await refreshProjects()
+    showToast(t('toastDuplicatedArtwork'), 'success')
+    vtNavigate(`/project/${duplicated.id}`)
   }
 
   const handleDeleteArtwork = async () => {
@@ -153,39 +205,75 @@ export function ProjectDetailPage() {
         </header>
 
         <main className="flex-1 max-w-2xl w-full mx-auto p-4 pb-12 pb-safe space-y-5">
-          {/* Large Pixel-Art Preview */}
-          <div className="aspect-square max-h-[50dvh] w-full mx-auto pixel-card overflow-hidden">
+          {/* Large Pixel-Art Preview (Long-pressable native <img> + ViewTransition) */}
+          <div
+            style={getCheckerboardStyle(settings.checkerboardDark, 12)}
+            className="aspect-square max-h-[50dvh] w-full mx-auto pixel-card overflow-hidden flex items-center justify-center p-4"
+          >
             <ViewTransition name={`artwork-${project.id}`}>
-              <PixelThumbnail
-                pngBytes={project.thumbnailPng}
-                alt={project.name}
-                checkerDark={settings.checkerboardDark}
-                className="w-full h-full p-4"
-              />
+              {previewUrl ? (
+                <img
+                  src={previewUrl}
+                  alt={project.name}
+                  draggable={false}
+                  className="max-w-full max-h-full object-contain pixelated"
+                  data-testid="detail-preview-img"
+                />
+              ) : (
+                <div className="w-full h-full" />
+              )}
             </ViewTransition>
           </div>
 
-          {/* Large Primary Actions (>= 48px) */}
-          <div className="grid grid-cols-2 gap-3">
+          {/* Primary Edit Button + Independent Download & Share Buttons + Duplicate */}
+          <div className="space-y-2.5">
             <button
               type="button"
               onClick={() => void handleOpenInEditor()}
-              className="min-h-[50px] px-4 pixel-btn pixel-btn-active text-sm font-bold flex items-center justify-center gap-2"
+              className="w-full min-h-[52px] px-4 pixel-btn pixel-btn-active text-sm font-bold flex items-center justify-center gap-2"
               data-testid="detail-open-editor-btn"
             >
               <PixelIcon name="pen" size={18} />
               <span>{t('openInEditor')}</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => setExportOpen(true)}
-              className="min-h-[50px] px-4 pixel-btn pixel-btn-teal text-sm font-bold flex items-center justify-center gap-2"
-              data-testid="detail-export-png-btn"
-            >
-              <PixelIcon name="download" size={18} />
-              <span>{t('exportPng')}</span>
-            </button>
+            <div className="grid grid-cols-3 gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setExportIntent('download')
+                  setExportOpen(true)
+                }}
+                className="min-h-[48px] px-2.5 pixel-btn pixel-btn-teal text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
+                data-testid="detail-download-png-btn"
+              >
+                <PixelIcon name="download" size={16} />
+                <span>{t('downloadPngBtn')}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setExportIntent('share')
+                  setExportOpen(true)
+                }}
+                className="min-h-[48px] px-2.5 pixel-btn pixel-btn-teal text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
+                data-testid="detail-share-png-btn"
+              >
+                <PixelIcon name="share" size={16} />
+                <span>{t('sharePngBtn')}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleDuplicateArtwork()}
+                className="min-h-[48px] px-2.5 pixel-btn text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
+                data-testid="detail-duplicate-btn"
+              >
+                <PixelIcon name="copy" size={16} />
+                <span>{t('duplicate')}</span>
+              </button>
+            </div>
           </div>
 
           {/* Metadata Card */}
@@ -199,12 +287,18 @@ export function ProjectDetailPage() {
                   type="text"
                   autoFocus
                   value={nameDraft}
+                  onFocus={(e) => e.currentTarget.select()}
                   onChange={(e) => setNameDraft(e.target.value)}
                   onBlur={() => void handleSaveRename()}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') void handleSaveRename()
+                    else if (e.key === 'Escape') {
+                      setEditingName(false)
+                      setNameDraft(project.name)
+                    }
                   }}
                   className="min-h-[34px] px-2.5 text-sm font-bold pixel-input text-right"
+                  data-testid="detail-rename-input"
                 />
               ) : (
                 <button
@@ -267,8 +361,10 @@ export function ProjectDetailPage() {
           height={project.height}
           layers={layers}
           checkerDark={settings.checkerboardDark}
+          initialIntent={exportIntent}
           onClose={() => setExportOpen(false)}
-          onExported={() => showToast(t('toastExportedPng'), 'success')}
+          onDownloaded={() => showToast(t('toastExportedPng'), 'success')}
+          onShared={() => showToast(t('toastSharedPng'), 'success')}
         />
 
         <ConfirmDialog

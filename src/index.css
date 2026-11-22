@@ -6,9 +6,9 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * Retro, calm, low-saturation pixel-art studio palette (Spec v2 Section 1 & 2)
- * Light theme: warm stone / parchment gray-white (no harsh pure #ffffff glare)
- * Dark theme: muted plum-charcoal / dusk slate (no harsh pure #000000 void)
+ * Retro, calm, low-saturation FLAT pixel-art studio palette (Zero shadows!)
+ * Light theme: warm stone / parchment gray-white
+ * Dark theme: muted plum-charcoal / dusk slate
  * Accents: muted lavender-purple, calm sage-teal, dusty rose
  */
 :root {
@@ -19,21 +19,23 @@
   --text-primary: #2b2733;
   --text-secondary: #686274;
   --border-pixel: #4a4358;
-  --border-subtle: #c8c1b4;
-  --shadow-pixel: #aba394;
+  --border-subtle: #c4bdb0;
+  --border-strong: #2b2733;
 
   --accent-primary: #6b5ea8;
   --accent-primary-hover: #5b4e96;
   --accent-primary-fg: #f8f6f2;
-  --accent-primary-shadow: #3f356b;
+  --accent-primary-border: #3f356b;
 
   --accent-teal: #46827a;
+  --accent-teal-hover: #3b7069;
   --accent-teal-fg: #f6faf9;
-  --accent-teal-shadow: #2b544f;
+  --accent-teal-border: #2b544f;
 
   --accent-rose: #b05d72;
+  --accent-rose-hover: #994c60;
   --accent-rose-fg: #fcf6f8;
-  --accent-rose-shadow: #703545;
+  --accent-rose-border: #703545;
 
   --canvas-well: #d7d2c6;
 
@@ -56,23 +58,33 @@
   --text-primary: #eae6f2;
   --text-secondary: #a29ab5;
   --border-pixel: #696082;
-  --border-subtle: #3b354d;
-  --shadow-pixel: #0e0c14;
+  --border-subtle: #3d3750;
+  --border-strong: #eae6f2;
 
   --accent-primary: #8476c4;
   --accent-primary-hover: #9386cf;
   --accent-primary-fg: #16131f;
-  --accent-primary-shadow: #443a73;
+  --accent-primary-border: #c5bced;
 
   --accent-teal: #579b91;
+  --accent-teal-hover: #67aba1;
   --accent-teal-fg: #111f1d;
-  --accent-teal-shadow: #2c5750;
+  --accent-teal-border: #9bd6cd;
 
   --accent-rose: #c47388;
+  --accent-rose-hover: #d18397;
   --accent-rose-fg: #1e1115;
-  --accent-rose-shadow: #6b3645;
+  --accent-rose-border: #eeb4c3;
 
   --canvas-well: #13111a;
+}
+
+/* Global Zero-Shadow Rule (Section 3: completely forbid box-shadow, drop-shadow, text-shadow) */
+*,
+*::before,
+*::after {
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html,
@@ -93,23 +105,42 @@ body,
   overscroll-behavior: none;
 }
 
+/*
+ * Section 1: iOS 27 PWA Top Progressive Blur Workaround
+ * Reference: https://qiita.com/na-trium-144/items/0add98a80ca2391e3f17
+ * WebKit checks for a top fixed element > 10px with an opaque background-color;
+ * clipping that background to empty text keeps 0 visible pixels while disabling the unwanted blur
+ * and matching the current theme's top header surface color!
+ */
+.ios-pwa-top-blur-fix {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 11px;
+  z-index: 2147483647;
+  pointer-events: none;
+  background-color: var(--bg-surface);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
 /* Crisp pixel art rendering */
 .pixelated {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
 
-/* Retro Pixel UI Surfaces & Buttons (sharp corners, 2px pixel borders, offset shadow, press sink) */
+/* Flat Retro Pixel UI Surfaces & Buttons (sharp corners, 2px borders, zero shadows) */
 .pixel-card {
   background-color: var(--bg-surface);
   border: 2px solid var(--border-pixel);
-  box-shadow: 3px 3px 0px var(--shadow-pixel);
 }
 
 .pixel-panel {
   background-color: var(--bg-panel);
   border: 2px solid var(--border-pixel);
-  box-shadow: 4px 4px 0px var(--shadow-pixel);
 }
 
 .pixel-btn {
@@ -117,33 +148,31 @@ body,
   background-color: var(--bg-elevated);
   color: var(--text-primary);
   border: 2px solid var(--border-pixel);
-  box-shadow: 2px 2px 0px var(--shadow-pixel);
-  transition: transform 60ms steps(2), box-shadow 60ms steps(2), background-color 80ms linear;
+  transition: transform 50ms steps(2), background-color 80ms linear, border-color 80ms linear;
   cursor: pointer;
 }
 
 .pixel-btn:hover:not(:disabled) {
   background-color: var(--bg-panel);
+  border-color: var(--border-strong);
 }
 
 .pixel-btn:active:not(:disabled),
 .pixel-btn[data-pressed="true"] {
-  transform: translate(2px, 2px);
-  box-shadow: 0px 0px 0px var(--shadow-pixel);
+  transform: translateY(1px);
+  background-color: var(--bg-app);
 }
 
 .pixel-btn:disabled {
   opacity: 0.42;
   cursor: not-allowed;
   border-style: dashed;
-  box-shadow: none;
 }
 
 .pixel-btn-active {
   background-color: var(--accent-primary);
   color: var(--accent-primary-fg);
-  border: 2px solid var(--border-pixel);
-  box-shadow: 2px 2px 0px var(--accent-primary-shadow);
+  border: 2px solid var(--border-strong);
 }
 
 .pixel-btn-active:hover:not(:disabled) {
@@ -153,38 +182,52 @@ body,
 .pixel-btn-teal {
   background-color: var(--accent-teal);
   color: var(--accent-teal-fg);
-  border: 2px solid var(--border-pixel);
-  box-shadow: 2px 2px 0px var(--accent-teal-shadow);
+  border: 2px solid var(--border-strong);
+}
+
+.pixel-btn-teal:hover:not(:disabled) {
+  background-color: var(--accent-teal-hover);
 }
 
 .pixel-btn-danger {
   background-color: var(--accent-rose);
   color: var(--accent-rose-fg);
-  border: 2px solid var(--border-pixel);
-  box-shadow: 2px 2px 0px var(--accent-rose-shadow);
+  border: 2px solid var(--border-strong);
 }
 
-/* Bold Retro Draw / Push Button (Spec v2 Section 6) */
+.pixel-btn-danger:hover:not(:disabled) {
+  background-color: var(--accent-rose-hover);
+}
+
+/* Flat Bold Retro Draw / Push Button (Zero shadow: state shown via thick double-frame & press position) */
 .pixel-draw-btn {
   background-color: var(--accent-primary);
   color: var(--accent-primary-fg);
-  border: 3px solid var(--border-pixel);
-  box-shadow: 0px 5px 0px var(--accent-primary-shadow), 4px 5px 0px var(--shadow-pixel);
-  transition: transform 50ms steps(2), box-shadow 50ms steps(2);
+  border: 3px solid var(--border-strong);
+  border-bottom-width: 5px;
+  transition: transform 50ms steps(2), border-bottom-width 50ms steps(2), background-color 80ms linear;
   cursor: pointer;
 }
 
 .pixel-draw-btn:active,
 .pixel-draw-btn[data-holding="true"] {
-  transform: translateY(4px);
-  box-shadow: 0px 1px 0px var(--accent-primary-shadow), 1px 1px 0px var(--shadow-pixel);
+  transform: translateY(2px);
+  border-bottom-width: 3px;
+  background-color: var(--accent-primary-hover);
 }
 
 .pixel-draw-btn-confirm {
   background-color: var(--accent-teal);
   color: var(--accent-teal-fg);
-  border: 3px solid var(--border-pixel);
-  box-shadow: 0px 5px 0px var(--accent-teal-shadow), 4px 5px 0px var(--shadow-pixel);
+  border: 3px solid var(--border-strong);
+  border-bottom-width: 5px;
+}
+
+.pixel-draw-btn-confirm:active,
+.pixel-draw-btn-confirm[data-holding="true"] {
+  transform: translateY(2px);
+  border-bottom-width: 3px;
+  background-color: var(--accent-teal-hover);
 }
 
 .pixel-input {
@@ -196,7 +239,8 @@ body,
 
 .pixel-input:focus {
   border-color: var(--accent-primary);
-  box-shadow: 2px 2px 0px var(--accent-primary-shadow);
+  outline: 2px solid var(--accent-primary);
+  outline-offset: -4px;
 }
 
 /* Hide scrollbars cleanly on horizontal strips while keeping scroll functional */
@@ -223,6 +267,17 @@ body,
 
 .pr-safe {
   padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* Smooth shared-element View Transition timing (Section 20-1) */
+::view-transition-group(*) {
+  animation-duration: 240ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(*),
+::view-transition-new(*) {
+  image-rendering: pixelated;
 }
 
 @media (prefers-reduced-motion: reduce) {

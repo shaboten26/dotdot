@@ -1,7 +1,15 @@
 import React, { useRef } from 'react'
-import type { FloatingShapeState, ToolId, ToolSettings } from '../../types'
+import { motion } from 'motion/react'
+import type {
+  ActiveMoveSession,
+  FloatingShapeState,
+  ToolId,
+  ToolSettings,
+} from '../../types'
 import type { MultiStepPhase } from '../../state/useEditorController'
 import { PixelIcon } from '../common/PixelIcon'
+import { getCheckerboardStyle } from '../common/PixelThumbnail'
+import { useApp } from '../../state/AppContext'
 import { useI18n } from '../../i18n/I18nContext'
 
 interface DrawButtonProps {
@@ -9,19 +17,23 @@ interface DrawButtonProps {
   toolSettings: ToolSettings
   stepPhase: MultiStepPhase
   floatingShape: FloatingShapeState | null
+  moveSession: ActiveMoveSession | null
   isContinuousDrawing: boolean
   activeHexColor: string
+  isTransparentColor?: boolean
+  checkerDark?: boolean
   onBeginDraw: () => void
   onEndDraw: () => void
   onCancelStep: () => void
   onCommitShape: () => void
+  onCommitMove: () => void
 }
 
 /**
- * Spec v2 Section 6:
- * Large, unmistakable Retro Pixel Draw / Push Button at the bottom of the Editor:
- * - Approx 14-16% of viewport height by default (customizable via --draw-btn-vh)
- * - Crisp pixel border + offset shadow + physical press sink (`data-holding`)
+ * Large, Flat Retro Pixel Draw / Push Button at the bottom of the Editor:
+ * - Zero shadows; press state shown via flat border shift & color feedback
+ * - Shows transparent checkerboard + slash icon when Transparent Color Slot is active
+ * - Cancel / Abort button is placed on the RIGHTMOST edge with spacing to prevent mis-taps
  * - Respects iPhone & Android safe-area-inset-bottom
  */
 export function DrawButton({
@@ -29,14 +41,19 @@ export function DrawButton({
   toolSettings,
   stepPhase,
   floatingShape,
+  moveSession,
   isContinuousDrawing,
   activeHexColor,
+  isTransparentColor = false,
+  checkerDark = false,
   onBeginDraw,
   onEndDraw,
   onCancelStep,
   onCommitShape,
+  onCommitMove,
 }: DrawButtonProps) {
   const { t } = useI18n()
+  const { reducedMotion } = useApp()
   const heldPointerIdRef = useRef<number | null>(null)
 
   const handlePointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
@@ -49,6 +66,10 @@ export function DrawButton({
       }
     }
     heldPointerIdRef.current = e.pointerId
+    if (moveSession) {
+      onCommitMove()
+      return
+    }
     if (floatingShape) {
       onCommitShape()
       return
@@ -66,7 +87,9 @@ export function DrawButton({
   let primaryLabel = t('draw')
   let subHint = ''
 
-  if (floatingShape) {
+  if (moveSession) {
+    primaryLabel = t('commitMoveBtn')
+  } else if (floatingShape) {
     primaryLabel = t('commitTransform')
   } else if (tool === 'pen' || tool === 'eraser') {
     subHint = t('drawHold')
@@ -91,27 +114,19 @@ export function DrawButton({
       stepPhase.kind === 'select-end' ? t('drawEndPoint') : t('drawStartPoint')
   }
 
-  const showAbort = stepPhase.kind !== 'idle' || floatingShape !== null
+  const isConfirmState = floatingShape !== null || moveSession !== null
+  const showAbort =
+    stepPhase.kind !== 'idle' || floatingShape !== null || moveSession !== null
+  const showTransparentSwatch = tool === 'eraser' || isTransparentColor
 
   return (
     <div
-      style={{ gap: 'var(--ui-gap, 6px)' }}
+      style={{ gap: 'max(8px, var(--ui-gap, 6px))' }}
       className="flex items-stretch px-2.5 pt-1.5 pb-3 pb-safe bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] shrink-0"
     >
-      {showAbort && (
-        <button
-          type="button"
-          onClick={onCancelStep}
-          className="pixel-btn pixel-btn-danger min-w-[68px] px-3 flex flex-col items-center justify-center gap-1 text-xs font-bold shrink-0"
-          data-testid="cancel-step-btn"
-        >
-          <PixelIcon name="close" size={18} />
-          <span>{floatingShape ? t('discardTransform') : t('cancelStep')}</span>
-        </button>
-      )}
-
-      <button
+      <motion.button
         type="button"
+        whileTap={reducedMotion ? undefined : { y: 2 }}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
@@ -121,19 +136,27 @@ export function DrawButton({
           height: 'clamp(64px, var(--draw-btn-vh, 15dvh), 136px)',
         }}
         className={`flex-1 w-full flex items-center justify-center gap-3 select-none ${
-          floatingShape ? 'pixel-draw-btn pixel-draw-btn-confirm' : 'pixel-draw-btn'
+          isConfirmState ? 'pixel-draw-btn pixel-draw-btn-confirm' : 'pixel-draw-btn'
         }`}
         data-testid="draw-button"
       >
-        {floatingShape ? (
-          <PixelIcon name="check" size={24} />
+        {isConfirmState ? (
+          <PixelIcon name="check" size={22} />
+        ) : showTransparentSwatch ? (
+          <span
+            className="w-5 h-5 border-2 border-[var(--accent-primary-fg)] shrink-0 flex items-center justify-center"
+            style={getCheckerboardStyle(checkerDark, 6)}
+          >
+            <PixelIcon
+              name="transparent"
+              size={13}
+              className="text-[var(--accent-rose)]"
+            />
+          </span>
         ) : (
           <span
             className="w-5 h-5 border-2 border-[var(--accent-primary-fg)] shrink-0"
-            style={{
-              backgroundColor:
-                tool === 'eraser' ? 'var(--bg-surface)' : activeHexColor,
-            }}
+            style={{ backgroundColor: activeHexColor }}
           />
         )}
         <div className="flex flex-col items-center leading-tight">
@@ -141,10 +164,29 @@ export function DrawButton({
             {primaryLabel}
           </span>
           {subHint && (
-            <span className="text-[11px] opacity-85 mt-0.5">{subHint}</span>
+            <span className="text-[11px] opacity-90 mt-0.5">{subHint}</span>
           )}
         </div>
-      </button>
+      </motion.button>
+
+      {/* Cancel / Discard uncommitted preview placed at RIGHTMOST edge */}
+      {showAbort && (
+        <button
+          type="button"
+          onClick={onCancelStep}
+          className="pixel-btn pixel-btn-danger min-w-[74px] px-3 flex flex-col items-center justify-center gap-1 text-xs font-bold shrink-0"
+          data-testid="cancel-step-btn"
+        >
+          <PixelIcon name="close" size={16} />
+          <span>
+            {moveSession
+              ? t('cancelMoveBtn')
+              : floatingShape
+                ? t('discardTransform')
+                : t('cancelStep')}
+          </span>
+        </button>
+      )}
     </div>
   )
 }

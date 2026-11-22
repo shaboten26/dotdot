@@ -53,6 +53,27 @@ export type BlendMode =
   | 'add'
   | 'difference'
 
+/**
+ * Special color slot index representing the dedicated Transparent drawing color (`RGBA(0,0,0,0)`).
+ * Displayed at the leftmost position of the palette bar/sheet and NOT counted toward the 256-color limit.
+ */
+export const TRANSPARENT_COLOR_INDEX = -1
+
+/**
+ * 9-directional anchor for Canvas Resize (Section 5).
+ * Default selection is `'center'`.
+ */
+export type ResizeAnchor =
+  | 'top-left'
+  | 'top-center'
+  | 'top-right'
+  | 'middle-left'
+  | 'center'
+  | 'middle-right'
+  | 'bottom-left'
+  | 'bottom-center'
+  | 'bottom-right'
+
 export interface LayerMeta {
   id: string
   name: string
@@ -60,10 +81,34 @@ export interface LayerMeta {
   opacity: number // 0 - 100
   blendMode: BlendMode
   clipping: boolean
+  /**
+   * Non-destructive layer origin & backing buffer dimensions relative to canvas top-left (0,0).
+   * When omitted on legacy v1 projects, defaults to offsetX=0, offsetY=0, dataWidth=project.width, dataHeight=project.height.
+   */
+  offsetX?: number
+  offsetY?: number
+  dataWidth?: number
+  dataHeight?: number
 }
 
 export interface LayerRuntime extends LayerMeta {
-  data: Uint8ClampedArray // length = width * height * 4
+  /** Layer origin X in canvas coordinates (can be negative or >= canvasWidth) */
+  offsetX: number
+  offsetY: number
+  /** Width of `data` backing buffer in pixels */
+  dataWidth: number
+  /** Height of `data` backing buffer in pixels */
+  dataHeight: number
+  /** RGBA byte buffer of length `dataWidth * dataHeight * 4` */
+  data: Uint8ClampedArray
+}
+
+export interface CanvasSizePreset {
+  id: string
+  name: string
+  width: number
+  height: number
+  builtIn?: boolean
 }
 
 export interface PaletteData {
@@ -89,7 +134,7 @@ export interface ProjectRecord {
   layers: LayerMeta[]
   activeLayerId: string
   palette: ProjectPalette
-  selectedColorIndex: number
+  selectedColorIndex: number // -1 for Transparent slot, or 0..colors.length-1
   order: number
   thumbnailPng?: Uint8Array
   createdAt: number
@@ -100,7 +145,11 @@ export interface LayerPixelRecord {
   key: string // `${projectId}:${layerId}`
   projectId: string
   layerId: string
-  data: Uint8Array // raw RGBA bytes
+  data: Uint8Array // raw RGBA bytes (length = dataWidth * dataHeight * 4)
+  offsetX?: number
+  offsetY?: number
+  dataWidth?: number
+  dataHeight?: number
 }
 
 export type ThemeMode = 'light' | 'dark' | 'system'
@@ -129,6 +178,16 @@ export interface UiSizeConfig {
   drawButtonVh: number
 }
 
+/**
+ * Backup reminder timestamps stored in IndexedDB (`AppSettings.backupMeta`, Section 11).
+ */
+export interface BackupReminderMeta {
+  lastExportAt: number | null
+  lastNotifiedAt: number | null
+  nextNotifyAt: number | null
+  firstProjectCreatedAt: number | null
+}
+
 export interface AppSettings {
   id: 'app-settings'
   theme: ThemeMode
@@ -138,9 +197,15 @@ export interface AppSettings {
   checkerboardDark: boolean
   confirmDestructive: boolean
   soundEnabled: boolean
+  /** Section 9: Double-tap same canvas pixel to pick color & restore previous tool (default ON) */
+  eyedropperDoubleTap: boolean
   activeProjectId: string | null
   gallerySortMode: 'manual' | 'newest' | 'oldest' | 'updated' | 'name'
   uiSize: UiSizeConfig
+  /** User-created custom canvas size presets (persisted in IndexedDB & Environment Pack) */
+  customCanvasPresets: CanvasSizePreset[]
+  /** Backup reminder tracking metadata (Section 11) */
+  backupMeta: BackupReminderMeta
 }
 
 export interface FloatingShapeState {
@@ -150,6 +215,34 @@ export interface FloatingShapeState {
   offsetX: number
   offsetY: number
   rotationDeg: number
+}
+
+/**
+ * Interactive Move Session shared by Selection Move (Section 7), Single-Layer Move, and Multi-Layer Batch Move (Section 8).
+ * Moving never destroys off-canvas pixels!
+ */
+export interface ActiveMoveSession {
+  mode: 'selection' | 'layer' | 'multi-layer'
+  layerId: string
+  /** Target layer IDs when moving one or multiple layers (`mode === 'layer' | 'multi-layer'`) */
+  layerIds: string[]
+  /** Initial world offsets per layer ID before drag started */
+  initialLayerOffsets: Record<string, { offsetX: number; offsetY: number }>
+  dx: number
+  dy: number
+  /** For 'selection': initial canvas-space selection mask before drag */
+  initialMask: Uint8Array | null
+  /** For 'selection': active layer with originally selected pixels cleared */
+  clearedLayer: LayerRuntime | null
+  /** For 'selection': extracted RGBA buffer of selected pixels */
+  extractedBuffer: Uint8ClampedArray | null
+  extractedWidth: number
+  extractedHeight: number
+  extractedOriginX: number
+  extractedOriginY: number
+  /** For 'layer' / 'multi-layer': bounding box origin & dimensions of moving layer(s) before drag */
+  initialLayerOffsetX: number
+  initialLayerOffsetY: number
 }
 
 export interface ClipboardBuffer {
@@ -178,6 +271,7 @@ export interface ToolSettings {
   lineSize: number
   lineShape: BrushShape
   lineDither: DitherPatternId
+  linePixelPerfect: boolean
 
   shapeType: ShapeSubTool
   shapeFilled: boolean
@@ -197,6 +291,26 @@ export interface PixelPatch {
   indices: Uint32Array
   before: Uint8Array
   after: Uint8Array
+  beforeGeometry?: {
+    offsetX: number
+    offsetY: number
+    dataWidth: number
+    dataHeight: number
+  }
+  afterGeometry?: {
+    offsetX: number
+    offsetY: number
+    dataWidth: number
+    dataHeight: number
+  }
+}
+
+export interface LayerOffsetTransition {
+  layerId: string
+  beforeOffsetX: number
+  beforeOffsetY: number
+  afterOffsetX: number
+  afterOffsetY: number
 }
 
 export interface CanvasSnapshot {
@@ -213,8 +327,10 @@ export interface HistoryEntry {
   id: string
   label: string
   timestamp: number
-  kind: 'pixel-diff' | 'structure' | 'selection' | 'palette'
+  kind: 'pixel-diff' | 'structure' | 'selection' | 'palette' | 'layer-offset'
   pixelPatches?: PixelPatch[]
+  layerOffsetChange?: LayerOffsetTransition
+  layerOffsetChanges?: LayerOffsetTransition[]
   beforeStructure?: CanvasSnapshot
   afterStructure?: CanvasSnapshot
   beforeSelection?: Uint8Array | null
@@ -235,14 +351,28 @@ export interface SerializedPixelPatch {
   indices: Uint32Array
   before: Uint8Array
   after: Uint8Array
+  beforeGeometry?: {
+    offsetX: number
+    offsetY: number
+    dataWidth: number
+    dataHeight: number
+  }
+  afterGeometry?: {
+    offsetX: number
+    offsetY: number
+    dataWidth: number
+    dataHeight: number
+  }
 }
 
 export interface SerializedHistoryEntry {
   id: string
   label: string
   timestamp: number
-  kind: 'pixel-diff' | 'structure' | 'selection' | 'palette'
+  kind: 'pixel-diff' | 'structure' | 'selection' | 'palette' | 'layer-offset'
   pixelPatches?: SerializedPixelPatch[]
+  layerOffsetChange?: LayerOffsetTransition
+  layerOffsetChanges?: LayerOffsetTransition[]
   beforeStructure?: CanvasSnapshot
   afterStructure?: CanvasSnapshot
   beforeSelection?: Uint8Array | null

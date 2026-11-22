@@ -8,6 +8,7 @@ import { useEditorController } from '../state/useEditorController'
 import { InteractiveViewport } from '../components/editor/InteractiveViewport'
 import { DrawButton } from '../components/editor/DrawButton'
 import {
+  ActiveMoveBar,
   FloatingTransformBar,
   MultiRowToolGrid,
   PaletteBar,
@@ -43,7 +44,6 @@ export function EditorPage() {
 
   const targetProjectId = routeProjectId ?? settings.activeProjectId
 
-  // Spec v2 Section 7: Tool detail settings start CLOSED by default
   const [optionsOpen, setOptionsOpen] = useState(false)
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -67,9 +67,14 @@ export function EditorPage() {
     onSaveError: () => {
       showToast(t('toastSaveError'), 'error')
     },
+    onColorPicked: (isTransparent) => {
+      showToast(
+        isTransparent ? t('toastTransparentPicked') : t('toastColorPicked'),
+        'info'
+      )
+    },
   })
 
-  // Keep activeProjectId synced when opened via /editor/:id
   useEffect(() => {
     if (routeProjectId && settings.activeProjectId !== routeProjectId) {
       void updateSettings({ activeProjectId: routeProjectId })
@@ -82,16 +87,9 @@ export function EditorPage() {
     }
   }, [editor.project?.id, editor.project?.name])
 
-  /**
-   * Spec v2 Section 7:
-   * 1. First tap on an unselected tool -> selects that tool & closes any previous detail panel.
-   * 2. Second tap on the ALREADY selected tool -> opens its detail panel.
-   * 3. Another tap while open -> closes its detail panel.
-   */
   const handleTapTool = (clickedTool: ToolId) => {
     setHeaderMenuOpen(false)
     if (clickedTool === editor.tool) {
-      if (clickedTool === 'eyedropper' && !editor.hasSelection) return
       setOptionsOpen((prev) => !prev)
     } else {
       setOptionsOpen(false)
@@ -119,10 +117,17 @@ export function EditorPage() {
         editor.redo()
         return
       }
-      if (e.key === 'Enter' && editor.floatingShape) {
-        e.preventDefault()
-        editor.commitFloatingShape()
-        return
+      if (e.key === 'Enter') {
+        if (editor.moveSession) {
+          e.preventDefault()
+          editor.commitActiveMove()
+          return
+        }
+        if (editor.floatingShape) {
+          e.preventDefault()
+          editor.commitFloatingShape()
+          return
+        }
       }
       if (e.key === 'Escape') {
         setOptionsOpen(false)
@@ -173,7 +178,7 @@ export function EditorPage() {
   return (
     <ViewTransition>
       <div className="h-dvh w-full flex flex-col bg-[var(--bg-app)] overflow-hidden select-none pl-safe pr-safe">
-        {/* Spec v2 Section 5-2: Minimal Focused Header (Back to Gallery, Artwork Title, Compact Menu) */}
+        {/* Minimal Focused Header */}
         <header className="relative flex items-center justify-between gap-2 px-2.5 py-1.5 pt-safe bg-[var(--bg-surface)] border-b-2 border-[var(--border-pixel)] shrink-0 z-30">
           <VTButtonLink
             to="/"
@@ -192,6 +197,7 @@ export function EditorPage() {
                 type="text"
                 autoFocus
                 value={titleDraft}
+                onFocus={(e) => e.currentTarget.select()}
                 onChange={(e) => setTitleDraft(e.target.value)}
                 onBlur={() => {
                   setEditingTitle(false)
@@ -201,6 +207,9 @@ export function EditorPage() {
                   if (e.key === 'Enter') {
                     setEditingTitle(false)
                     editor.renameProject(titleDraft)
+                  } else if (e.key === 'Escape') {
+                    setEditingTitle(false)
+                    setTitleDraft(editor.project!.name)
                   }
                 }}
                 className="w-40 sm:w-56 min-h-[36px] px-2 text-xs font-bold text-center pixel-input"
@@ -220,7 +229,7 @@ export function EditorPage() {
             )}
           </div>
 
-          {/* Compact Auxiliary Menu Button (>= 44x44px) */}
+          {/* Compact Auxiliary Menu Button */}
           <button
             type="button"
             onClick={() => setHeaderMenuOpen((v) => !v)}
@@ -234,7 +243,7 @@ export function EditorPage() {
             <PixelIcon name="menu" size={18} />
           </button>
 
-          {/* Auxiliary Menu Popover (keeps secondary actions out of the main canvas bar) */}
+          {/* Auxiliary Menu Popover */}
           <AnimatePresence>
             {headerMenuOpen && (
               <>
@@ -306,6 +315,7 @@ export function EditorPage() {
                       vtNavigate(`/project/${editor.project!.id}`)
                     }}
                     className="w-full min-h-[42px] px-3 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
+                    data-testid="editor-view-detail-btn"
                   >
                     <PixelIcon name="gallery" size={16} />
                     <span>{t('artworkDetail')}</span>
@@ -329,7 +339,7 @@ export function EditorPage() {
           </AnimatePresence>
         </header>
 
-        {/* 1. Large Expansive Canvas (Centerpiece of the Editor: Spec v2 Section 4-1 & 4-2) */}
+        {/* 1. Large Expansive Canvas */}
         <main
           className="flex-1 min-h-0 relative"
           onPointerDown={() => {
@@ -337,6 +347,7 @@ export function EditorPage() {
           }}
         >
           <InteractiveViewport
+            projectId={editor.project.id}
             width={editor.project.width}
             height={editor.project.height}
             compositedBuffer={editor.compositedBuffer}
@@ -345,27 +356,40 @@ export function EditorPage() {
             cursor={editor.cursor}
             stepPhase={editor.stepPhase}
             floatingShape={editor.floatingShape}
+            moveSession={editor.moveSession}
+            hasSelection={editor.hasSelection}
             selectionMask={editor.selectionMask}
             showGrid={settings.showGrid}
             checkerboardDark={settings.checkerboardDark}
             activeHexColor={editor.activeHexColor}
+            isTransparentColor={editor.isTransparentColorSelected}
+            eyedropperDoubleTap={settings.eyedropperDoubleTap}
             fitTrigger={fitTrigger}
             onMoveCursor={editor.moveCursorTo}
-            onBeginDrawAt={(pt) => {
+            onBeginDrawAt={(pt, allowOutOfBounds) => {
               if (optionsOpen) setOptionsOpen(false)
-              editor.beginDrawAction(pt)
+              editor.beginDrawAction(pt, allowOutOfBounds)
             }}
             onEndDraw={editor.endDrawAction}
+            onAbortStroke={editor.abortStrokePreview}
+            onDoubleTapEyedropper={(pt) => {
+              editor.pickColorAtCanvasPoint(pt, { restorePreviousTool: true })
+            }}
             onMoveFloatingShape={editor.moveFloatingShape}
+            onUpdateMoveOffset={editor.updateActiveMoveOffset}
           />
         </main>
 
-        {/* Dotpict-Inspired Lower Dock:
-            2. Multi-row Tool Grid (with floating detail popover right above it)
-            3. Palette Swatch Bar
-            4. Massive Retro Draw Button */}
+        {/* Lower Dock */}
         <section className="relative flex flex-col shrink-0 z-20">
-          {editor.floatingShape ? (
+          {editor.moveSession ? (
+            <ActiveMoveBar
+              moveSession={editor.moveSession}
+              onMoveStep={editor.updateActiveMoveOffset}
+              onCommit={editor.commitActiveMove}
+              onCancel={editor.cancelActiveMove}
+            />
+          ) : editor.floatingShape ? (
             <FloatingTransformBar
               floatingShape={editor.floatingShape}
               onRotate={editor.rotateFloatingShape}
@@ -379,12 +403,19 @@ export function EditorPage() {
               onClose={() => setOptionsOpen(false)}
               tool={editor.tool}
               settings={editor.toolSettings}
-              activeHexColor={editor.activeHexColor}
+              paletteColors={editor.palette.colors}
+              eyedropperDoubleTap={settings.eyedropperDoubleTap}
+              onToggleEyedropperDoubleTap={(next) =>
+                void updateSettings({ eyedropperDoubleTap: next })
+              }
               hasSelection={editor.hasSelection}
               hasClipboard={editor.clipboard !== null}
               onChange={(patch) =>
                 editor.setToolSettings((prev) => ({ ...prev, ...patch }))
               }
+              onStartSelectionMove={() => {
+                editor.startSelectionMove()
+              }}
               onNudgeSelection={editor.nudgeSelection}
               onApplyOutline={editor.outlineSelection}
               onCut={() => {
@@ -402,9 +433,10 @@ export function EditorPage() {
             />
           )}
 
-          {/* 2. Multi-row Tool Grid (icon + short label, tap active tool again to toggle options) */}
+          {/* 2. Multi-row Tool Grid */}
           <MultiRowToolGrid
             tool={editor.tool}
+            toolSettings={editor.toolSettings}
             optionsOpen={optionsOpen}
             canUndo={editor.canUndo}
             canRedo={editor.canRedo}
@@ -419,10 +451,11 @@ export function EditorPage() {
             onRedo={editor.redo}
           />
 
-          {/* 3. Palette Swatch Strip */}
+          {/* 3. Palette Swatch Strip (with fixed leftmost Transparent Slot) */}
           <PaletteBar
             colors={editor.palette.colors}
             selectedIndex={editor.selectedColorIndex}
+            checkerDark={settings.checkerboardDark}
             onSelectColor={editor.setSelectedColorIndex}
             onOpenPaletteSheet={() => {
               setOptionsOpen(false)
@@ -436,12 +469,16 @@ export function EditorPage() {
             toolSettings={editor.toolSettings}
             stepPhase={editor.stepPhase}
             floatingShape={editor.floatingShape}
+            moveSession={editor.moveSession}
             isContinuousDrawing={editor.isContinuousDrawing}
             activeHexColor={editor.activeHexColor}
+            isTransparentColor={editor.isTransparentColorSelected}
+            checkerDark={settings.checkerboardDark}
             onBeginDraw={() => editor.beginDrawAction()}
             onEndDraw={editor.endDrawAction}
             onCancelStep={editor.cancelMultiStep}
             onCommitShape={editor.commitFloatingShape}
+            onCommitMove={editor.commitActiveMove}
           />
         </section>
 
@@ -451,6 +488,7 @@ export function EditorPage() {
           onClose={() => setPaletteOpen(false)}
           palette={editor.palette}
           selectedIndex={editor.selectedColorIndex}
+          checkerDark={settings.checkerboardDark}
           libraryPalettes={palettes}
           onSelectColor={editor.setSelectedColorIndex}
           onUpdatePalette={editor.updateProjectPalette}
@@ -463,9 +501,31 @@ export function EditorPage() {
         <LayerSheet
           open={layersOpen}
           onClose={() => setLayersOpen(false)}
+          canvasWidth={editor.project.width}
+          canvasHeight={editor.project.height}
+          checkerDark={settings.checkerboardDark}
           layers={editor.layers}
           activeLayerId={editor.activeLayerId}
+          selectedLayerIds={editor.selectedLayerIds}
           onSelectLayer={editor.setActiveLayerId}
+          onToggleLayerSelected={editor.toggleLayerSelected}
+          onClearLayerSelection={editor.clearLayerSelection}
+          onStartMultiLayerMoveOnCanvas={() => {
+            editor.startMultiLayerMove()
+          }}
+          onDuplicateSelectedLayers={() => {
+            if (!editor.duplicateSelectedLayers()) {
+              showToast(t('layerMaxReached'), 'warning')
+            }
+          }}
+          onMergeSelectedLayers={() => {
+            editor.mergeSelectedLayers()
+          }}
+          onDeleteSelectedLayers={() => {
+            if (!editor.deleteSelectedLayers()) {
+              showToast(t('cannotDeleteLastLayer'), 'warning')
+            }
+          }}
           onAddLayer={() => {
             if (!editor.addNewLayer()) {
               showToast(t('layerMaxReached'), 'warning')
@@ -491,13 +551,16 @@ export function EditorPage() {
             }
           }}
           onFlipLayer={editor.flipLayer}
-          onMoveLayer={editor.translateLayer}
+          onStartLayerMoveOnCanvas={(id) => {
+            editor.startLayerMove(id)
+          }}
         />
 
         <CanvasResizeModal
           open={resizeOpen}
           currentWidth={editor.project.width}
           currentHeight={editor.project.height}
+          layers={editor.layers}
           onClose={() => setResizeOpen(false)}
           onResize={editor.resizeCanvas}
         />
@@ -510,7 +573,8 @@ export function EditorPage() {
           layers={editor.layers}
           checkerDark={settings.checkerboardDark}
           onClose={() => setExportOpen(false)}
-          onExported={() => showToast(t('toastExportedPng'), 'success')}
+          onDownloaded={() => showToast(t('toastExportedPng'), 'success')}
+          onShared={() => showToast(t('toastSharedPng'), 'success')}
         />
       </div>
     </ViewTransition>

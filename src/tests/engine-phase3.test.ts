@@ -22,7 +22,9 @@ import {
   compositeLayers,
   decodePngBasic,
   exportCompositePngBytes,
+  getDefaultExportScale,
   getExportScaleOptions,
+  MAX_EXPORT_DIMENSION,
   MAX_LAYERS,
   mergeTwoLayers,
 } from '../engine/compositor'
@@ -42,7 +44,6 @@ const WHITE = { r: 255, g: 255, b: 255, a: 255 }
 describe('Shape Transform (90deg / 5deg Nearest-Neighbor & Non-destructive)', () => {
   it('rotates 90deg losslessly and 5deg increments from original buffer with zero anti-aliasing', () => {
     const src = createPixelBuffer(4, 2)
-    // Fill top row RED, bottom row BLUE
     for (let x = 0; x < 4; x++) {
       setPixel(src, 4, 2, x, 0, RED)
       setPixel(src, 4, 2, x, 1, BLUE)
@@ -61,7 +62,6 @@ describe('Shape Transform (90deg / 5deg Nearest-Neighbor & Non-destructive)', ()
     expect(rot90.width).toBe(2)
     expect(rot90.height).toBe(4)
 
-    // Rotate 5 degrees 72 times (= 360 deg) -> must equal original exactly with zero cumulative drift!
     const rot360 = rasterizeTransformedShape({
       ...baseState,
       rotationDeg: 5 * 72,
@@ -70,7 +70,6 @@ describe('Shape Transform (90deg / 5deg Nearest-Neighbor & Non-destructive)', ()
     expect(rot360.height).toBe(2)
     expect(Array.from(rot360.buffer)).toEqual(Array.from(src))
 
-    // Arbitrary 15-degree rotation must only contain original palette colors or transparent (zero intermediate colors)
     const rot15 = rasterizeTransformedShape({
       ...baseState,
       rotationDeg: 15,
@@ -85,15 +84,14 @@ describe('Shape Transform (90deg / 5deg Nearest-Neighbor & Non-destructive)', ()
       }
     }
 
-    // Non-destructive preview keeps underlying layer intact until committed
     const layer = createPixelBuffer(12, 12)
     setPixel(layer, 12, 12, 5, 5, GREEN)
     const preview = compositeFloatingShapeOntoLayer(layer, 12, 12, {
       ...baseState,
       rotationDeg: 0,
     })
-    expect(getPixel(layer, 12, 12, 5, 5)).toEqual(GREEN) // original untouched
-    expect(getPixel(preview, 12, 12, 5, 5)).toEqual(BLUE) // preview overlaid
+    expect(getPixel(layer, 12, 12, 5, 5)).toEqual(GREEN)
+    expect(getPixel(preview, 12, 12, 5, 5)).toEqual(BLUE)
   })
 })
 
@@ -101,7 +99,7 @@ describe('Selection Engine (Wand 4/8, Rect, Ellipse, Union, Invert, Move, Flip, 
   it('supports 4/8 wand, rect, ellipse, additive union, and inversion', () => {
     const buf = createPixelBuffer(8, 8)
     setPixel(buf, 8, 8, 1, 1, RED)
-    setPixel(buf, 8, 8, 2, 2, RED) // diagonal neighbor
+    setPixel(buf, 8, 8, 2, 2, RED)
 
     const wand4 = selectSameColor(buf, 8, 8, 1, 1, 4)
     const wand8 = selectSameColor(buf, 8, 8, 1, 1, 8)
@@ -155,9 +153,6 @@ describe('Selection Engine (Wand 4/8, Rect, Ellipse, Union, Invert, Move, Flip, 
     const normalOutline = computeSelectionOutlineMask(singlePixelMask, w, h, 'normal', 1)
     const ppOutline = computeSelectionOutlineMask(singlePixelMask, w, h, 'pixelPerfect', 1)
 
-    // Around a single center pixel (3,3):
-    // Normal (8-neighborhood) paints all 8 surrounding neighbors (including 4 corners)
-    // Pixel-perfect (4-neighborhood) paints only the 4 cardinal neighbors (no diagonal corner blocks)
     expect(normalOutline.reduce((a, b) => a + b, 0)).toBe(8)
     expect(ppOutline.reduce((a, b) => a + b, 0)).toBe(4)
 
@@ -169,16 +164,14 @@ describe('Selection Engine (Wand 4/8, Rect, Ellipse, Union, Invert, Move, Flip, 
   })
 })
 
-describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Export', () => {
-  it('supports up to 50 layers constant, blend modes, opacity, clipping, and merge down', () => {
+describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Export (4000px Max / ~2000px Default)', () => {
+  it('supports up to 50 layers constant, blend modes, opacity, clipping, and non-destructive merge down', () => {
     expect(MAX_LAYERS).toBe(50)
 
     const baseData = createPixelBuffer(4, 4)
-    // Base only covers (1,1) with WHITE
     setPixel(baseData, 4, 4, 1, 1, { r: 200, g: 100, b: 50, a: 255 })
 
     const clipData = createPixelBuffer(4, 4)
-    // Clipped layer covers entire 4x4 with Multiply 50% gray
     for (let y = 0; y < 4; y++) {
       for (let x = 0; x < 4; x++) {
         setPixel(clipData, 4, 4, x, y, { r: 128, g: 128, b: 128, a: 255 })
@@ -192,6 +185,10 @@ describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Expo
       opacity: 100,
       blendMode: 'normal',
       clipping: false,
+      offsetX: 0,
+      offsetY: 0,
+      dataWidth: 4,
+      dataHeight: 4,
       data: baseData,
     }
     const clipLayer: LayerRuntime = {
@@ -201,31 +198,38 @@ describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Expo
       opacity: 100,
       blendMode: 'multiply',
       clipping: true,
+      offsetX: 0,
+      offsetY: 0,
+      dataWidth: 4,
+      dataHeight: 4,
       data: clipData,
     }
 
     const comp = compositeLayers([baseLayer, clipLayer], 4, 4)
-    // Outside base (0,0), clipped layer MUST NOT appear (remains transparent!)
     expect(getPixel(comp, 4, 4, 0, 0).a).toBe(0)
-    // Inside base (1,1), multiply darkened the base pixel
     const inside = getPixel(comp, 4, 4, 1, 1)
     expect(inside.a).toBe(255)
     expect(inside.r).toBeCloseTo(Math.round((200 * 128) / 255), 0)
 
     const merged = mergeTwoLayers(baseLayer, clipLayer, 4, 4)
-    expect(Array.from(merged)).toEqual(Array.from(comp))
+    expect(Array.from(merged.data)).toEqual(Array.from(comp))
   })
 
-  it('computes valid export scales <= 2000px and encodes/decodes transparent PNG losslessly', () => {
+  it('computes valid export scales <= 4000px, defaults to ~2000px long edge, and encodes/decodes transparent PNG losslessly', () => {
+    expect(MAX_EXPORT_DIMENSION).toBe(4000)
+
     const scales32 = getExportScaleOptions(32, 32)
     expect(scales32[0]).toEqual({ scale: 1, width: 32, height: 32, label: '1x (32×32px)' })
     const last32 = scales32[scales32.length - 1]
-    expect(last32.scale).toBe(62) // 32 * 62 = 1984 <= 2000; 32 * 63 = 2016 > 2000
-    expect(last32.width).toBeLessThanOrEqual(2000)
+    expect(last32.scale).toBe(125) // 32 * 125 = 4000 <= 4000
+    expect(last32.width).toBeLessThanOrEqual(4000)
+
+    // Section 16 examples: 256x256 -> 8x (2048x2048); 80x80 -> 25x (2000x2000)
+    expect(getDefaultExportScale(256, 256)).toBe(8)
+    expect(getDefaultExportScale(80, 80)).toBe(25)
 
     const layerData = createPixelBuffer(2, 2)
     setPixel(layerData, 2, 2, 0, 0, RED)
-    // (1,0), (0,1), (1,1) remain alpha=0 transparent
     const layer: LayerRuntime = {
       id: 'l1',
       name: 'Layer 1',
@@ -233,6 +237,10 @@ describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Expo
       opacity: 100,
       blendMode: 'normal',
       clipping: false,
+      offsetX: 0,
+      offsetY: 0,
+      dataWidth: 2,
+      dataHeight: 2,
       data: layerData,
     }
 
@@ -243,7 +251,6 @@ describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Expo
     const decoded = decodePngBasic(png)
     expect(decoded.width).toBe(6)
     expect(decoded.height).toBe(6)
-    // Top-left 3x3 block is pure RED; adjacent block (3,0) is pure transparent (no blurred edge)
     expect(getPixel(decoded.data, 6, 6, 2, 2)).toEqual(RED)
     expect(getPixel(decoded.data, 6, 6, 3, 2)).toEqual({ r: 0, g: 0, b: 0, a: 0 })
   })
@@ -251,7 +258,7 @@ describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Expo
 
 describe('Sparse Diff HistoryManager (Undo/Redo, Limits & Serialization)', () => {
   it('records sparse pixel diffs, enforces history limit, and round-trips serialization', () => {
-    const mgr = new HistoryManager(2) // limit = 2 entries
+    const mgr = new HistoryManager(2)
     const buf0 = createPixelBuffer(4, 4)
     const buf1 = new Uint8ClampedArray(buf0)
     setPixel(buf1, 4, 4, 0, 0, RED)
@@ -264,13 +271,12 @@ describe('Sparse Diff HistoryManager (Undo/Redo, Limits & Serialization)', () =>
     const p2 = createPixelPatch('l1', buf1, buf2)!
     const p3 = createPixelPatch('l1', buf2, buf3)!
 
-    expect(p1.indices.length).toBe(1) // only 1 changed pixel stored!
+    expect(p1.indices.length).toBe(1)
 
     mgr.push({ id: '1', label: 'stroke1', timestamp: 1, kind: 'pixel-diff', pixelPatches: [p1] })
     mgr.push({ id: '2', label: 'stroke2', timestamp: 2, kind: 'pixel-diff', pixelPatches: [p2] })
     mgr.push({ id: '3', label: 'stroke3', timestamp: 3, kind: 'pixel-diff', pixelPatches: [p3] })
 
-    // Oldest entry ('1') was evicted due to limit=2
     expect(mgr.getUndoCount()).toBe(2)
 
     const serialized = mgr.serialize()
@@ -288,6 +294,10 @@ describe('Sparse Diff HistoryManager (Undo/Redo, Limits & Serialization)', () =>
           opacity: 100,
           blendMode: 'normal',
           clipping: false,
+          offsetX: 0,
+          offsetY: 0,
+          dataWidth: 4,
+          dataHeight: 4,
           data: buf3,
         },
       ],
@@ -303,7 +313,6 @@ describe('Sparse Diff HistoryManager (Undo/Redo, Limits & Serialization)', () =>
     runtimeState = mgr2.redo(runtimeState)!
     expect(getPixel(runtimeState.layers[0].data, 4, 4, 2, 2)).toEqual(BLUE)
 
-    // Structure snapshot test
     const snap = captureCanvasSnapshot(4, 4, runtimeState.layers, 'l1')
     expect(snap.layers.length).toBe(1)
   })

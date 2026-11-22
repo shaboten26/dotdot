@@ -1,6 +1,7 @@
-import { ViewTransition, useMemo, useState } from 'react'
+import { ViewTransition, useMemo, useRef, useState } from 'react'
 import type { AppSettings, ProjectRecord } from '../types'
 import { createNewProject, db } from '../db/database'
+import { exportEnvironmentPackZip } from '../db/envPack'
 import { MAX_CANVAS_SIZE, MIN_CANVAS_SIZE } from '../engine/pixelBuffer'
 import { useApp } from '../state/AppContext'
 import { useI18n } from '../i18n/I18nContext'
@@ -10,29 +11,22 @@ import {
   PixelIcon,
   PixelLoadingIndicator,
 } from '../components/common/PixelIcon'
+import { PixelSelect } from '../components/common/PixelSelect'
 import { PixelThumbnail } from '../components/common/PixelThumbnail'
+import { CanvasSizePresetsPicker } from '../components/common/CanvasSizePresetsPicker'
+import { useLongPressReorder } from '../utils/useLongPressReorder'
 import {
   useViewTransitionNavigate,
   VTButtonLink,
 } from '../components/common/ViewTransitionNav'
 
-const SIZE_PRESETS = [
-  { w: 16, h: 16 },
-  { w: 24, h: 24 },
-  { w: 32, h: 32 },
-  { w: 48, h: 48 },
-  { w: 64, h: 64 },
-  { w: 128, h: 128 },
-  { w: 256, h: 256 },
-]
-
 /**
- * Spec v2 Section 5-1:
- * Standard home screen on app startup is the Artwork Gallery (`/`).
- * - Does NOT auto-open an empty canvas on startup.
- * - Shows a clear pixel-art empty state when 0 artworks exist.
- * - Selecting an artwork opens it directly in the Editor (`/editor/:id`),
- *   while an explicit Info button on each tile opens the Artwork Detail view (`/project/:id`).
+ * GalleryPage (`/`):
+ * - Standard home screen on app startup (never auto-opens an empty canvas).
+ * - Section 10: Tapping an artwork tile MUST open the Project Viewing Screen (`/project/:id`), NEVER directly `/editor/:id`!
+ * - Uses shared 5 standard + custom `CanvasSizePresetsPicker` in New Artwork modal.
+ * - Uses `PixelSelect` for sort order & `useLongPressReorder` for manual reordering.
+ * - Section 11: Non-intrusive 30-day / 7-day Environment Pack Backup Reminder banner.
  */
 export function GalleryPage() {
   const {
@@ -40,9 +34,13 @@ export function GalleryPage() {
     projects,
     palettes,
     settings,
+    backupReminderDue,
     updateSettings,
     refreshProjects,
     reorderProjectsManual,
+    markEnvPackExported,
+    snoozeBackupReminder,
+    showToast,
   } = useApp()
   const { t } = useI18n()
   const vtNavigate = useViewTransitionNavigate()
@@ -54,8 +52,8 @@ export function GalleryPage() {
   const [selectedPaletteId, setSelectedPaletteId] = useState<string>(
     () => palettes[0]?.id ?? ''
   )
-  const [dragId, setDragId] = useState<string | null>(null)
   const [reorderMode, setReorderMode] = useState(false)
+  const gridContainerRef = useRef<HTMLDivElement | null>(null)
 
   const sortedProjects = useMemo((): ProjectRecord[] => {
     const list = [...projects]
@@ -73,6 +71,20 @@ export function GalleryPage() {
         return list.sort((a, b) => a.order - b.order)
     }
   }, [projects, settings.gallerySortMode])
+
+  const sortedIds = useMemo(
+    () => sortedProjects.map((p) => p.id),
+    [sortedProjects]
+  )
+
+  const { dragState, getItemProps, shouldSuppressClick } = useLongPressReorder({
+    ids: sortedIds,
+    enabled: settings.gallerySortMode === 'manual' && sortedProjects.length > 1,
+    onReorder: (nextIds) => {
+      void reorderProjectsManual(nextIds)
+    },
+    scrollContainerRef: gridContainerRef,
+  })
 
   const openNewProjectModal = () => {
     setSelectedPaletteId(palettes[0]?.id ?? '')
@@ -126,6 +138,38 @@ export function GalleryPage() {
     await reorderProjectsManual(ids)
   }
 
+  const handleBackupNow = async () => {
+    const zipBytes = await exportEnvironmentPackZip()
+    const blob = new Blob([zipBytes.slice().buffer], { type: 'application/zip' })
+    const url = URL.createObjectURL(blob)
+    const dateStr = new Date().toISOString().slice(0, 10)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `dotdot-environment-pack-${dateStr}.zip`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 2000)
+    await markEnvPackExported()
+    showToast(t('toastExportedZip'), 'success')
+  }
+
+  const handleRemindLater = async () => {
+    await snoozeBackupReminder()
+    showToast(t('toastBackupSnoozed'), 'info')
+  }
+
+  const sortOptions: Array<{
+    value: AppSettings['gallerySortMode']
+    label: string
+  }> = [
+    { value: 'manual', label: t('sortManual') },
+    { value: 'newest', label: t('sortNewest') },
+    { value: 'oldest', label: t('sortOldest') },
+    { value: 'updated', label: t('sortUpdated') },
+    { value: 'name', label: t('sortName') },
+  ]
+
   if (!ready) {
     return (
       <div className="h-dvh w-full flex items-center justify-center bg-[var(--bg-app)]">
@@ -137,7 +181,7 @@ export function GalleryPage() {
   return (
     <ViewTransition>
       <div className="min-h-dvh w-full flex flex-col bg-[var(--bg-app)] pl-safe pr-safe">
-        {/* Retro Pixel Header with >=44px Action Buttons */}
+        {/* Retro Pixel Header */}
         <header className="sticky top-0 z-20 px-3.5 py-2.5 pt-safe bg-[var(--bg-surface)] border-b-2 border-[var(--border-pixel)] flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
             <span
@@ -176,8 +220,51 @@ export function GalleryPage() {
           </div>
         </header>
 
+        {/* Section 11: Non-intrusive 30-day / 7-day Environment Pack Backup Reminder */}
+        {backupReminderDue && (
+          <section
+            className="mx-3.5 mt-3 max-w-5xl self-center w-[calc(100%-1.75rem)] p-3.5 pixel-card border-[var(--accent-amber)] space-y-2.5"
+            data-testid="backup-reminder-banner"
+          >
+            <div className="flex items-start gap-2.5">
+              <PixelIcon
+                name="shield"
+                size={18}
+                className="text-[var(--accent-amber)] mt-0.5 shrink-0"
+              />
+              <div className="space-y-1 flex-1 min-w-0">
+                <h2 className="text-xs sm:text-sm font-bold text-[var(--text-primary)]">
+                  {t('backupReminderTitle')}
+                </h2>
+                <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                  {t('backupReminderDesc')}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => void handleBackupNow()}
+                className="pixel-btn pixel-btn-active min-h-[38px] px-3 text-xs font-bold flex items-center gap-1.5"
+                data-testid="backup-now-btn"
+              >
+                <PixelIcon name="download" size={14} />
+                <span>{t('backupNowBtn')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleRemindLater()}
+                className="pixel-btn min-h-[38px] px-3 text-xs font-bold"
+                data-testid="backup-snooze-btn"
+              >
+                {t('backupRemindLaterBtn')}
+              </button>
+            </div>
+          </section>
+        )}
+
         {sortedProjects.length === 0 ? (
-          /* Spec v2 Section 5-1: Empty Gallery state with custom pixel-art illustration & clear CTA */
           <main className="flex-1 flex flex-col items-center justify-center px-6 py-12 text-center">
             <div className="pixel-card p-6 sm:p-8 max-w-sm w-full flex flex-col items-center gap-4">
               <PixelEmptyCanvasArt size={108} />
@@ -210,23 +297,16 @@ export function GalleryPage() {
                   size={16}
                   className="text-[var(--text-secondary)]"
                 />
-                <select
+                <PixelSelect<AppSettings['gallerySortMode']>
                   value={settings.gallerySortMode}
-                  onChange={(e) =>
-                    void updateSettings({
-                      gallerySortMode: e.target
-                        .value as AppSettings['gallerySortMode'],
-                    })
+                  options={sortOptions}
+                  onChange={(mode) =>
+                    void updateSettings({ gallerySortMode: mode })
                   }
-                  className="min-h-[38px] px-2.5 text-xs font-bold pixel-input"
-                  data-testid="gallery-sort-select"
-                >
-                  <option value="manual">{t('sortManual')}</option>
-                  <option value="newest">{t('sortNewest')}</option>
-                  <option value="oldest">{t('sortOldest')}</option>
-                  <option value="updated">{t('sortUpdated')}</option>
-                  <option value="name">{t('sortName')}</option>
-                </select>
+                  ariaLabel={t('sortManual')}
+                  className="min-w-[165px]"
+                  testId="gallery-sort-select"
+                />
 
                 {settings.gallerySortMode === 'manual' && sortedProjects.length > 1 && (
                   <button
@@ -235,6 +315,7 @@ export function GalleryPage() {
                     className={`min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1 ${
                       reorderMode ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
                     }`}
+                    data-testid="gallery-toggle-reorder-btn"
                   >
                     <PixelIcon name="move" size={14} />
                     <span>{t('sortManual')}</span>
@@ -249,77 +330,65 @@ export function GalleryPage() {
               )}
             </div>
 
-            {/* Image-Centric Artwork Grid */}
-            <main className="flex-1 px-3 sm:px-4 pb-10 pb-safe max-w-5xl w-full mx-auto">
+            {/* Image-Centric Artwork Grid -> Tapping opens Viewing Screen `/project/:id`! */}
+            <main
+              ref={gridContainerRef}
+              className="flex-1 px-3 sm:px-4 pb-10 pb-safe max-w-5xl w-full mx-auto"
+            >
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                 {sortedProjects.map((proj, idx) => {
                   const isActive = proj.id === settings.activeProjectId
+                  const isDraggingThis = dragState?.draggingId === proj.id
+                  const isDropTarget =
+                    dragState !== null &&
+                    dragState.overId === proj.id &&
+                    dragState.draggingId !== proj.id
+
                   return (
                     <div
                       key={proj.id}
-                      draggable={settings.gallerySortMode === 'manual'}
-                      onDragStart={() => setDragId(proj.id)}
-                      onDragOver={(e) => {
-                        if (settings.gallerySortMode === 'manual') e.preventDefault()
-                      }}
-                      onDrop={() => {
-                        if (
-                          settings.gallerySortMode !== 'manual' ||
-                          !dragId ||
-                          dragId === proj.id
-                        ) {
-                          return
-                        }
-                        const ids = sortedProjects.map((p) => p.id)
-                        const from = ids.indexOf(dragId)
-                        const to = ids.indexOf(proj.id)
-                        if (from < 0 || to < 0) return
-                        ids.splice(from, 1)
-                        ids.splice(to, 0, dragId)
-                        setDragId(null)
-                        void reorderProjectsManual(ids)
-                      }}
+                      {...getItemProps(proj.id)}
                       onClick={() => {
+                        if (shouldSuppressClick()) return
                         if (!reorderMode) {
                           void updateSettings({ activeProjectId: proj.id })
-                          vtNavigate(`/editor/${proj.id}`)
+                          // Section 10: Always navigate to Project Viewing Screen (`/project/:id`) first!
+                          vtNavigate(`/project/${proj.id}`)
                         }
                       }}
-                      className={`group relative aspect-square pixel-card overflow-hidden cursor-pointer ${
-                        isActive
-                          ? 'outline-2 outline-offset-2 outline-[var(--accent-primary)]'
-                          : ''
-                      }`}
+                      className={`group relative flex flex-col pixel-card overflow-hidden cursor-pointer select-none ${
+                        isDropTarget
+                          ? 'outline-2 outline-dashed outline-[var(--accent-teal)]'
+                          : isActive
+                            ? 'outline-2 outline-offset-2 outline-[var(--accent-primary)]'
+                            : ''
+                      } ${isDraggingThis ? 'opacity-65' : ''}`}
                       data-testid={`gallery-tile-${proj.id}`}
                     >
-                      <ViewTransition name={`artwork-${proj.id}`}>
-                        <PixelThumbnail
-                          pngBytes={proj.thumbnailPng}
-                          alt={proj.name}
-                          checkerDark={settings.checkerboardDark}
-                          className="w-full h-full p-2.5"
-                        />
-                      </ViewTransition>
+                      <div className="aspect-square w-full overflow-hidden">
+                        <ViewTransition name={`artwork-${proj.id}`}>
+                          <PixelThumbnail
+                            pngBytes={proj.thumbnailPng}
+                            alt={proj.name}
+                            checkerDark={settings.checkerboardDark}
+                            className="w-full h-full p-2.5"
+                          />
+                        </ViewTransition>
+                      </div>
 
-                      {/* Detail Info Button in top-right corner */}
-                      {!reorderMode && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            vtNavigate(`/project/${proj.id}`)
-                          }}
-                          title={t('artworkDetail')}
-                          className="absolute top-1.5 right-1.5 min-w-[36px] min-h-[36px] px-1.5 pixel-btn flex items-center justify-center opacity-90 hover:opacity-100"
-                          data-testid={`gallery-detail-${proj.id}`}
-                        >
-                          <PixelIcon name="menu" size={14} />
-                        </button>
-                      )}
+                      <div className="px-2.5 py-1.5 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] flex items-center justify-between gap-1.5">
+                        <span className="text-xs font-bold truncate">
+                          {proj.name}
+                        </span>
+                        <span className="text-[10px] text-[var(--text-secondary)] shrink-0">
+                          {proj.width}×{proj.height}
+                        </span>
+                      </div>
 
                       {reorderMode && settings.gallerySortMode === 'manual' && (
                         <div
-                          className="absolute inset-x-1.5 bottom-1.5 flex items-center justify-between bg-[var(--bg-surface)] border-2 border-[var(--border-pixel)] px-1.5 py-1"
+                          data-no-reorder="true"
+                          className="absolute inset-x-1.5 top-1.5 flex items-center justify-between bg-[var(--bg-surface)] border-2 border-[var(--border-pixel)] px-1.5 py-1"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
@@ -349,7 +418,7 @@ export function GalleryPage() {
           </>
         )}
 
-        {/* New Artwork Creation Modal */}
+        {/* New Artwork Creation Modal (Unified 5 Standard + Custom Presets!) */}
         <Modal
           open={newModalOpen}
           title={t('newArtwork')}
@@ -378,8 +447,8 @@ export function GalleryPage() {
                 </span>
                 <input
                   type="number"
-                  min={1}
-                  max={256}
+                  min={MIN_CANVAS_SIZE}
+                  max={MAX_CANVAS_SIZE}
                   value={newW}
                   onChange={(e) => setNewW(Number(e.target.value))}
                   className="w-full min-h-[42px] px-3 text-sm pixel-input"
@@ -392,8 +461,8 @@ export function GalleryPage() {
                 </span>
                 <input
                   type="number"
-                  min={1}
-                  max={256}
+                  min={MIN_CANVAS_SIZE}
+                  max={MAX_CANVAS_SIZE}
                   value={newH}
                   onChange={(e) => setNewH(Number(e.target.value))}
                   className="w-full min-h-[42px] px-3 text-sm pixel-input"
@@ -402,31 +471,14 @@ export function GalleryPage() {
               </label>
             </div>
 
-            <div className="space-y-1.5">
-              <span className="text-xs font-bold text-[var(--text-secondary)]">
-                {t('presetSizes')}
-              </span>
-              <div className="flex flex-wrap gap-1.5">
-                {SIZE_PRESETS.map((preset) => {
-                  const active = newW === preset.w && newH === preset.h
-                  return (
-                    <button
-                      key={`${preset.w}x${preset.h}`}
-                      type="button"
-                      onClick={() => {
-                        setNewW(preset.w)
-                        setNewH(preset.h)
-                      }}
-                      className={`min-h-[36px] px-2.5 text-xs font-bold ${
-                        active ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-                      }`}
-                    >
-                      {preset.w}×{preset.h}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
+            <CanvasSizePresetsPicker
+              selectedWidth={newW}
+              selectedHeight={newH}
+              onSelectDimensions={(w, h) => {
+                setNewW(w)
+                setNewH(h)
+              }}
+            />
 
             <div className="space-y-1.5">
               <span className="text-xs font-bold text-[var(--text-secondary)]">
@@ -442,7 +494,7 @@ export function GalleryPage() {
                       onClick={() => setSelectedPaletteId(pal.id)}
                       className={`w-full p-2 flex items-center justify-between gap-2 text-left border-2 cursor-pointer ${
                         active
-                          ? 'bg-[var(--bg-panel)] border-[var(--accent-primary)] shadow-[2px_2px_0px_var(--accent-primary-shadow)]'
+                          ? 'bg-[var(--bg-panel)] border-[var(--accent-primary)]'
                           : 'bg-[var(--bg-surface)] border-[var(--border-pixel)]'
                       }`}
                     >
@@ -471,15 +523,24 @@ export function GalleryPage() {
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => void handleCreateArtwork()}
-              className="w-full min-h-[50px] pixel-btn pixel-btn-active text-sm font-bold flex items-center justify-center gap-2"
-              data-testid="confirm-create-artwork-btn"
-            >
-              <PixelIcon name="pen" size={18} />
-              <span>{t('create')}</span>
-            </button>
+            <div className="flex gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => void handleCreateArtwork()}
+                className="flex-1 min-h-[48px] pixel-btn pixel-btn-active text-sm font-bold flex items-center justify-center gap-2"
+                data-testid="confirm-create-artwork-btn"
+              >
+                <PixelIcon name="pen" size={18} />
+                <span>{t('create')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setNewModalOpen(false)}
+                className="min-h-[48px] px-4 pixel-btn text-xs font-bold"
+              >
+                {t('cancel')}
+              </button>
+            </div>
           </div>
         </Modal>
       </div>

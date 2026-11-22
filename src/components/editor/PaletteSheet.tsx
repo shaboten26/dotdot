@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react'
-import type { PaletteData, ProjectPalette } from '../../types'
+import {
+  TRANSPARENT_COLOR_INDEX,
+  type PaletteData,
+  type ProjectPalette,
+} from '../../types'
 import {
   clampByte,
   hexToHsv,
@@ -10,6 +14,9 @@ import {
 } from '../../engine/color'
 import { Modal } from '../common/Modal'
 import { PixelIcon } from '../common/PixelIcon'
+import { PixelSlider } from '../common/PixelSlider'
+import { PixelSelect } from '../common/PixelSelect'
+import { getCheckerboardStyle } from '../common/PixelThumbnail'
 import { useI18n } from '../../i18n/I18nContext'
 
 interface PaletteSheetProps {
@@ -17,6 +24,7 @@ interface PaletteSheetProps {
   onClose: () => void
   palette: ProjectPalette
   selectedIndex: number
+  checkerDark?: boolean
   libraryPalettes: PaletteData[]
   onSelectColor: (index: number) => void
   onUpdatePalette: (next: ProjectPalette, nextSelectedIdx?: number) => void
@@ -28,6 +36,7 @@ export function PaletteSheet({
   onClose,
   palette,
   selectedIndex,
+  checkerDark = false,
   libraryPalettes,
   onSelectColor,
   onUpdatePalette,
@@ -35,10 +44,13 @@ export function PaletteSheet({
 }: PaletteSheetProps) {
   const { t } = useI18n()
   const [tab, setTab] = useState<'hsv' | 'rgb' | 'hex'>('hsv')
-  const [showLibraryPicker, setShowLibraryPicker] = useState(false)
   const [dragIdx, setDragIdx] = useState<number | null>(null)
 
-  const currentHex = palette.colors[selectedIndex] ?? palette.colors[0] ?? '#000000'
+  const isTransparentSelected = selectedIndex === TRANSPARENT_COLOR_INDEX
+  const editableColorIndex = isTransparentSelected
+    ? 0
+    : Math.max(0, Math.min(palette.colors.length - 1, selectedIndex))
+  const currentHex = palette.colors[editableColorIndex] ?? palette.colors[0] ?? '#000000'
   const rgb = hexToRgba(currentHex)
   const [hsv, setHsv] = useState(() => hexToHsv(currentHex))
   const [hexInput, setHexInput] = useState(currentHex)
@@ -47,21 +59,23 @@ export function PaletteSheet({
   useEffect(() => {
     setHsv(hexToHsv(currentHex))
     setHexInput(currentHex)
-  }, [currentHex, selectedIndex])
+  }, [currentHex, editableColorIndex])
 
   useEffect(() => {
     setNameInput(palette.name)
   }, [palette.name])
 
   const commitActiveColorHex = (nextHex: string) => {
+    if (isTransparentSelected) return
     const norm = normalizeHex(nextHex)
     if (!norm) return
     const nextColors = [...palette.colors]
-    nextColors[selectedIndex] = norm
-    onUpdatePalette({ ...palette, colors: nextColors }, selectedIndex)
+    nextColors[editableColorIndex] = norm
+    onUpdatePalette({ ...palette, colors: nextColors }, editableColorIndex)
   }
 
   const handleHsvChange = (nextH: number, nextS: number, nextV: number) => {
+    if (isTransparentSelected) return
     const h = Math.max(0, Math.min(360, Math.round(nextH)))
     const s = Math.max(0, Math.min(100, Math.round(nextS)))
     const v = Math.max(0, Math.min(100, Math.round(nextV)))
@@ -72,6 +86,7 @@ export function PaletteSheet({
   }
 
   const handleRgbChange = (r: number, g: number, b: number) => {
+    if (isTransparentSelected) return
     const hex = rgbaToHex({
       r: clampByte(r),
       g: clampByte(g),
@@ -83,6 +98,7 @@ export function PaletteSheet({
   }
 
   const handleHexInputChange = (raw: string) => {
+    if (isTransparentSelected) return
     setHexInput(raw)
     const norm = normalizeHex(raw)
     if (norm) {
@@ -98,76 +114,84 @@ export function PaletteSheet({
   }
 
   const handleDeleteColor = () => {
-    if (palette.colors.length <= 1) return
-    const nextColors = palette.colors.filter((_, i) => i !== selectedIndex)
-    const nextIdx = Math.min(selectedIndex, nextColors.length - 1)
+    if (isTransparentSelected || palette.colors.length <= 1) return
+    const nextColors = palette.colors.filter((_, i) => i !== editableColorIndex)
+    const nextIdx = Math.min(editableColorIndex, nextColors.length - 1)
     onUpdatePalette({ ...palette, colors: nextColors }, nextIdx)
   }
 
   const moveColor = (delta: -1 | 1) => {
-    const target = selectedIndex + delta
+    if (isTransparentSelected) return
+    const target = editableColorIndex + delta
     if (target < 0 || target >= palette.colors.length) return
     const nextColors = [...palette.colors]
-    const [moved] = nextColors.splice(selectedIndex, 1)
+    const [moved] = nextColors.splice(editableColorIndex, 1)
     nextColors.splice(target, 0, moved)
     onUpdatePalette({ ...palette, colors: nextColors }, target)
   }
+
+  const libraryOptions = libraryPalettes.map((lib) => ({
+    value: lib.id,
+    label: lib.name,
+    subLabel: `(${lib.colors.length})`,
+    swatchColors: lib.colors,
+  }))
 
   return (
     <Modal open={open} title={t('paletteTitle')} onClose={onClose} maxWidthClass="max-w-lg">
       <div className="space-y-3.5">
         {/* Palette Name & Library Controls */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          <input
-            type="text"
-            value={nameInput}
-            onChange={(e) => setNameInput(e.target.value)}
-            onBlur={() => {
-              if (nameInput.trim() && nameInput.trim() !== palette.name) {
-                onUpdatePalette({ ...palette, name: nameInput.trim() })
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <input
+              type="text"
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              onBlur={() => {
+                if (nameInput.trim() && nameInput.trim() !== palette.name) {
+                  onUpdatePalette({ ...palette, name: nameInput.trim() })
+                }
+              }}
+              placeholder={t('paletteName')}
+              className="flex-1 min-w-[130px] min-h-[40px] px-2.5 text-xs font-bold pixel-input"
+            />
+            <button
+              type="button"
+              onClick={() =>
+                void onSaveToLibrary(nameInput || palette.name, palette.colors)
               }
-            }}
-            placeholder={t('paletteName')}
-            className="flex-1 min-w-[130px] min-h-[40px] px-2.5 text-xs font-bold pixel-input"
-          />
-          <button
-            type="button"
-            onClick={() => void onSaveToLibrary(nameInput || palette.name, palette.colors)}
-            className="pixel-btn pixel-btn-active min-h-[40px] px-2.5 text-xs font-bold flex items-center gap-1"
-            data-testid="save-palette-to-lib-btn"
-          >
-            <PixelIcon name="plus" size={14} />
-            {t('saveToLibrary')}
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              void onSaveToLibrary(`${nameInput || palette.name} Copy`, palette.colors)
-            }
-            className="pixel-btn min-h-[40px] px-2.5 text-xs font-bold flex items-center gap-1"
-          >
-            <PixelIcon name="copy" size={14} />
-            {t('duplicatePalette')}
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowLibraryPicker((v) => !v)}
-            className={`min-h-[40px] px-2.5 text-xs font-bold flex items-center gap-1 ${
-              showLibraryPicker ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-            }`}
-          >
-            <PixelIcon name="palette" size={14} />
-            {t('loadFromLibrary')}
-          </button>
-        </div>
+              className="pixel-btn pixel-btn-active min-h-[40px] px-2.5 text-xs font-bold flex items-center gap-1"
+              data-testid="save-palette-to-lib-btn"
+            >
+              <PixelIcon name="plus" size={14} />
+              {t('saveToLibrary')}
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                void onSaveToLibrary(
+                  `${nameInput || palette.name} Copy`,
+                  palette.colors
+                )
+              }
+              className="pixel-btn min-h-[40px] px-2.5 text-xs font-bold flex items-center gap-1"
+            >
+              <PixelIcon name="copy" size={14} />
+              {t('duplicatePalette')}
+            </button>
+          </div>
 
-        {showLibraryPicker && (
-          <div className="p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-1.5 max-h-44 overflow-y-auto">
-            {libraryPalettes.map((lib) => (
-              <button
-                key={lib.id}
-                type="button"
-                onClick={() => {
+          {libraryOptions.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-[var(--text-secondary)] shrink-0">
+                {t('loadFromLibrary')}:
+              </span>
+              <PixelSelect<string>
+                value={palette.sourcePaletteId ?? libraryOptions[0].value}
+                options={libraryOptions}
+                onChange={(pickedId) => {
+                  const lib = libraryPalettes.find((p) => p.id === pickedId)
+                  if (!lib) return
                   onUpdatePalette(
                     {
                       name: lib.name,
@@ -176,29 +200,16 @@ export function PaletteSheet({
                     },
                     0
                   )
-                  setShowLibraryPicker(false)
                 }}
-                className="w-full p-2 pixel-btn flex items-center justify-between gap-2 text-left"
-              >
-                <span className="text-xs font-bold truncate">{lib.name}</span>
-                <div className="flex items-center gap-0.5 shrink-0">
-                  {lib.colors.slice(0, 8).map((c, i) => (
-                    <span
-                      key={i}
-                      style={{ backgroundColor: c }}
-                      className="w-3.5 h-3.5 border border-[var(--border-pixel)]"
-                    />
-                  ))}
-                  <span className="text-[10px] text-[var(--text-secondary)] ml-1">
-                    ({lib.colors.length})
-                  </span>
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
+                ariaLabel={t('loadFromLibrary')}
+                className="flex-1 min-w-0"
+                testId="palette-library-select"
+              />
+            </div>
+          )}
+        </div>
 
-        {/* Color Swatch Grid */}
+        {/* Color Swatch Grid (Transparent Slot fixed at leftmost position, excluded from 256-color cap & reorder) */}
         <div className="space-y-1.5">
           <div className="flex flex-wrap items-center justify-between gap-1 text-xs">
             <span className="text-[var(--text-secondary)]">
@@ -207,7 +218,7 @@ export function PaletteSheet({
             <div className="flex items-center gap-1">
               <button
                 type="button"
-                disabled={selectedIndex <= 0}
+                disabled={isTransparentSelected || editableColorIndex <= 0}
                 onClick={() => moveColor(-1)}
                 title={t('reorderLeft')}
                 className="pixel-btn min-w-[38px] min-h-[38px] flex items-center justify-center"
@@ -216,7 +227,10 @@ export function PaletteSheet({
               </button>
               <button
                 type="button"
-                disabled={selectedIndex >= palette.colors.length - 1}
+                disabled={
+                  isTransparentSelected ||
+                  editableColorIndex >= palette.colors.length - 1
+                }
                 onClick={() => moveColor(1)}
                 title={t('reorderRight')}
                 className="pixel-btn min-w-[38px] min-h-[38px] flex items-center justify-center"
@@ -235,7 +249,7 @@ export function PaletteSheet({
               </button>
               <button
                 type="button"
-                disabled={palette.colors.length <= 1}
+                disabled={isTransparentSelected || palette.colors.length <= 1}
                 onClick={handleDeleteColor}
                 className="pixel-btn pixel-btn-danger min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1"
                 data-testid="palette-del-color"
@@ -247,6 +261,36 @@ export function PaletteSheet({
           </div>
 
           <div className="grid grid-cols-8 sm:grid-cols-10 gap-1.5 max-h-40 overflow-y-auto p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)]">
+            {/* Fixed Leftmost Transparent Slot */}
+            <button
+              type="button"
+              onClick={() => onSelectColor(TRANSPARENT_COLOR_INDEX)}
+              title={t('transparentSlotLabel')}
+              aria-label={t('transparentSlotLabel')}
+              aria-pressed={isTransparentSelected}
+              style={getCheckerboardStyle(checkerDark, 8)}
+              className={`relative aspect-square cursor-pointer flex items-center justify-center ${
+                isTransparentSelected
+                  ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)] z-10'
+                  : 'border-2 border-[var(--border-pixel)]'
+              }`}
+              data-testid="sheet-color-transparent"
+            >
+              <PixelIcon
+                name="transparent"
+                size={15}
+                className="text-[var(--accent-rose)]"
+              />
+              {isTransparentSelected && (
+                <span
+                  className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-[var(--bg-panel)] border border-[var(--border-strong)] flex items-center justify-center text-[var(--text-primary)]"
+                  aria-hidden="true"
+                >
+                  <PixelIcon name="check" size={9} />
+                </span>
+              )}
+            </button>
+
             {palette.colors.map((hex, idx) => {
               const active = idx === selectedIndex
               return (
@@ -268,13 +312,13 @@ export function PaletteSheet({
                   style={{ backgroundColor: hex }}
                   className={`relative aspect-square cursor-pointer ${
                     active
-                      ? 'border-2 border-[var(--text-primary)] outline-2 outline-[var(--accent-primary)] z-10'
+                      ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)] z-10'
                       : 'border-2 border-[var(--border-pixel)]'
                   }`}
                 >
                   {active && (
                     <span
-                      className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-[var(--bg-panel)] border border-[var(--border-pixel)] flex items-center justify-center text-[var(--text-primary)]"
+                      className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-[var(--bg-panel)] border border-[var(--border-strong)] flex items-center justify-center text-[var(--text-primary)]"
                       aria-hidden="true"
                     >
                       <PixelIcon name="check" size={9} />
@@ -286,117 +330,143 @@ export function PaletteSheet({
           </div>
         </div>
 
-        {/* Live Color Preview + HSV / RGB / HEX Sliders & Inputs */}
-        <div className="p-3 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2.5">
-              <span
-                className="w-10 h-10 border-2 border-[var(--border-pixel)] shadow-[2px_2px_0px_var(--shadow-pixel)] shrink-0"
-                style={{ backgroundColor: currentHex }}
-                data-testid="palette-live-preview"
+        {/* Live Color Preview + HSV / RGB / HEX PixelSliders & Inputs */}
+        {isTransparentSelected ? (
+          <div
+            className="p-3 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] flex items-center gap-3"
+            data-testid="palette-transparent-info"
+          >
+            <span
+              className="w-10 h-10 border-2 border-[var(--border-strong)] shrink-0 flex items-center justify-center"
+              style={getCheckerboardStyle(checkerDark, 8)}
+            >
+              <PixelIcon
+                name="transparent"
+                size={18}
+                className="text-[var(--accent-rose)]"
               />
-              <div>
-                <div className="text-xs font-bold text-[var(--text-primary)]">
-                  {currentHex}
+            </span>
+            <div className="space-y-0.5">
+              <div className="text-xs font-bold text-[var(--text-primary)]">
+                {t('transparentSlotLabel')} (RGBA 0, 0, 0, 0)
+              </div>
+              <div className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                {t('transparentSlotHint')}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="p-3 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <span
+                  className="w-10 h-10 border-2 border-[var(--border-strong)] shrink-0"
+                  style={{ backgroundColor: currentHex }}
+                  data-testid="palette-live-preview"
+                />
+                <div>
+                  <div className="text-xs font-bold text-[var(--text-primary)]">
+                    {currentHex}
+                  </div>
+                  <div className="text-[11px] text-[var(--text-secondary)]">
+                    R:{rgb.r} G:{rgb.g} B:{rgb.b}
+                  </div>
                 </div>
-                <div className="text-[11px] text-[var(--text-secondary)]">
-                  R:{rgb.r} G:{rgb.g} B:{rgb.b}
-                </div>
+              </div>
+
+              <div className="flex gap-1">
+                {(['hsv', 'rgb', 'hex'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setTab(m)}
+                    className={`min-h-[36px] px-2.5 text-xs font-bold uppercase ${
+                      tab === m ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+                    }`}
+                    data-testid={`color-tab-${m}`}
+                  >
+                    {m}
+                  </button>
+                ))}
               </div>
             </div>
 
-            <div className="flex gap-1">
-              {(['hsv', 'rgb', 'hex'] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setTab(m)}
-                  className={`min-h-[36px] px-2.5 text-xs font-bold uppercase ${
-                    tab === m ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-                  }`}
-                  data-testid={`color-tab-${m}`}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
+            {tab === 'hsv' && (
+              <div className="space-y-2">
+                <SliderNumberRow
+                  label={t('hue')}
+                  min={0}
+                  max={360}
+                  value={hsv.h}
+                  onChange={(val) => handleHsvChange(val, hsv.s, hsv.v)}
+                />
+                <SliderNumberRow
+                  label={t('saturation')}
+                  min={0}
+                  max={100}
+                  value={hsv.s}
+                  onChange={(val) => handleHsvChange(hsv.h, val, hsv.v)}
+                />
+                <SliderNumberRow
+                  label={t('value')}
+                  min={0}
+                  max={100}
+                  value={hsv.v}
+                  onChange={(val) => handleHsvChange(hsv.h, hsv.s, val)}
+                />
+              </div>
+            )}
+
+            {tab === 'rgb' && (
+              <div className="space-y-2">
+                <SliderNumberRow
+                  label={t('red')}
+                  min={0}
+                  max={255}
+                  value={rgb.r}
+                  onChange={(val) => handleRgbChange(val, rgb.g, rgb.b)}
+                />
+                <SliderNumberRow
+                  label={t('green')}
+                  min={0}
+                  max={255}
+                  value={rgb.g}
+                  onChange={(val) => handleRgbChange(rgb.r, val, rgb.b)}
+                />
+                <SliderNumberRow
+                  label={t('blue')}
+                  min={0}
+                  max={255}
+                  value={rgb.b}
+                  onChange={(val) => handleRgbChange(rgb.r, rgb.g, val)}
+                />
+              </div>
+            )}
+
+            {tab === 'hex' && (
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-bold text-[var(--text-secondary)] shrink-0">
+                  {t('hexCode')}
+                </label>
+                <input
+                  type="text"
+                  value={hexInput}
+                  onChange={(e) => handleHexInputChange(e.target.value)}
+                  placeholder="#RRGGBB"
+                  maxLength={7}
+                  className="flex-1 min-h-[38px] px-3 text-sm pixel-input uppercase"
+                  data-testid="hex-direct-input"
+                />
+                <input
+                  type="color"
+                  value={currentHex}
+                  onChange={(e) => handleHexInputChange(e.target.value)}
+                  className="w-9 h-9 border-2 border-[var(--border-pixel)] cursor-pointer bg-transparent"
+                />
+              </div>
+            )}
           </div>
-
-          {tab === 'hsv' && (
-            <div className="space-y-2">
-              <SliderNumberRow
-                label={t('hue')}
-                min={0}
-                max={360}
-                value={hsv.h}
-                onChange={(val) => handleHsvChange(val, hsv.s, hsv.v)}
-              />
-              <SliderNumberRow
-                label={t('saturation')}
-                min={0}
-                max={100}
-                value={hsv.s}
-                onChange={(val) => handleHsvChange(hsv.h, val, hsv.v)}
-              />
-              <SliderNumberRow
-                label={t('value')}
-                min={0}
-                max={100}
-                value={hsv.v}
-                onChange={(val) => handleHsvChange(hsv.h, hsv.s, val)}
-              />
-            </div>
-          )}
-
-          {tab === 'rgb' && (
-            <div className="space-y-2">
-              <SliderNumberRow
-                label={t('red')}
-                min={0}
-                max={255}
-                value={rgb.r}
-                onChange={(val) => handleRgbChange(val, rgb.g, rgb.b)}
-              />
-              <SliderNumberRow
-                label={t('green')}
-                min={0}
-                max={255}
-                value={rgb.g}
-                onChange={(val) => handleRgbChange(rgb.r, val, rgb.b)}
-              />
-              <SliderNumberRow
-                label={t('blue')}
-                min={0}
-                max={255}
-                value={rgb.b}
-                onChange={(val) => handleRgbChange(rgb.r, rgb.g, val)}
-              />
-            </div>
-          )}
-
-          {tab === 'hex' && (
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-bold text-[var(--text-secondary)] shrink-0">
-                {t('hexCode')}
-              </label>
-              <input
-                type="text"
-                value={hexInput}
-                onChange={(e) => handleHexInputChange(e.target.value)}
-                placeholder="#RRGGBB"
-                maxLength={7}
-                className="flex-1 min-h-[38px] px-3 text-sm pixel-input uppercase"
-                data-testid="hex-direct-input"
-              />
-              <input
-                type="color"
-                value={currentHex}
-                onChange={(e) => handleHexInputChange(e.target.value)}
-                className="w-9 h-9 border-2 border-[var(--border-pixel)] cursor-pointer bg-transparent"
-              />
-            </div>
-          )}
-        </div>
+        )}
       </div>
     </Modal>
   )
@@ -416,17 +486,17 @@ function SliderNumberRow({
   onChange: (next: number) => void
 }) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2.5">
       <span className="w-20 text-xs font-bold text-[var(--text-secondary)] shrink-0">
         {label}
       </span>
-      <input
-        type="range"
+      <PixelSlider
         min={min}
         max={max}
         value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="flex-1 accent-[var(--accent-primary)]"
+        ariaLabel={label}
+        onChange={onChange}
+        className="flex-1"
       />
       <input
         type="number"

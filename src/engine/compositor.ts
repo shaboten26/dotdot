@@ -1,10 +1,11 @@
 import { zlibSync, unzlibSync } from 'fflate'
 import type { BlendMode, LayerRuntime } from '../types'
 import { clampByte } from './color'
-import { createPixelBuffer } from './pixelBuffer'
+import { createPixelBuffer, extractLayerCanvasView } from './pixelBuffer'
 
 export const MAX_LAYERS = 50
-export const MAX_EXPORT_DIMENSION = 2000
+export const MAX_EXPORT_DIMENSION = 4000
+export const DEFAULT_TARGET_EXPORT_LONG_EDGE = 2000
 
 /**
  * Apply per-channel blend function for normalized [0..1] backdrop `b` and source `s`.
@@ -95,7 +96,7 @@ function compositePixel(
 }
 
 export interface CompositeOptions {
-  /** Optional override pixel buffer for a specific layer (used for live stroke / tool preview) */
+  /** Optional canvas-space override pixel buffer (`width * height * 4`) for a specific layer */
   previewLayerOverride?: {
     layerId: string
     data: Uint8ClampedArray
@@ -103,14 +104,23 @@ export interface CompositeOptions {
 }
 
 /**
- * Composite all layers from bottom (`index 0`) to top (`layers.length - 1`).
- * Used identically for both viewport canvas display and PNG export (Section 17-2).
- *
- * Supports:
- * - Layer visibility
- * - Layer opacity (0..100%)
- * - Blend modes (normal, multiply, screen, overlay, darken, lighten, add, difference)
- * - Clipping masks (clipped layers are constrained to the alpha of the base layer directly below the clipping group)
+ * Sample `[0..width-1, 0..height-1]` canvas view for a layer (honoring `offsetX`, `offsetY`, `dataWidth`, `dataHeight`).
+ */
+function resolveLayerCanvasBuffer(
+  layer: LayerRuntime,
+  width: number,
+  height: number,
+  override?: CompositeOptions['previewLayerOverride']
+): Uint8ClampedArray {
+  if (override && override.layerId === layer.id) {
+    return override.data
+  }
+  return extractLayerCanvasView(layer, width, height)
+}
+
+/**
+ * Composite all layers from bottom (`index 0`) to top (`layers.length - 1`) onto `[0..width-1, 0..height-1]`.
+ * Off-canvas pixels stored inside each layer's backing buffer remain safely preserved!
  */
 export function compositeLayers(
   layers: readonly LayerRuntime[],
@@ -125,10 +135,7 @@ export function compositeLayers(
   let i = 0
   while (i < layers.length) {
     const baseLayer = layers[i]
-    const baseData =
-      override && override.layerId === baseLayer.id ? override.data : baseLayer.data
 
-    // Gather any consecutive clipping layers immediately above `baseLayer` (only if baseLayer itself is not an orphan bottom clip, though bottom layer ignores clipping)
     let groupEnd = i + 1
     while (groupEnd < layers.length && layers[groupEnd].clipping) {
       groupEnd++
@@ -137,15 +144,14 @@ export function compositeLayers(
     const hasClippedChildren = groupEnd > i + 1
 
     if (!baseLayer.visible || baseLayer.opacity <= 0) {
-      // When base of a clipping group is hidden or 0% opacity, all layers clipped to it are also masked out
       i = groupEnd
       continue
     }
 
+    const baseData = resolveLayerCanvasBuffer(baseLayer, width, height, override)
     const baseOpacityNorm = Math.max(0, Math.min(100, baseLayer.opacity)) / 100
 
     if (!hasClippedChildren) {
-      // Fast path: composite single layer directly onto `result`
       for (let p = 0; p < totalPixels; p++) {
         const idx = p * 4
         const rawA = baseData[idx + 3]
@@ -162,9 +168,6 @@ export function compositeLayers(
         )
       }
     } else {
-      // Clipping group:
-      // Start from unmultiplied base RGB (alpha = 1 inside base's non-zero region), blend clipped children onto base RGB,
-      // then composite the resulting group pixel onto `result` using baseLayer's effective alpha & blendMode.
       const groupBuf = createPixelBuffer(width, height)
       for (let p = 0; p < totalPixels; p++) {
         const idx = p * 4
@@ -178,13 +181,11 @@ export function compositeLayers(
       for (let c = i + 1; c < groupEnd; c++) {
         const clipLayer = layers[c]
         if (!clipLayer.visible || clipLayer.opacity <= 0) continue
-        const clipData =
-          override && override.layerId === clipLayer.id ? override.data : clipLayer.data
+        const clipData = resolveLayerCanvasBuffer(clipLayer, width, height, override)
         const clipOp = Math.max(0, Math.min(100, clipLayer.opacity)) / 100
 
         for (let p = 0; p < totalPixels; p++) {
           const idx = p * 4
-          // Constrained strictly by base layer's alpha > 0
           if (baseData[idx + 3] === 0) continue
           const cRawA = clipData[idx + 3]
           if (cRawA === 0) continue
@@ -201,7 +202,6 @@ export function compositeLayers(
         }
       }
 
-      // Now composite the clipped group onto `result` with base layer's alpha & blend mode
       for (let p = 0; p < totalPixels; p++) {
         const idx = p * 4
         const rawA = baseData[idx + 3]
@@ -226,24 +226,65 @@ export function compositeLayers(
 }
 
 /**
- * Merge `upper` layer down into `lower` layer, returning the merged pixel buffer
- * (preserving `lower`'s blendMode and clipping setting, normalizing merged layer opacity to 100%).
+ * Merge `upper` layer down into `lower` layer across the UNION of both layers' world-space bounding boxes
+ * so off-canvas pixels on either layer are preserved!
  */
 export function mergeTwoLayers(
   lower: LayerRuntime,
   upper: LayerRuntime,
   width: number,
   height: number
-): Uint8ClampedArray {
-  const tempLower: LayerRuntime = {
+): {
+  offsetX: number
+  offsetY: number
+  dataWidth: number
+  dataHeight: number
+  data: Uint8ClampedArray
+} {
+  const lOx = lower.offsetX ?? 0
+  const lOy = lower.offsetY ?? 0
+  const lW = lower.dataWidth ?? width
+  const lH = lower.dataHeight ?? height
+
+  const uOx = upper.offsetX ?? 0
+  const uOy = upper.offsetY ?? 0
+  const uW = upper.dataWidth ?? width
+  const uH = upper.dataHeight ?? height
+
+  const minX = Math.min(0, lOx, upper.clipping ? lOx : uOx)
+  const minY = Math.min(0, lOy, upper.clipping ? lOy : uOy)
+  const maxX = Math.max(width, lOx + lW, upper.clipping ? lOx + lW : uOx + uW)
+  const maxY = Math.max(height, lOy + lH, upper.clipping ? lOy + lH : uOy + uH)
+
+  const unionW = Math.max(1, maxX - minX)
+  const unionH = Math.max(1, maxY - minY)
+
+  // Shift both layers into the union coordinate frame `[0..unionW, 0..unionH]`
+  const shiftedLower: LayerRuntime = {
     ...lower,
+    offsetX: lOx - minX,
+    offsetY: lOy - minY,
+    dataWidth: lW,
+    dataHeight: lH,
     blendMode: 'normal',
     clipping: false,
   }
-  const tempUpper: LayerRuntime = {
+  const shiftedUpper: LayerRuntime = {
     ...upper,
+    offsetX: uOx - minX,
+    offsetY: uOy - minY,
+    dataWidth: uW,
+    dataHeight: uH,
   }
-  return compositeLayers([tempLower, tempUpper], width, height)
+
+  const mergedData = compositeLayers([shiftedLower, shiftedUpper], unionW, unionH)
+  return {
+    offsetX: minX,
+    offsetY: minY,
+    dataWidth: unionW,
+    dataHeight: unionH,
+    data: mergedData,
+  }
 }
 
 export interface ExportScaleOption {
@@ -254,8 +295,8 @@ export interface ExportScaleOption {
 }
 
 /**
- * Compute all valid integer upscale multipliers where neither width nor height exceeds 2000px.
- * 1x is always included.
+ * Compute all valid integer upscale multipliers where neither width nor height exceeds `maxDimension` (default 4000px).
+ * `1x` is always included.
  */
 export function getExportScaleOptions(
   width: number,
@@ -263,7 +304,7 @@ export function getExportScaleOptions(
   maxDimension = MAX_EXPORT_DIMENSION
 ): ExportScaleOption[] {
   const options: ExportScaleOption[] = []
-  const maxSide = Math.max(width, height)
+  const maxSide = Math.max(1, Math.max(width, height))
   const maxScale = Math.max(1, Math.floor(maxDimension / maxSide))
 
   for (let scale = 1; scale <= maxScale; scale++) {
@@ -278,6 +319,43 @@ export function getExportScaleOptions(
     })
   }
   return options
+}
+
+/**
+ * Section 13-2: Compute initial default integer export scale whose output long edge is closest to ~2000px
+ * (`targetScale = round(2000 / max(canvasWidth, canvasHeight))`), clamped to valid options `<= 4000px`.
+ * Examples:
+ * - `256 × 256` -> `8x` (`2048 × 2048px`)
+ * - `80 × 80` -> `25x` (`2000 × 2000px`)
+ */
+export function getDefaultExportScale(
+  width: number,
+  height: number,
+  targetLongEdge = DEFAULT_TARGET_EXPORT_LONG_EDGE,
+  maxDimension = MAX_EXPORT_DIMENSION
+): number {
+  const options = getExportScaleOptions(width, height, maxDimension)
+  if (options.length === 0) return 1
+
+  const maxSide = Math.max(1, Math.max(width, height))
+  const idealScale = Math.max(1, Math.round(targetLongEdge / maxSide))
+  const maxAllowed = options[options.length - 1].scale
+  const clampedIdeal = Math.min(maxAllowed, idealScale)
+
+  let best = options[0].scale
+  let bestDiff = Infinity
+  for (const opt of options) {
+    const longEdge = Math.max(opt.width, opt.height)
+    const diff = Math.abs(longEdge - targetLongEdge)
+    if (
+      diff < bestDiff ||
+      (diff === bestDiff && opt.scale === clampedIdeal)
+    ) {
+      bestDiff = diff
+      best = opt.scale
+    }
+  }
+  return best
 }
 
 /**
@@ -303,7 +381,6 @@ export function upscaleNearestNeighbor(
 
   for (let y = 0; y < height; y++) {
     const firstDestRowStart = y * s * rowByteLen
-    // Fill the first scaled scanline for row `y`
     for (let x = 0; x < width; x++) {
       const sIdx = (y * width + x) * 4
       const r = src[sIdx]
@@ -321,7 +398,6 @@ export function upscaleNearestNeighbor(
       }
     }
 
-    // Copy that exact scanline `s - 1` more times vertically
     const templateRow = dst.subarray(firstDestRowStart, firstDestRowStart + rowByteLen)
     for (let sy = 1; sy < s; sy++) {
       dst.set(templateRow, firstDestRowStart + sy * rowByteLen)
@@ -331,7 +407,6 @@ export function upscaleNearestNeighbor(
   return { data: dst, width: outW, height: outH }
 }
 
-// Precomputed CRC32 table for standard PNG chunks
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256)
   for (let n = 0; n < 256; n++) {
@@ -373,7 +448,6 @@ function makePngChunk(typeAscii: string, data: Uint8Array): Uint8Array {
 
 /**
  * Lossless pure-JS 8-bit RGBA PNG encoder.
- * Guarantees exact pixel values and transparent background with zero browser color-profile shifts.
  */
 export function encodeRgbaToPng(
   rgba: Uint8ClampedArray | Uint8Array,
@@ -382,7 +456,6 @@ export function encodeRgbaToPng(
 ): Uint8Array {
   const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
 
-  // IHDR (13 bytes): width(4), height(4), bitDepth=8, colorType=6 (RGBA), compression=0, filter=0, interlace=0
   const ihdrData = new Uint8Array(13)
   writeUint32BE(ihdrData, 0, width)
   writeUint32BE(ihdrData, 4, height)
@@ -393,12 +466,11 @@ export function encodeRgbaToPng(
   ihdrData[12] = 0
   const ihdrChunk = makePngChunk('IHDR', ihdrData)
 
-  // Raw scanlines: 1 filter byte (0 = None) + width * 4 RGBA bytes per row
   const stride = width * 4
   const rawScanlines = new Uint8Array(height * (1 + stride))
   for (let y = 0; y < height; y++) {
     const dstStart = y * (1 + stride)
-    rawScanlines[dstStart] = 0 // Filter type 0 (None)
+    rawScanlines[dstStart] = 0
     const srcStart = y * stride
     rawScanlines.set(rgba.subarray(srcStart, srcStart + stride), dstStart + 1)
   }
@@ -422,10 +494,6 @@ export function encodeRgbaToPng(
   return png
 }
 
-/**
- * Minimal lossless PNG decoder (supports 8-bit RGBA filter=0 generated by encodeRgbaToPng)
- * used for automated round-trip tests.
- */
 export function decodePngBasic(png: Uint8Array): {
   width: number
   height: number
@@ -479,7 +547,7 @@ export function decodePngBasic(png: Uint8Array): {
 }
 
 /**
- * Full pipeline: composite layers and export scaled nearest-neighbor PNG bytes.
+ * Full pipeline: composite layers onto `[0..width-1, 0..height-1]` and export scaled nearest-neighbor PNG bytes.
  */
 export function exportCompositePngBytes(
   layers: readonly LayerRuntime[],
@@ -488,7 +556,10 @@ export function exportCompositePngBytes(
   scale: number
 ): { png: Uint8Array; outWidth: number; outHeight: number } {
   const maxSide = Math.max(width, height)
-  const clampedScale = Math.max(1, Math.min(Math.floor(MAX_EXPORT_DIMENSION / maxSide), Math.trunc(scale)))
+  const clampedScale = Math.max(
+    1,
+    Math.min(Math.floor(MAX_EXPORT_DIMENSION / maxSide), Math.trunc(scale))
+  )
   const flat = compositeLayers(layers, width, height)
   const scaled = upscaleNearestNeighbor(flat, width, height, clampedScale)
   const png = encodeRgbaToPng(scaled.data, scaled.width, scaled.height)
