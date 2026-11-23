@@ -3,7 +3,7 @@ import type { BlendMode, LayerRuntime } from '../types'
 import { clampByte } from './color'
 import { createPixelBuffer, extractLayerCanvasView } from './pixelBuffer'
 
-export const MAX_LAYERS = 50
+export const MAX_LAYERS = 100
 export const MAX_EXPORT_DIMENSION = 4000
 export const DEFAULT_TARGET_EXPORT_LONG_EDGE = 2000
 

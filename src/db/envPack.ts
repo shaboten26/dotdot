@@ -13,7 +13,7 @@ import type {
   SerializedPixelPatch,
 } from '../types'
 import { DEFAULT_APP_SETTINGS, DotDotDatabase, db, normalizeAppSettings } from './database'
-import { exportCompositePngBytes } from '../engine/compositor'
+import { exportCompositePngBytes, MAX_LAYERS } from '../engine/compositor'
 import { normalizeLayerGeometry } from '../engine/pixelBuffer'
 
 export const ENV_PACK_FORMAT = 'dotdot-environment-pack'
@@ -466,7 +466,7 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
       proj.height > 256 ||
       !Array.isArray(proj.layers) ||
       proj.layers.length < 1 ||
-      proj.layers.length > 50
+      proj.layers.length > MAX_LAYERS
     ) {
       throw new Error(`INVALID_PROJECT: Invalid project metadata at ${projPath}`)
     }

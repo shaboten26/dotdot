@@ -25,8 +25,8 @@ describe('Phase 6 Integration: i18n Completeness, 50-Layer Compositing & Viewpor
     }
   })
 
-  it('composites 50 stacked layers (256x256 max capability check) cleanly', () => {
-    expect(MAX_LAYERS).toBe(50)
+  it('composites 100 stacked layers (256x256 max capability check) cleanly', () => {
+    expect(MAX_LAYERS).toBe(100)
     const w = 64
     const h = 64
     const layers: LayerRuntime[] = []
@@ -56,8 +56,8 @@ describe('Phase 6 Integration: i18n Completeness, 50-Layer Compositing & Viewpor
 
     const comp = compositeLayers(layers, w, h)
     expect(getPixel(comp, w, h, 0, 0).a).toBe(255)
-    expect(getPixel(comp, w, h, 49, 0).a).toBe(255)
-    expect(getPixel(comp, w, h, 50, 0).a).toBe(0)
+    expect(getPixel(comp, w, h, 35, 1).a).toBe(255)
+    expect(getPixel(comp, w, h, 36, 1).a).toBe(0)
   })
 
   it('anchors focal pixel during pinch/wheel zoom and prevents canvas from panning completely off-screen', () => {
