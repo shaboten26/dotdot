@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import {
   TRANSPARENT_COLOR_INDEX,
@@ -11,6 +11,7 @@ import {
 } from '../../types'
 import { ALL_DITHER_PATTERN_IDS } from '../../engine/dithering'
 import { resolveToolIconName } from '../../utils/toolIcon'
+import { useLongPressReorder } from '../../utils/useLongPressReorder'
 import { PixelIcon, type PixelIconName } from '../common/PixelIcon'
 import { PixelCheckbox } from '../common/PixelCheckbox'
 import { PixelSlider } from '../common/PixelSlider'
@@ -38,23 +39,48 @@ interface PaletteBarProps {
   selectedIndex: number
   checkerDark?: boolean
   onSelectColor: (index: number) => void
+  onReorderColors?: (nextColors: string[], nextSelectedIndex: number) => void
   onOpenPaletteSheet: () => void
 }
 
 /**
- * Flat Dotpict-inspired Palette Swatch Bar:
+ * Flat Dotpict-inspired Single-Row Palette Swatch Bar (Sections 3-1 & 4-3):
+ * - Strictly 1-row horizontal display (`flex-nowrap overflow-x-auto`)
  * - Fixed leftmost Transparent Color Slot (`TRANSPARENT_COLOR_INDEX = -1`) outside normal 256-color cap & scroll
- * - Active color is marked by crisp double pixel border + pixel checkmark badge (zero shadows)
+ * - Normal colors support horizontal scrolling AND drag reordering on both PC mouse and Smartphone touch!
  */
 export function PaletteBar({
   colors,
   selectedIndex,
   checkerDark = false,
   onSelectColor,
+  onReorderColors,
   onOpenPaletteSheet,
 }: PaletteBarProps) {
   const { t } = useI18n()
+  const scrollStripRef = useRef<HTMLDivElement | null>(null)
   const isTransparentSelected = selectedIndex === TRANSPARENT_COLOR_INDEX
+
+  const colorIds = colors.map((_, idx) => `c-${idx}`)
+  const { dragState, getItemProps, shouldSuppressClick } = useLongPressReorder({
+    ids: colorIds,
+    enabled: Boolean(onReorderColors) && colors.length > 1,
+    axis: 'horizontal',
+    longPressMs: 170,
+    scopeId: 'palette-bar-colors',
+    scrollContainerRef: scrollStripRef,
+    onReorder: (nextIds) => {
+      if (!onReorderColors) return
+      const nextIndices = nextIds.map((id) => Number(id.slice(2)))
+      const nextColors = nextIndices.map((i) => colors[i]!)
+      let nextSel = selectedIndex
+      if (selectedIndex >= 0) {
+        const movedTo = nextIndices.indexOf(selectedIndex)
+        if (movedTo >= 0) nextSel = movedTo
+      }
+      onReorderColors(nextColors, nextSel)
+    },
+  })
 
   return (
     <div
@@ -114,16 +140,28 @@ export function PaletteBar({
       </button>
 
       <div
+        ref={scrollStripRef}
         style={{ gap: 'var(--ui-gap, 6px)' }}
-        className="flex items-center overflow-x-auto no-scrollbar py-1 flex-1 min-w-0"
+        className="flex flex-nowrap items-center overflow-x-auto no-scrollbar py-1 flex-1 min-w-0"
+        data-testid="palette-bar-scroll-strip"
       >
         {colors.map((hex, idx) => {
           const active = idx === selectedIndex
+          const itemId = `c-${idx}`
+          const isDragging = dragState?.draggingId === itemId
+          const isDropTarget =
+            dragState !== null &&
+            dragState.overId === itemId &&
+            dragState.draggingId !== itemId
           return (
             <button
               key={`${idx}-${hex}`}
               type="button"
-              onClick={() => onSelectColor(idx)}
+              {...getItemProps(itemId)}
+              onClick={() => {
+                if (shouldSuppressClick()) return
+                onSelectColor(idx)
+              }}
               style={{
                 width: 'var(--swatch-size, 34px)',
                 height: 'var(--swatch-size, 34px)',
@@ -131,10 +169,12 @@ export function PaletteBar({
                 backgroundColor: hex,
               }}
               className={`relative shrink-0 cursor-pointer transition-transform duration-75 ${
-                active
-                  ? 'border-2 border-[var(--border-strong)] outline-2 outline-offset-1 outline-[var(--accent-primary)] -translate-y-0.5'
-                  : 'border-2 border-[var(--border-pixel)] opacity-90 hover:opacity-100'
-              }`}
+                isDropTarget
+                  ? 'border-2 border-[var(--accent-teal)] outline-2 outline-dashed outline-[var(--accent-teal)] scale-105 z-10'
+                  : active
+                    ? 'border-2 border-[var(--border-strong)] outline-2 outline-offset-1 outline-[var(--accent-primary)] -translate-y-0.5'
+                    : 'border-2 border-[var(--border-pixel)] opacity-90 hover:opacity-100'
+              } ${isDragging ? 'opacity-60' : ''}`}
               aria-pressed={active}
               aria-label={`Color ${idx + 1} ${hex}`}
               data-testid={`quick-color-${idx}`}

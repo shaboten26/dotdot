@@ -3,7 +3,15 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 export interface UseLongPressReorderOptions {
   ids: readonly string[]
   enabled?: boolean
+  /** Hold threshold in ms for touch on scrollable body (drag handles start immediately) */
   longPressMs?: number
+  /** Movement threshold in px for mouse / immediate-touch drag activation */
+  dragThresholdPx?: number
+  /** If true, touch starts dragging as soon as pointer moves along primary axis (for non-scrolling / orthogonal strips) */
+  immediateTouchDrag?: boolean
+  axis?: 'vertical' | 'horizontal' | 'both'
+  /** Optional custom attribute name to resolve drop targets when multiple lists coexist */
+  scopeId?: string
   onReorder: (nextIds: string[]) => void
   scrollContainerRef?: React.RefObject<HTMLElement | null>
 }
@@ -14,15 +22,20 @@ export interface LongPressDragState {
 }
 
 /**
- * Shared Long-Press & Drag Reorder Hook (Sections 11 & 19)
- * - Short tap (< `longPressMs` and small movement) does NOT trigger drag so normal click/tap works reliably!
- * - Holding `longPressMs` (default 260ms) enters reorder drag mode on touch/pen; mouse also supports immediate HTML5 drag or pointer hold.
- * - Live insertion indicator via `dragState.overId`, auto-scroll near container/window edges, and clean commit on pointer release.
+ * Unified Pointer-Event Reorder Hook for PC Mouse & Smartphone Touch (Section 4-3)
+ * - PC Mouse (`pointerType === 'mouse'`): NO long-press required! Starts dragging naturally as soon as pointer moves >= `dragThresholdPx` (default 5px). Stationary click fires normal click / double-click cleanly.
+ * - Drag Handle (`[data-drag-handle="true"]`): Starts dragging immediately on move (both mouse and touch, zero hold delay).
+ * - Touch on scrollable item body: Distinguishes scroll vs drag via responsive hold (`longPressMs`, default 150ms) OR immediate drag when `immediateTouchDrag` is enabled.
+ * - Uses `setPointerCapture` + global pointer listeners + `document.elementFromPoint` so dragging stays smooth even outside item bounds, auto-scrolls vertical/horizontal containers, clearly exposes `draggingId` & `overId`, and rolls back cleanly on `pointercancel` or `Escape`.
  */
 export function useLongPressReorder({
   ids,
   enabled = true,
-  longPressMs = 260,
+  longPressMs = 150,
+  dragThresholdPx = 5,
+  immediateTouchDrag = false,
+  axis = 'vertical',
+  scopeId = 'default',
   onReorder,
   scrollContainerRef,
 }: UseLongPressReorderOptions) {
@@ -31,12 +44,18 @@ export function useLongPressReorder({
   const pendingRef = useRef<{
     id: string
     pointerId: number
+    pointerType: string
+    fromHandle: boolean
     startX: number
     startY: number
+    captureTarget: Element | null
   } | null>(null)
+  const activePointerIdRef = useRef<number | null>(null)
   const suppressClickRef = useRef(false)
   const idsRef = useRef(ids)
   idsRef.current = ids
+  const onReorderRef = useRef(onReorder)
+  onReorderRef.current = onReorder
 
   const clearPendingTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -49,24 +68,77 @@ export function useLongPressReorder({
     return () => clearPendingTimer()
   }, [clearPendingTimer])
 
+  const activateDrag = useCallback(
+    (id: string, pointerId: number, captureTarget: Element | null) => {
+      clearPendingTimer()
+      pendingRef.current = null
+      activePointerIdRef.current = pointerId
+      suppressClickRef.current = true
+      if (
+        captureTarget &&
+        typeof (captureTarget as HTMLElement).setPointerCapture === 'function'
+      ) {
+        try {
+          ;(captureTarget as HTMLElement).setPointerCapture(pointerId)
+        } catch {
+          // ignore synthetic event capture failures in jsdom
+        }
+      }
+      setDragState({ draggingId: id, overId: id })
+    },
+    [clearPendingTimer]
+  )
+
   useEffect(() => {
     if (!dragState) return
 
-    const handleGlobalMove = (e: PointerEvent) => {
-      e.preventDefault()
+    const resolveTargetIdAt = (clientX: number, clientY: number): string | null => {
+      if (typeof document.elementFromPoint !== 'function') return null
+      const hit = document.elementFromPoint(clientX, clientY)
+      if (!hit) return null
+      const itemEl = hit.closest(
+        `[data-reorder-id][data-reorder-scope="${scopeId}"]`
+      ) as HTMLElement | null
+      const fallbackEl =
+        itemEl ?? (hit.closest('[data-reorder-id]') as HTMLElement | null)
+      const targetId = fallbackEl?.dataset.reorderId ?? null
+      if (targetId && idsRef.current.includes(targetId)) {
+        return targetId
+      }
+      return null
+    }
 
-      // Auto-scroll container or window near edges
+    const handleGlobalMove = (e: PointerEvent) => {
+      if (
+        activePointerIdRef.current !== null &&
+        e.pointerId !== activePointerIdRef.current
+      ) {
+        return
+      }
+      if (e.cancelable) {
+        e.preventDefault()
+      }
+
       const scroller = scrollContainerRef?.current
       if (scroller) {
         const rect = scroller.getBoundingClientRect()
-        const edge = 44
-        if (e.clientY < rect.top + edge) {
-          scroller.scrollTop -= 8
-        } else if (e.clientY > rect.bottom - edge) {
-          scroller.scrollTop += 8
+        const edge = 40
+        if (axis === 'vertical' || axis === 'both') {
+          if (e.clientY < rect.top + edge) {
+            scroller.scrollTop -= 10
+          } else if (e.clientY > rect.bottom - edge) {
+            scroller.scrollTop += 10
+          }
         }
-      } else {
-        const edge = 56
+        if (axis === 'horizontal' || axis === 'both') {
+          if (e.clientX < rect.left + edge) {
+            scroller.scrollLeft -= 10
+          } else if (e.clientX > rect.right - edge) {
+            scroller.scrollLeft += 10
+          }
+        }
+      } else if (axis === 'vertical' || axis === 'both') {
+        const edge = 52
         if (e.clientY < edge) {
           window.scrollBy(0, -10)
         } else if (e.clientY > window.innerHeight - edge) {
@@ -74,130 +146,198 @@ export function useLongPressReorder({
         }
       }
 
-      if (typeof document.elementFromPoint === 'function') {
-        const hit = document.elementFromPoint(e.clientX, e.clientY)
-        const itemEl = hit?.closest('[data-reorder-id]') as HTMLElement | null
-        const targetId = itemEl?.dataset.reorderId
-        if (targetId && idsRef.current.includes(targetId)) {
-          setDragState((prev) =>
-            prev && prev.overId !== targetId
-              ? { ...prev, overId: targetId }
-              : prev
-          )
-        }
+      const targetId = resolveTargetIdAt(e.clientX, e.clientY)
+      if (targetId) {
+        setDragState((prev) =>
+          prev && prev.overId !== targetId ? { ...prev, overId: targetId } : prev
+        )
       }
     }
 
-    const finishDrag = () => {
+    const finishDrag = (e: PointerEvent, cancelled: boolean) => {
+      if (
+        activePointerIdRef.current !== null &&
+        e.pointerId !== activePointerIdRef.current
+      ) {
+        return
+      }
+      activePointerIdRef.current = null
+
+      // Also check final drop point on pointerup in case tests dispatch pointerup directly on target coordinates
+      const finalHoverId = !cancelled
+        ? resolveTargetIdAt(e.clientX, e.clientY)
+        : null
+
       setDragState((curr) => {
-        if (curr && curr.draggingId !== curr.overId) {
-          const list = [...idsRef.current]
-          const from = list.indexOf(curr.draggingId)
-          const to = list.indexOf(curr.overId)
-          if (from >= 0 && to >= 0) {
-            list.splice(from, 1)
-            list.splice(to, 0, curr.draggingId)
-            onReorder(list)
+        if (!cancelled && curr) {
+          const effectiveOverId = finalHoverId ?? curr.overId
+          if (curr.draggingId !== effectiveOverId) {
+            const list = [...idsRef.current]
+            const from = list.indexOf(curr.draggingId)
+            const to = list.indexOf(effectiveOverId)
+            if (from >= 0 && to >= 0) {
+              list.splice(from, 1)
+              list.splice(to, 0, curr.draggingId)
+              onReorderRef.current(list)
+            }
           }
         }
         return null
       })
+
       window.setTimeout(() => {
         suppressClickRef.current = false
-      }, 60)
+      }, 80)
+    }
+
+    const onUp = (e: PointerEvent) => finishDrag(e, false)
+    const onCancel = (e: PointerEvent) => finishDrag(e, true)
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        activePointerIdRef.current = null
+        setDragState(null)
+        window.setTimeout(() => {
+          suppressClickRef.current = false
+        }, 80)
+      }
     }
 
     window.addEventListener('pointermove', handleGlobalMove, { passive: false })
-    window.addEventListener('pointerup', finishDrag)
-    window.addEventListener('pointercancel', finishDrag)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
+    window.addEventListener('keydown', onKeyDown)
     return () => {
       window.removeEventListener('pointermove', handleGlobalMove)
-      window.removeEventListener('pointerup', finishDrag)
-      window.removeEventListener('pointercancel', finishDrag)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+      window.removeEventListener('keydown', onKeyDown)
     }
-  }, [dragState, onReorder, scrollContainerRef])
+  }, [axis, dragState, scopeId, scrollContainerRef])
 
   const getItemProps = useCallback(
     (id: string) => {
       if (!enabled) {
-        return { 'data-reorder-id': id }
+        return {
+          'data-reorder-id': id,
+          'data-reorder-scope': scopeId,
+        }
       }
 
       return {
         'data-reorder-id': id,
-        draggable: true,
+        'data-reorder-scope': scopeId,
         onDragStart: (e: React.DragEvent) => {
-          e.dataTransfer.effectAllowed = 'move'
-          setDragState({ draggingId: id, overId: id })
-        },
-        onDragOver: (e: React.DragEvent) => {
+          // Prevent native browser ghost-image HTML5 drag from hijacking Pointer Event dragging
           e.preventDefault()
-          setDragState((prev) =>
-            prev && prev.overId !== id ? { ...prev, overId: id } : prev
-          )
-        },
-        onDrop: (e: React.DragEvent) => {
-          e.preventDefault()
-          setDragState((curr) => {
-            if (curr && curr.draggingId !== id) {
-              const list = [...idsRef.current]
-              const from = list.indexOf(curr.draggingId)
-              const to = list.indexOf(id)
-              if (from >= 0 && to >= 0) {
-                list.splice(from, 1)
-                list.splice(to, 0, curr.draggingId)
-                onReorder(list)
-              }
-            }
-            return null
-          })
-        },
-        onDragEnd: () => {
-          setDragState(null)
         },
         onPointerDown: (e: React.PointerEvent) => {
           if (e.pointerType === 'mouse' && e.button !== 0) return
-          // Ignore presses originating inside nested action buttons
           const target = e.target as HTMLElement | null
           if (target?.closest('[data-no-reorder="true"]')) return
+          if (
+            target &&
+            ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+          ) {
+            return
+          }
 
+          const fromHandle = Boolean(target?.closest('[data-drag-handle="true"]'))
           clearPendingTimer()
           pendingRef.current = {
             id,
             pointerId: e.pointerId,
+            pointerType: e.pointerType || 'mouse',
+            fromHandle,
             startX: e.clientX,
             startY: e.clientY,
+            captureTarget: e.currentTarget,
           }
 
-          if (e.pointerType !== 'mouse') {
+          if (fromHandle) {
+            // Dedicated handle: enter drag immediately with zero delay
+            e.stopPropagation()
+            activateDrag(id, e.pointerId, e.currentTarget)
+            return
+          }
+
+          if (e.pointerType === 'touch' && !immediateTouchDrag) {
+            const capturedTarget = e.currentTarget
+            const pId = e.pointerId
             timerRef.current = window.setTimeout(() => {
               timerRef.current = null
-              suppressClickRef.current = true
-              setDragState({ draggingId: id, overId: id })
+              if (pendingRef.current && pendingRef.current.pointerId === pId) {
+                activateDrag(id, pId, capturedTarget)
+              }
             }, longPressMs)
           }
         },
         onPointerMove: (e: React.PointerEvent) => {
           const p = pendingRef.current
           if (!p || p.pointerId !== e.pointerId) return
-          const dist = Math.hypot(e.clientX - p.startX, e.clientY - p.startY)
-          // Cancel pending long-press if user started scrolling before threshold
-          if (dist > 10 && timerRef.current !== null) {
+
+          const dx = e.clientX - p.startX
+          const dy = e.clientY - p.startY
+          const dist = Math.hypot(dx, dy)
+
+          if (p.pointerType === 'mouse' || p.pointerType === 'pen' || immediateTouchDrag) {
+            if (dist >= dragThresholdPx) {
+              if (
+                immediateTouchDrag &&
+                p.pointerType === 'touch' &&
+                axis !== 'both'
+              ) {
+                // If orthogonal movement dominates, let the container scroll naturally
+                const primaryDelta = axis === 'horizontal' ? Math.abs(dx) : Math.abs(dy)
+                const crossDelta = axis === 'horizontal' ? Math.abs(dy) : Math.abs(dx)
+                if (crossDelta > primaryDelta * 1.25) {
+                  clearPendingTimer()
+                  pendingRef.current = null
+                  return
+                }
+              }
+              activateDrag(p.id, p.pointerId, p.captureTarget)
+            }
+            return
+          }
+
+          // Touch with hold timer: cancel pending drag if user started scrolling container before hold completes
+          if (dist > 9 && timerRef.current !== null) {
             clearPendingTimer()
             pendingRef.current = null
           }
         },
-        onPointerUp: () => {
-          clearPendingTimer()
-          pendingRef.current = null
+        onPointerUp: (e: React.PointerEvent) => {
+          if (pendingRef.current?.pointerId === e.pointerId) {
+            clearPendingTimer()
+            pendingRef.current = null
+          }
         },
-        onPointerCancel: () => {
-          clearPendingTimer()
-          pendingRef.current = null
+        onPointerCancel: (e: React.PointerEvent) => {
+          if (pendingRef.current?.pointerId === e.pointerId) {
+            clearPendingTimer()
+            pendingRef.current = null
+          }
         },
       }
     },
-    [clearPendingTimer, enabled, longPressMs, onReorder]
+    [
+      activateDrag,
+      axis,
+      clearPendingTimer,
+      dragThresholdPx,
+      enabled,
+      immediateTouchDrag,
+      longPressMs,
+      scopeId,
+    ]
+  )
+
+  const getHandleProps = useCallback(
+    () => ({
+      'data-drag-handle': 'true',
+      style: { touchAction: 'none' } as React.CSSProperties,
+    }),
+    []
   )
 
   const shouldSuppressClick = useCallback(() => {
@@ -207,6 +347,7 @@ export function useLongPressReorder({
   return {
     dragState,
     getItemProps,
+    getHandleProps,
     shouldSuppressClick,
   }
 }

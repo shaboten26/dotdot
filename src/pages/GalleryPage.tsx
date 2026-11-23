@@ -212,7 +212,7 @@ export function GalleryPage() {
             <VTButtonLink
               to="/settings"
               title={t('navSettings')}
-              className="pixel-btn min-w-[44px] min-h-[44px] flex items-center justify-center"
+              className="pixel-btn w-[44px] h-[44px] min-w-[44px] min-h-[44px] p-0 aspect-square shrink-0 flex items-center justify-center"
               data-testid="gallery-settings-btn"
             >
               <PixelIcon name="settings" size={18} />

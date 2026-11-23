@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   TRANSPARENT_COLOR_INDEX,
   type PaletteData,
@@ -17,6 +17,7 @@ import { PixelIcon } from '../common/PixelIcon'
 import { PixelSlider } from '../common/PixelSlider'
 import { PixelSelect } from '../common/PixelSelect'
 import { getCheckerboardStyle } from '../common/PixelThumbnail'
+import { useLongPressReorder } from '../../utils/useLongPressReorder'
 import { useI18n } from '../../i18n/I18nContext'
 
 interface PaletteSheetProps {
@@ -44,7 +45,27 @@ export function PaletteSheet({
 }: PaletteSheetProps) {
   const { t } = useI18n()
   const [tab, setTab] = useState<'hsv' | 'rgb' | 'hex'>('hsv')
-  const [dragIdx, setDragIdx] = useState<number | null>(null)
+  const swatchGridRef = useRef<HTMLDivElement | null>(null)
+
+  const colorIds = palette.colors.map((_, idx) => `ps-${idx}`)
+  const { dragState, getItemProps, shouldSuppressClick } = useLongPressReorder({
+    ids: colorIds,
+    enabled: palette.colors.length > 1,
+    axis: 'both',
+    longPressMs: 150,
+    scopeId: 'palette-sheet-colors',
+    scrollContainerRef: swatchGridRef,
+    onReorder: (nextIds) => {
+      const nextIndices = nextIds.map((id) => Number(id.slice(3)))
+      const nextColors = nextIndices.map((i) => palette.colors[i]!)
+      let nextSel = selectedIndex
+      if (selectedIndex >= 0) {
+        const movedTo = nextIndices.indexOf(selectedIndex)
+        if (movedTo >= 0) nextSel = movedTo
+      }
+      onUpdatePalette({ ...palette, colors: nextColors }, nextSel)
+    },
+  })
 
   const isTransparentSelected = selectedIndex === TRANSPARENT_COLOR_INDEX
   const editableColorIndex = isTransparentSelected
@@ -260,7 +281,10 @@ export function PaletteSheet({
             </div>
           </div>
 
-          <div className="grid grid-cols-8 sm:grid-cols-10 gap-1.5 max-h-40 overflow-y-auto p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)]">
+          <div
+            ref={swatchGridRef}
+            className="grid grid-cols-8 sm:grid-cols-10 gap-1.5 max-h-40 overflow-y-auto p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)]"
+          >
             {/* Fixed Leftmost Transparent Slot */}
             <button
               type="button"
@@ -293,28 +317,30 @@ export function PaletteSheet({
 
             {palette.colors.map((hex, idx) => {
               const active = idx === selectedIndex
+              const itemId = `ps-${idx}`
+              const isDragging = dragState?.draggingId === itemId
+              const isDropTarget =
+                dragState !== null &&
+                dragState.overId === itemId &&
+                dragState.draggingId !== itemId
               return (
                 <button
                   key={`${idx}-${hex}`}
                   type="button"
-                  draggable
-                  onDragStart={() => setDragIdx(idx)}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => {
-                    if (dragIdx === null || dragIdx === idx) return
-                    const nextColors = [...palette.colors]
-                    const [moved] = nextColors.splice(dragIdx, 1)
-                    nextColors.splice(idx, 0, moved)
-                    setDragIdx(null)
-                    onUpdatePalette({ ...palette, colors: nextColors }, idx)
+                  {...getItemProps(itemId)}
+                  onClick={() => {
+                    if (shouldSuppressClick()) return
+                    onSelectColor(idx)
                   }}
-                  onClick={() => onSelectColor(idx)}
                   style={{ backgroundColor: hex }}
                   className={`relative aspect-square cursor-pointer ${
-                    active
-                      ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)] z-10'
-                      : 'border-2 border-[var(--border-pixel)]'
-                  }`}
+                    isDropTarget
+                      ? 'border-2 border-[var(--accent-teal)] outline-2 outline-dashed outline-[var(--accent-teal)] z-20'
+                      : active
+                        ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)] z-10'
+                        : 'border-2 border-[var(--border-pixel)]'
+                  } ${isDragging ? 'opacity-60' : ''}`}
+                  data-testid={`sheet-color-${idx}`}
                 >
                   {active && (
                     <span

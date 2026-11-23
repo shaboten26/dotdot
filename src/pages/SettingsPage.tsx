@@ -26,6 +26,7 @@ import { PixelIcon } from '../components/common/PixelIcon'
 import { PixelCheckbox } from '../components/common/PixelCheckbox'
 import { PixelSlider } from '../components/common/PixelSlider'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
+import { useLongPressReorder } from '../utils/useLongPressReorder'
 import { VTButtonLink } from '../components/common/ViewTransitionNav'
 
 function formatBytes(bytes: number | null): string | null {
@@ -68,7 +69,19 @@ export function SettingsPage() {
   const [editingPalette, setEditingPalette] = useState<PaletteData | null>(null)
   const [editingColorIdx, setEditingColorIdx] = useState(0)
   const [paletteToDelete, setPaletteToDelete] = useState<PaletteData | null>(null)
-  const [dragPalId, setDragPalId] = useState<string | null>(null)
+  const paletteListRef = useRef<HTMLDivElement | null>(null)
+  const paletteIds = palettes.map((p) => p.id)
+  const { dragState: palDragState, getItemProps: getPalItemProps } =
+    useLongPressReorder({
+      ids: paletteIds,
+      enabled: palettes.length > 1,
+      axis: 'vertical',
+      scopeId: 'settings-palettes',
+      scrollContainerRef: paletteListRef,
+      onReorder: (nextIds) => {
+        void reorderLibraryPalettes(nextIds)
+      },
+    })
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [pendingPack, setPendingPack] = useState<ValidatedEnvPack | null>(null)
@@ -616,27 +629,23 @@ export function SettingsPage() {
               </button>
             </div>
 
-            <div className="space-y-2">
+            <div ref={paletteListRef} className="space-y-2">
               {palettes.map((pal, idx) => {
                 const isLastRemaining = palettes.length <= 1
+                const isDragging = palDragState?.draggingId === pal.id
+                const isDropTarget =
+                  palDragState !== null &&
+                  palDragState.overId === pal.id &&
+                  palDragState.draggingId !== pal.id
                 return (
                   <div
                     key={pal.id}
-                    draggable
-                    onDragStart={() => setDragPalId(pal.id)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => {
-                      if (!dragPalId || dragPalId === pal.id) return
-                      const ids = palettes.map((p) => p.id)
-                      const from = ids.indexOf(dragPalId)
-                      const to = ids.indexOf(pal.id)
-                      if (from < 0 || to < 0) return
-                      ids.splice(from, 1)
-                      ids.splice(to, 0, dragPalId)
-                      setDragPalId(null)
-                      void reorderLibraryPalettes(ids)
-                    }}
-                    className="p-3 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] flex flex-wrap items-center justify-between gap-2"
+                    {...getPalItemProps(pal.id)}
+                    className={`p-3 bg-[var(--bg-elevated)] border-2 flex flex-wrap items-center justify-between gap-2 select-none ${
+                      isDropTarget
+                        ? 'border-[var(--accent-teal)] outline-2 outline-dashed outline-[var(--accent-teal)]'
+                        : 'border-[var(--border-pixel)]'
+                    } ${isDragging ? 'opacity-60' : ''}`}
                     data-testid={`lib-palette-${pal.id}`}
                   >
                     <div className="min-w-0 flex-1 space-y-1">

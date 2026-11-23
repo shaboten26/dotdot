@@ -48,7 +48,10 @@ interface LayerSheetProps {
   onUpdateLayer: (
     id: string,
     patch: Partial<
-      Pick<LayerRuntime, 'name' | 'visible' | 'opacity' | 'blendMode' | 'clipping'>
+      Pick<
+        LayerRuntime,
+        'name' | 'visible' | 'locked' | 'opacity' | 'blendMode' | 'clipping'
+      >
     >
   ) => void
   onReorderLayers: (orderedBottomToTopIds: string[]) => void
@@ -56,6 +59,8 @@ interface LayerSheetProps {
   onCopyLayer: (id: string) => void
   onFlipLayer: (id: string, dir: 'horizontal' | 'vertical') => void
   onStartLayerMoveOnCanvas: (id: string) => void
+  /** Optional hook in 1-frame mode to add a 2nd frame and transition smoothly into Timeline mode */
+  onAddFirstAnimationFrame?: () => void
 }
 
 /**
@@ -65,9 +70,14 @@ interface LayerSheetProps {
  * - Layer rename input auto-selects full existing text on focus (`select()`), saves on Enter, cancels on Escape, rejects empty names
  * - Long-press & drag reordering with drop placeholder
  */
-export function LayerSheet({
-  open,
+export type LayerPanelContentProps = Omit<LayerSheetProps, 'open' | 'onClose'> & {
+  onClose?: () => void
+  compactInline?: boolean
+}
+
+export function LayerPanelContent({
   onClose,
+  compactInline = false,
   canvasWidth,
   canvasHeight,
   checkerDark = false,
@@ -91,7 +101,8 @@ export function LayerSheet({
   onCopyLayer,
   onFlipLayer,
   onStartLayerMoveOnCanvas,
-}: LayerSheetProps) {
+  onAddFirstAnimationFrame,
+}: LayerPanelContentProps) {
   const { t } = useI18n()
   const { reducedMotion } = useApp()
 
@@ -107,14 +118,7 @@ export function LayerSheet({
   const [renameDraft, setRenameDraft] = useState('')
   const renameInputRef = useRef<HTMLInputElement | null>(null)
   const listScrollRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    if (!open) {
-      setMenuLayerId(null)
-      setBatchMenuOpen(false)
-      setRenamingId(null)
-    }
-  }, [open])
+  const lastNameTapRef = useRef<{ layerId: string; time: number } | null>(null)
 
   // Auto-focus and select full layer name whenever inline rename opens
   useEffect(() => {
@@ -125,53 +129,74 @@ export function LayerSheet({
     }
   }, [renamingId])
 
-  const { dragState, getItemProps, shouldSuppressClick } = useLongPressReorder({
-    ids: displayIds,
-    enabled: menuLayerId === null && renamingId === null && layers.length > 1,
-    onReorder: (nextTopToBottomIds) => {
-      onReorderLayers([...nextTopToBottomIds].reverse())
-    },
-    scrollContainerRef: listScrollRef,
-  })
+  const { dragState, getItemProps, getHandleProps, shouldSuppressClick } =
+    useLongPressReorder({
+      ids: displayIds,
+      enabled: menuLayerId === null && renamingId === null && layers.length > 1,
+      axis: 'vertical',
+      scopeId: compactInline ? 'inline-layers' : 'modal-layers',
+      onReorder: (nextTopToBottomIds) => {
+        onReorderLayers([...nextTopToBottomIds].reverse())
+      },
+      scrollContainerRef: listScrollRef,
+    })
 
   const blendOptions = ALL_BLEND_MODES.map((bm) => ({
     value: bm,
     label: t(BLEND_LABEL_KEYS[bm]),
   }))
 
+  const beginInlineRename = (layerId: string, currentName: string) => {
+    setMenuLayerId(null)
+    setRenameDraft(currentName)
+    setRenamingId(layerId)
+  }
+
   const commitInlineRename = (layerId: string, originalName: string) => {
     const trimmed = renameDraft.trim()
     setRenamingId(null)
     if (trimmed.length > 0 && trimmed !== originalName) {
       onUpdateLayer(layerId, { name: trimmed })
+    } else {
+      setRenameDraft(originalName)
     }
   }
 
   return (
-    <Modal
-      open={open}
-      title={`${t('layersTitle')} (${layers.length}/${MAX_LAYERS})`}
-      onClose={onClose}
-      maxWidthClass="max-w-lg"
-    >
-      <div className="space-y-3">
-        {/* Clean Top Bar: Add Layer + Drag Reorder Hint */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="space-y-2.5">
+      {/* Clean Top Bar: Add Layer + Optional Add Frame (1-frame -> Animation) + Drag Reorder Hint */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
             disabled={atMaxLayers}
             onClick={onAddLayer}
-            className="pixel-btn pixel-btn-active min-h-[42px] px-3.5 text-xs font-bold flex items-center gap-1.5"
+            className="pixel-btn pixel-btn-active min-h-[38px] px-3 text-xs font-bold flex items-center gap-1.5"
             data-testid="add-layer-btn"
           >
             <PixelIcon name="plus" size={14} />
-            <span>{t('addLayer')}</span>
+            <span>
+              {t('addLayer')} ({layers.length}/{MAX_LAYERS})
+            </span>
           </button>
 
-          <span className="text-[11px] text-[var(--text-secondary)]">
-            {t('layerReorderHint')}
-          </span>
+          {onAddFirstAnimationFrame && (
+            <button
+              type="button"
+              onClick={onAddFirstAnimationFrame}
+              className="pixel-btn pixel-btn-teal min-h-[38px] px-3 text-xs font-bold flex items-center gap-1.5"
+              data-testid="add-first-frame-btn"
+            >
+              <PixelIcon name="film" size={14} />
+              <span>+ フレーム追加</span>
+            </button>
+          )}
         </div>
+
+        <span className="text-[11px] text-[var(--text-secondary)]">
+          {t('layerReorderHint')}
+        </span>
+      </div>
 
         {/* Multi-Layer Batch Action Bar (shown ONLY when >=1 layer is checked) */}
         {checkedCount > 0 && (
@@ -205,7 +230,7 @@ export function LayerSheet({
                   type="button"
                   onClick={() => {
                     setBatchMenuOpen(false)
-                    onClose()
+                    onClose?.()
                     onStartMultiLayerMoveOnCanvas()
                   }}
                   className="pixel-btn pixel-btn-teal min-h-[36px] px-3 text-xs font-bold flex items-center gap-1.5"
@@ -290,7 +315,9 @@ export function LayerSheet({
         {/* Layer Stack List (Top layer at top) */}
         <div
           ref={listScrollRef}
-          className="space-y-2 max-h-[60dvh] overflow-y-auto pr-0.5"
+          className={`space-y-1.5 overflow-y-auto pr-0.5 ${
+            compactInline ? 'max-h-[26dvh]' : 'max-h-[60dvh]'
+          }`}
           data-testid="layer-list-container"
         >
           {displayLayers.map((layer) => {
@@ -334,6 +361,18 @@ export function LayerSheet({
                   }}
                   className="flex items-center gap-2 px-2 py-2 cursor-pointer select-none"
                 >
+                  {/* Drag Handle for instant touch/mouse reordering without hold delay */}
+                  {layers.length > 1 && (
+                    <span
+                      {...getHandleProps()}
+                      title={t('layerReorderHint')}
+                      className="w-5 h-9 flex items-center justify-center text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-grab active:cursor-grabbing shrink-0"
+                      data-testid={`layer-drag-handle-${layer.id}`}
+                    >
+                      <PixelIcon name="drag" size={13} />
+                    </span>
+                  )}
+
                   {/* 0. Independent Multi-Select Checkbox (NEVER changes activeLayerId!) */}
                   <div
                     data-no-reorder="true"
@@ -348,14 +387,14 @@ export function LayerSheet({
                     />
                   </div>
 
-                  {/* 1. Real Pixel Data Thumbnail (46x46px) */}
+                  {/* 1. Real Pixel Data Thumbnail */}
                   <div className="relative shrink-0">
                     <LayerBufferThumbnail
                       layer={layer}
                       canvasWidth={canvasWidth}
                       canvasHeight={canvasHeight}
                       checkerDark={checkerDark}
-                      size={46}
+                      size={compactInline ? 38 : 46}
                     />
                     {isSelected && (
                       <span
@@ -367,7 +406,7 @@ export function LayerSheet({
                     )}
                   </div>
 
-                  {/* 2 & 3. Layer Name + Concise Auxiliary Metadata */}
+                  {/* 2 & 3. Layer Name (Double-click on PC / Double-tap on Touch starts inline rename!) + Auxiliary Metadata */}
                   <div className="flex-1 min-w-0 space-y-0.5">
                     {renamingId === layer.id ? (
                       <input
@@ -378,6 +417,7 @@ export function LayerSheet({
                         value={renameDraft}
                         onFocus={(e) => e.currentTarget.select()}
                         onClick={(e) => e.stopPropagation()}
+                        onDoubleClick={(e) => e.stopPropagation()}
                         onChange={(e) => setRenameDraft(e.target.value)}
                         onBlur={() => commitInlineRename(layer.id, layer.name)}
                         onKeyDown={(e) => {
@@ -386,10 +426,11 @@ export function LayerSheet({
                             commitInlineRename(layer.id, layer.name)
                           } else if (e.key === 'Escape') {
                             e.preventDefault()
+                            setRenameDraft(layer.name)
                             setRenamingId(null)
                           }
                         }}
-                        className="w-full min-h-[34px] px-2 text-xs font-bold pixel-input"
+                        className="w-full min-h-[32px] px-2 text-xs font-bold pixel-input"
                         data-testid={`layer-rename-input-${layer.id}`}
                       />
                     ) : (
@@ -401,7 +442,45 @@ export function LayerSheet({
                             className="text-[var(--accent-primary)]"
                           />
                         )}
-                        <span className="text-xs font-bold truncate">
+                        {layer.locked && (
+                          <PixelIcon
+                            name="lock"
+                            size={12}
+                            className="text-[var(--accent-rose)]"
+                          />
+                        )}
+                        <span
+                          onDoubleClick={(e) => {
+                            e.stopPropagation()
+                            if (shouldSuppressClick()) return
+                            beginInlineRename(layer.id, layer.name)
+                          }}
+                          onPointerUp={(e) => {
+                            if (e.pointerType !== 'touch' && e.pointerType !== 'pen') {
+                              return
+                            }
+                            if (shouldSuppressClick()) return
+                            const now = performance.now()
+                            const prev = lastNameTapRef.current
+                            if (
+                              prev &&
+                              prev.layerId === layer.id &&
+                              now - prev.time <= 320
+                            ) {
+                              e.stopPropagation()
+                              lastNameTapRef.current = null
+                              beginInlineRename(layer.id, layer.name)
+                            } else {
+                              lastNameTapRef.current = {
+                                layerId: layer.id,
+                                time: now,
+                              }
+                            }
+                          }}
+                          className="text-xs font-bold truncate py-0.5"
+                          title={t('rename')}
+                          data-testid={`layer-name-label-${layer.id}`}
+                        >
                           {layer.name}
                         </span>
                       </div>
@@ -440,6 +519,27 @@ export function LayerSheet({
                     <PixelIcon
                       name={layer.visible ? 'eye' : 'eyeOff'}
                       size={16}
+                    />
+                  </button>
+
+                  {/* 4b. Direct Lock Toggle */}
+                  <button
+                    type="button"
+                    data-no-reorder="true"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onUpdateLayer(layer.id, { locked: !layer.locked })
+                    }}
+                    className={`min-w-[36px] min-h-[36px] flex items-center justify-center shrink-0 ${
+                      layer.locked ? 'pixel-btn pixel-btn-danger' : 'pixel-btn opacity-80'
+                    }`}
+                    aria-label={layer.locked ? 'ロック解除' : 'レイヤーロック'}
+                    title={layer.locked ? 'ロック解除' : 'レイヤーロック'}
+                    data-testid={`layer-lock-${layer.id}`}
+                  >
+                    <PixelIcon
+                      name={layer.locked ? 'lock' : 'unlock'}
+                      size={14}
                     />
                   </button>
 
@@ -602,7 +702,7 @@ export function LayerSheet({
                           type="button"
                           onClick={() => {
                             setMenuLayerId(null)
-                            onClose()
+                            onClose?.()
                             onStartLayerMoveOnCanvas(layer.id)
                           }}
                           className="w-full pixel-btn pixel-btn-teal min-h-[40px] px-3 text-xs font-bold flex items-center justify-center gap-2"
@@ -669,7 +769,20 @@ export function LayerSheet({
             )
           })}
         </div>
-      </div>
+    </div>
+  )
+}
+
+export function LayerSheet({ open, onClose, ...rest }: LayerSheetProps) {
+  const { t } = useI18n()
+  return (
+    <Modal
+      open={open}
+      title={`${t('layersTitle')} (${rest.layers.length}/${MAX_LAYERS})`}
+      onClose={onClose}
+      maxWidthClass="max-w-lg"
+    >
+      <LayerPanelContent onClose={onClose} {...rest} />
     </Modal>
   )
 }

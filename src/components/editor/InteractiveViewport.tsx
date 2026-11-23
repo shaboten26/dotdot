@@ -31,11 +31,17 @@ import {
 /** Section 9-2: Double-tap detection threshold in ms (default ~300ms) */
 export const DOUBLE_TAP_EYEDROPPER_WINDOW_MS = 300
 
+/** Section 4-2: Minimum touch slide distance in CSS px before moving the virtual cursor (taps NEVER move cursor) */
+export const TOUCH_SLIDE_DEADZONE_PX = 6
+
 interface InteractiveViewportProps {
   projectId: string
   width: number
   height: number
   compositedBuffer: Uint8ClampedArray | null
+  onionPrevBuffer?: Uint8ClampedArray | null
+  onionNextBuffer?: Uint8ClampedArray | null
+  isPlaying?: boolean
   tool: ToolId
   toolSettings: ToolSettings
   cursor: Point
@@ -50,6 +56,7 @@ interface InteractiveViewportProps {
   isTransparentColor: boolean
   eyedropperDoubleTap: boolean
   fitTrigger: number
+  onModalityChange?: (modality: InputModality) => void
   onMoveCursor: (pt: Point, allowOutOfBounds?: boolean) => void
   onBeginDrawAt: (pt?: Point, allowOutOfBounds?: boolean) => void
   onEndDraw: () => void
@@ -132,6 +139,9 @@ export function InteractiveViewport({
   width,
   height,
   compositedBuffer,
+  onionPrevBuffer = null,
+  onionNextBuffer = null,
+  isPlaying = false,
   tool,
   toolSettings,
   cursor,
@@ -146,6 +156,7 @@ export function InteractiveViewport({
   isTransparentColor,
   eyedropperDoubleTap,
   fitTrigger,
+  onModalityChange,
   onMoveCursor,
   onBeginDrawAt,
   onEndDraw,
@@ -160,6 +171,7 @@ export function InteractiveViewport({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const displayCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const onionCanvasRef = useRef<HTMLCanvasElement | null>(null)
 
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({
     w: 360,
@@ -170,9 +182,20 @@ export function InteractiveViewport({
     panX: 24,
     panY: 24,
   })
-  const [modality, setModality] = useState<InputModality>(() =>
+  const [modality, setModalityState] = useState<InputModality>(() =>
     detectInitialInputModality()
   )
+  const setModality = useCallback(
+    (next: InputModality) => {
+      setModalityState((prev) => (prev === next ? prev : next))
+      onModalityChange?.(next)
+    },
+    [onModalityChange]
+  )
+
+  useEffect(() => {
+    onModalityChange?.(modality)
+  }, [modality, onModalityChange])
   const [spacePressed, setSpacePressed] = useState(false)
   const [antsOffset, setAntsOffset] = useState(0)
 
@@ -364,6 +387,39 @@ export function InteractiveViewport({
         ctx.fillRect(x0, y0, wCell, hCell)
       }
     }
+
+    // 1b. Optional Onion Skin Underlays (Prev frame tinted warm rose, Next frame tinted cool teal) when not playing
+    const drawOnionBuffer = (
+      buf: Uint8ClampedArray | null,
+      tint: [number, number, number],
+      alpha: number
+    ) => {
+      if (isPlaying || !buf || buf.length !== width * height * 4) return
+      if (!onionCanvasRef.current) {
+        onionCanvasRef.current = document.createElement('canvas')
+      }
+      const oc = onionCanvasRef.current
+      if (oc.width !== width || oc.height !== height) {
+        oc.width = width
+        oc.height = height
+      }
+      const octx = oc.getContext('2d')
+      if (!octx) return
+      const tinted = new Uint8ClampedArray(buf.length)
+      for (let i = 0; i < buf.length; i += 4) {
+        const a = buf[i + 3]!
+        if (a === 0) continue
+        tinted[i] = Math.round(buf[i]! * 0.45 + tint[0] * 0.55)
+        tinted[i + 1] = Math.round(buf[i + 1]! * 0.45 + tint[1] * 0.55)
+        tinted[i + 2] = Math.round(buf[i + 2]! * 0.45 + tint[2] * 0.55)
+        tinted[i + 3] = Math.round(a * alpha)
+      }
+      octx.putImageData(new ImageData(tinted, width, height), 0, 0)
+      ctx.imageSmoothingEnabled = false
+      ctx.drawImage(oc, 0, 0, width, height, devLeft, devTop, devW, devH)
+    }
+    drawOnionBuffer(onionPrevBuffer, [216, 108, 130], 0.34)
+    drawOnionBuffer(onionNextBuffer, [87, 175, 162], 0.3)
 
     if (compositedBuffer && compositedBuffer.length === width * height * 4) {
       if (!offscreenCanvasRef.current) {
@@ -595,8 +651,9 @@ export function InteractiveViewport({
       drawPixelHandle(ctx, s2.sx, s2.sy, '#d99b52', dpr)
     }
 
-    // 8. Tool-Specific Pixel Cursor (Section 2: Line/Bezier cursor matches exact `lineSize` & `lineShape`!)
-    if (!floatingShape && !moveSession) {
+    // 8. Tool-Specific Virtual Pixel Cursor
+    // Section 3-1: On PC (`modality === 'mouse'`), hide the app's custom virtual cursor and draw with OS mouse cursor!
+    if (!floatingShape && !moveSession && !isPlaying && modality !== 'mouse') {
       const cellX0 = colDevX(cursor.x)
       const cellY0 = rowDevY(cursor.y)
       const cellW = Math.max(Math.round(2 * dpr), colDevX(cursor.x + 1) - cellX0)
@@ -730,6 +787,9 @@ export function InteractiveViewport({
     width,
     height,
     compositedBuffer,
+    onionPrevBuffer,
+    onionNextBuffer,
+    isPlaying,
     tool,
     toolSettings,
     showGrid,
@@ -779,8 +839,11 @@ export function InteractiveViewport({
       if (activePointersRef.current.size === 2) {
         cancelPendingSingleTap()
         lastTapRef.current = null
-        if (singleGestureRef.current?.mode === 'mouse-draw') {
-          onAbortStroke()
+        if (singleGestureRef.current) {
+          singleGestureRef.current.hadMultiTouch = true
+          if (singleGestureRef.current.mode === 'mouse-draw') {
+            onAbortStroke()
+          }
         }
         singleGestureRef.current = null
         const pts = Array.from(activePointersRef.current.values())
@@ -1020,10 +1083,13 @@ export function InteractiveViewport({
       if (g && g.pointerId === e.pointerId) {
         const dxCss = vx - g.lastVx
         const dyCss = vy - g.lastVy
+        const distFromStart = Math.hypot(vx - g.startVx, vy - g.startVy)
         g.lastVx = vx
         g.lastVy = vy
 
-        if (Math.hypot(vx - g.startVx, vy - g.startVy) > 4) {
+        const moveThreshold =
+          g.mode === 'touch-cursor' ? TOUCH_SLIDE_DEADZONE_PX : 4
+        if (!g.moved && distFromStart >= moveThreshold) {
           g.moved = true
         }
 
@@ -1073,8 +1139,13 @@ export function InteractiveViewport({
         }
 
         if (g.mode === 'touch-cursor') {
+          // Section 4-2: Touching/tapping alone MUST NOT move the cursor!
+          // Only start moving the cursor AFTER the finger slides past TOUCH_SLIDE_DEADZONE_PX,
+          // and move purely by relative finger delta from the existing cursor (never jump to tap point).
+          if (!g.moved) {
+            return
+          }
           const effScale = Math.max(0.5, transform.scale)
-          // Section 12: Do NOT clamp to `[0..width-1]` when tool supports out-of-canvas endpoints!
           const nextFloatX = allowsOutOfBoundsPoint
             ? Math.max(-512, Math.min(width + 512, subPixelCursorRef.current.x + dxCss / effScale))
             : Math.max(0, Math.min(width - 1, subPixelCursorRef.current.x + dxCss / effScale))
@@ -1182,7 +1253,7 @@ export function InteractiveViewport({
           return
         }
 
-        // Touch stationary tap: check double-tap on exact same canvas pixel!
+        // Touch stationary tap: check double-tap eyedropper ONLY; NEVER jump/move the virtual cursor on tap! (Section 4-2)
         if (g.mode === 'touch-cursor' && !g.moved && !g.hadMultiTouch) {
           const cx = g.startCanvasPt.x
           const cy = g.startCanvasPt.y
@@ -1209,14 +1280,7 @@ export function InteractiveViewport({
           } else {
             lastTapRef.current = null
           }
-          // Move cursor to tapped cell on single touch tap (touch mode uses Draw button to draw, so zero unwanted paint!)
-          if (inside || allowsOutOfBoundsPoint) {
-            const nextPt = allowsOutOfBoundsPoint
-              ? { x: cx, y: cy }
-              : clampCanvasPoint({ x: cx, y: cy }, width, height)
-            subPixelCursorRef.current = { x: nextPt.x, y: nextPt.y }
-            onMoveCursor(nextPt, allowsOutOfBoundsPoint)
-          }
+          // Stationary touch tap intentionally leaves cursor position untouched!
           return
         }
 

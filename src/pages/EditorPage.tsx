@@ -451,12 +451,18 @@ export function EditorPage() {
             onRedo={editor.redo}
           />
 
-          {/* 3. Palette Swatch Strip (with fixed leftmost Transparent Slot) */}
+          {/* 3. Palette Swatch Strip (with fixed leftmost Transparent Slot & Drag Reorder) */}
           <PaletteBar
             colors={editor.palette.colors}
             selectedIndex={editor.selectedColorIndex}
             checkerDark={settings.checkerboardDark}
             onSelectColor={editor.setSelectedColorIndex}
+            onReorderColors={(nextColors, nextSelectedIdx) => {
+              editor.updateProjectPalette(
+                { ...editor.palette, colors: nextColors },
+                nextSelectedIdx
+              )
+            }}
             onOpenPaletteSheet={() => {
               setOptionsOpen(false)
               setPaletteOpen(true)
