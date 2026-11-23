@@ -372,8 +372,8 @@ export function EditorPage() {
             }}
             onEndDraw={editor.endDrawAction}
             onAbortStroke={editor.abortStrokePreview}
-            onDoubleTapEyedropper={(pt) => {
-              editor.pickColorAtCanvasPoint(pt, { restorePreviousTool: true })
+            onDoubleTapEyedropper={() => {
+              editor.pickColorAtCurrentCursor()
             }}
             onMoveFloatingShape={editor.moveFloatingShape}
             onUpdateMoveOffset={editor.updateActiveMoveOffset}

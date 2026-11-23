@@ -198,6 +198,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const updateSettings = useCallback(async (patch: Partial<AppSettings>) => {
+    setSettings((prev) => normalizeAppSettings({ ...prev, ...patch, id: 'app-settings' }))
     const stored = await db.settings.get('app-settings')
     const base = normalizeAppSettings(stored)
     const next = normalizeAppSettings({ ...base, ...patch, id: 'app-settings' })

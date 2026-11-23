@@ -178,6 +178,8 @@ export function useEditorController(options: UseEditorOptions) {
   const [selectedColorIndex, setSelectedColorIndex] = useState<number>(0)
 
   const [tool, setTool] = useState<ToolId>('pen')
+  const toolRef = useRef<ToolId>('pen')
+  toolRef.current = tool
   /** Remember previous drawing tool before manual eyedropper selection so picking returns to it */
   const prevToolBeforeEyedropperRef = useRef<ToolId>('pen')
   const [toolSettings, setToolSettings] = useState<ToolSettings>(DEFAULT_TOOL_SETTINGS)
@@ -185,6 +187,9 @@ export function useEditorController(options: UseEditorOptions) {
   const outlineColorExplicitRef = useRef<boolean>(false)
 
   const [cursor, setCursor] = useState<Point>({ x: 0, y: 0 })
+  /** Always-fresh cursor ref so double-tap eyedropper NEVER reads a stale React closure coordinate! */
+  const cursorRef = useRef<Point>({ x: 0, y: 0 })
+  cursorRef.current = cursor
   const [stepPhase, setStepPhase] = useState<MultiStepPhase>({ kind: 'idle' })
   const [floatingShape, setFloatingShape] = useState<FloatingShapeState | null>(null)
   const [moveSession, setMoveSession] = useState<ActiveMoveSession | null>(null)
@@ -211,6 +216,17 @@ export function useEditorController(options: UseEditorOptions) {
 
   const historyRef = useRef<HistoryManager>(new HistoryManager(historyLimit))
   const saveTimerRef = useRef<number | null>(null)
+  const mountedRef = useRef<boolean>(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (saveTimerRef.current !== null) {
+        clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = null
+      }
+    }
+  }, [])
 
   useEffect(() => {
     historyRef.current.setLimit(historyLimit)
@@ -399,6 +415,7 @@ export function useEditorController(options: UseEditorOptions) {
             },
             db
           )
+          if (!mountedRef.current) return
           setProject(projToSave)
           setSaving(false)
           if (res.quotaTrimmed) {
@@ -406,6 +423,7 @@ export function useEditorController(options: UseEditorOptions) {
           }
           onSaved?.()
         } catch {
+          if (!mountedRef.current) return
           setSaving(false)
           onSaveError?.()
         }
@@ -1141,6 +1159,7 @@ export function useEditorController(options: UseEditorOptions) {
         ? normalizeWorldPoint(pt)
         : clampCanvasPoint(pt, project.width, project.height)
 
+      cursorRef.current = nextPt
       setCursor((prev) =>
         prev.x === nextPt.x && prev.y === nextPt.y ? prev : nextPt
       )
@@ -1224,8 +1243,12 @@ export function useEditorController(options: UseEditorOptions) {
       }
 
       if (options?.restorePreviousTool) {
-        const prev = prevToolBeforeEyedropperRef.current
-        setTool(prev === 'eyedropper' ? 'pen' : prev)
+        if (toolRef.current === 'eyedropper') {
+          const prev = prevToolBeforeEyedropperRef.current
+          setTool(prev === 'eyedropper' ? 'pen' : prev)
+        }
+        // When invoked via double-tap while using another tool (e.g. pen, line, fill, shape),
+        // `toolRef.current` is ALREADY that active tool, so we preserve it without clobbering!
       }
       return true
     },
@@ -1240,6 +1263,15 @@ export function useEditorController(options: UseEditorOptions) {
       selectedColorIndex,
     ]
   )
+
+  /**
+   * Section 3: Sample color at the CURRENT in-app cursor (`cursorRef.current`).
+   * Used by double-tap eyedropper so the sample coordinate is ALWAYS the cursor's pixel, NEVER the finger tap location!
+   */
+  const pickColorAtCurrentCursor = useCallback((): boolean => {
+    const pt = cursorRef.current
+    return pickColorAtCanvasPoint(pt, { restorePreviousTool: true })
+  }, [pickColorAtCanvasPoint])
 
   const beginDrawAction = useCallback(
     (targetPoint?: Point, allowOutOfBounds = false) => {
@@ -2565,6 +2597,7 @@ export function useEditorController(options: UseEditorOptions) {
     endDrawAction,
     abortStrokePreview,
     pickColorAtCanvasPoint,
+    pickColorAtCurrentCursor,
     undo,
     redo,
     nudgeSelection,

@@ -70,7 +70,7 @@ export const TRANSLATIONS = {
     toolOptions: 'ツール設定',
     tapAgainHint: '選択中ツールを再タップで設定開閉',
     eyedropperDoubleTapLabel: '二回タップで起動',
-    eyedropperDoubleTapDesc: '同じ画素マスを素早く2回タップすると色を取得して直前のツールへ戻ります',
+    eyedropperDoubleTapDesc: 'キャンバス上で素早く2回タップすると、現在カーソルが指している画素の色を取得して元のツールへ戻ります',
 
     // Tool Options
     size: 'サイズ',
@@ -96,7 +96,7 @@ export const TRANSLATIONS = {
     fillGradient: 'グラデーション',
     gradientLinear: '線形グラデーション',
     gradientRadial: '円形グラデーション',
-    gradientFixedRatio: '縦横比を1:1に固定する',
+    gradientFixedRatio: '縦横比を1:1に固定',
     gradientSteps: '段階',
     grad4Steps: '4段階 (濃→薄)',
     grad8Steps: '8段階 (濃→薄)',

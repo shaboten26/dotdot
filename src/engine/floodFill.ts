@@ -250,11 +250,14 @@ export function applyGradientFloodFill(
 }
 
 /**
- * Perform Pixel-Art Circular / Elliptical Gradient Fill (`gradientType === 'radial'`, Section 4-5):
- * - Center `(startX, startY)` has maximum opacity (`color.a`, e.g. 255) and steps outward toward `(endX, endY)` with decreasing alpha, becoming completely transparent (`alpha = 0` / untouched) outside perimeter `t > 1`.
- * - `fixedRatio = true` (1:1 ON): true circle of radius `hypot(endX - startX, endY - startY)`.
- * - `fixedRatio = false` (1:1 OFF): axis-aligned ellipse with independent radii `rx = |endX - startX|`, `ry = |endY - startY|`.
- * - Preserves crisp discrete pixel steps (`4` or `8` alpha bands), never blurs intermediate RGB colors on transparent pixels, and seamlessly supports the Transparent Color Slot (`color.a === 0` erases most strongly at center and fades out toward perimeter).
+ * Perform Pixel-Art Circular / Elliptical Dithered Gradient Fill (`gradientType === 'radial'`, Section 5):
+ * - Uses the EXACT same dither density progression (`GRADIENT_PATTERN_STEPS[steps]`) and `shouldDrawWithDither` as Linear Gradient!
+ * - NEVER interpolates or alters RGBA alpha into semi-transparent values:
+ *   - Drawn `#` pixels receive the exact selected `color` (`a = 255` for normal palette colors, or `RGBA(0,0,0,0)` when Transparent Color Slot is active).
+ *   - Skipped `.` dither pixels and pixels outside `normDist > 1` preserve their existing pixel color & alpha untouched!
+ * - Center `(startX, startY)` has highest density (pattern 1 = solid), stepping outward to sparser dither patterns toward perimeter `(endX, endY)`.
+ * - `fixedRatio = true` ("縦横比を1:1に固定" ON): true circle of radius `hypot(endX - startX, endY - startY)`.
+ * - `fixedRatio = false` (OFF): ellipse with independent horizontal/vertical radii `rx = |endX - startX|`, `ry = |endY - startY|`.
  */
 export function applyRadialGradientFloodFill(
   buffer: Uint8ClampedArray,
@@ -284,6 +287,9 @@ export function applyRadialGradientFloodFill(
     selectionMask
   )
 
+  const patternSeq = GRADIENT_PATTERN_STEPS[steps]
+  const numSteps = patternSeq.length
+
   const dxEnd = endX - startX
   const dyEnd = endY - startY
   const circleRadius = Math.hypot(dxEnd, dyEnd)
@@ -295,7 +301,6 @@ export function applyRadialGradientFloodFill(
 
   const rx = fixedRatio ? circleRadius : Math.max(0.5, absRx)
   const ry = fixedRatio ? circleRadius : Math.max(0.5, absRy)
-  const bandCount = steps
 
   for (let y = 0; y < height; y++) {
     const rowOffset = y * width
@@ -303,66 +308,42 @@ export function applyRadialGradientFloodFill(
       const pIdx = rowOffset + x
       if (region[pIdx] === 0) continue
 
-      let normDist = 0
+      let stepIndex = 0
       if (isZeroRadius) {
         if (x !== Math.trunc(startX) || y !== Math.trunc(startY)) continue
-        normDist = 0
+        stepIndex = 0
       } else {
         const nx = (x - startX) / rx
         const ny = (y - startY) / ry
-        normDist = Math.hypot(nx, ny)
-        if (normDist > 1 + 1e-9) continue
+        const normDist = Math.hypot(nx, ny)
+        // Beyond outer perimeter: leave existing pixel untouched!
+        if (normDist > 1 + 1e-9) {
+          continue
+        }
+        if (normDist <= 0) {
+          stepIndex = 0
+        } else {
+          stepIndex = Math.min(
+            numSteps - 1,
+            Math.max(0, Math.round(normDist * (numSteps - 1)))
+          )
+        }
       }
 
-      const bandIdx = Math.min(
-        bandCount - 1,
-        Math.max(0, Math.floor(normDist * bandCount))
-      )
-      const strength = (bandCount - bandIdx) / bandCount
-      const bIdx = pIdx * 4
+      const patternId = patternSeq[stepIndex]!
+      if (!shouldDrawWithDither(patternId, x, y)) continue
 
+      const bIdx = pIdx * 4
       if (color.a === 0) {
-        const dstA = buffer[bIdx + 3]!
-        if (dstA === 0) continue
-        const remainA = Math.round(dstA * (1 - strength))
-        if (remainA <= 0) {
-          buffer[bIdx] = 0
-          buffer[bIdx + 1] = 0
-          buffer[bIdx + 2] = 0
-          buffer[bIdx + 3] = 0
-        } else {
-          buffer[bIdx + 3] = remainA
-        }
+        buffer[bIdx] = 0
+        buffer[bIdx + 1] = 0
+        buffer[bIdx + 2] = 0
+        buffer[bIdx + 3] = 0
       } else {
-        const srcA = Math.max(1, Math.min(255, Math.round(color.a * strength)))
-        const dstA = buffer[bIdx + 3]!
-        if (dstA === 0 || srcA === 255) {
-          buffer[bIdx] = color.r
-          buffer[bIdx + 1] = color.g
-          buffer[bIdx + 2] = color.b
-          buffer[bIdx + 3] = srcA
-        } else {
-          const sa = srcA / 255
-          const da = dstA / 255
-          const outA = sa + da * (1 - sa)
-          if (outA <= 0) {
-            buffer[bIdx] = 0
-            buffer[bIdx + 1] = 0
-            buffer[bIdx + 2] = 0
-            buffer[bIdx + 3] = 0
-          } else {
-            buffer[bIdx] = Math.round(
-              (color.r * sa + buffer[bIdx]! * da * (1 - sa)) / outA
-            )
-            buffer[bIdx + 1] = Math.round(
-              (color.g * sa + buffer[bIdx + 1]! * da * (1 - sa)) / outA
-            )
-            buffer[bIdx + 2] = Math.round(
-              (color.b * sa + buffer[bIdx + 2]! * da * (1 - sa)) / outA
-            )
-            buffer[bIdx + 3] = Math.round(outA * 255)
-          }
-        }
+        buffer[bIdx] = color.r
+        buffer[bIdx + 1] = color.g
+        buffer[bIdx + 2] = color.b
+        buffer[bIdx + 3] = color.a
       }
     }
   }

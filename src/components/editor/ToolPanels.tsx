@@ -251,7 +251,8 @@ export function MultiRowToolGrid({
     {
       id: 'fill',
       icon: resolveToolIconName('fill', toolSettings),
-      label: t('toolFill'),
+      label:
+        toolSettings.fillMode === 'gradient' ? t('fillGradient') : t('toolFill'),
       hasDetail: true,
     },
     {
@@ -886,26 +887,28 @@ export function ToolDetailPopover({
                   <button
                     type="button"
                     onClick={() => onChange({ fillMode: 'normal' })}
-                    className={`min-h-[36px] px-2.5 text-xs font-bold ${
+                    className={`min-h-[36px] px-2.5 text-xs font-bold flex items-center gap-1.5 ${
                       settings.fillMode === 'normal'
                         ? 'pixel-btn pixel-btn-active'
                         : 'pixel-btn'
                     }`}
                     data-testid="fill-mode-normal"
                   >
-                    {t('fillNormal')}
+                    <PixelIcon name="fill" size={14} />
+                    <span>{t('fillNormal')}</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => onChange({ fillMode: 'gradient' })}
-                    className={`min-h-[36px] px-2.5 text-xs font-bold ${
+                    className={`min-h-[36px] px-2.5 text-xs font-bold flex items-center gap-1.5 ${
                       settings.fillMode === 'gradient'
                         ? 'pixel-btn pixel-btn-active'
                         : 'pixel-btn'
                     }`}
                     data-testid="fill-mode-gradient"
                   >
-                    {t('fillGradient')}
+                    <PixelIcon name="gradient" size={14} />
+                    <span>{t('fillGradient')}</span>
                   </button>
                 </div>
 

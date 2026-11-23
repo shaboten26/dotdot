@@ -34,6 +34,9 @@ export const DOUBLE_TAP_EYEDROPPER_WINDOW_MS = 300
 /** Section 4-2: Minimum touch slide distance in CSS px before moving the virtual cursor (taps NEVER move cursor) */
 export const TOUCH_SLIDE_DEADZONE_PX = 6
 
+/** Maximum screen distance (CSS px) between two stationary touch taps to count as an intentional double-tap gesture */
+export const TOUCH_DOUBLE_TAP_MAX_SEPARATION_PX = 44
+
 interface InteractiveViewportProps {
   projectId: string
   width: number
@@ -61,7 +64,8 @@ interface InteractiveViewportProps {
   onBeginDrawAt: (pt?: Point, allowOutOfBounds?: boolean) => void
   onEndDraw: () => void
   onAbortStroke: () => void
-  onDoubleTapEyedropper: (pt: Point) => void
+  /** Invoked on double-tap eyedropper gesture; ALWAYS samples from current in-app cursor (NEVER from tap coordinates) */
+  onDoubleTapEyedropper: () => void
   onMoveFloatingShape: (dx: number, dy: number) => void
   onUpdateMoveOffset: (dx: number, dy: number) => void
 }
@@ -257,9 +261,14 @@ export function InteractiveViewport({
   } | null>(null)
 
   /**
-   * Section 9: Double-tap same canvas pixel state & short single-tap commit timer for mouse/direct taps
-   * so the first tap of a double-tap NEVER commits an unintended dot!
+   * Section 3: Touch double-tap gesture state (strictly decoupled from cursor sample coordinates!)
+   * & Mouse double-tap state so the 1st mouse click does not leave an unintended dot.
    */
+  const lastTouchTapRef = useRef<{
+    vx: number
+    vy: number
+    time: number
+  } | null>(null)
   const lastTapRef = useRef<{
     canvasX: number
     canvasY: number
@@ -861,6 +870,7 @@ export function InteractiveViewport({
       if (activePointersRef.current.size === 2) {
         cancelPendingSingleTap()
         lastTapRef.current = null
+        lastTouchTapRef.current = null
         if (singleGestureRef.current) {
           singleGestureRef.current.hadMultiTouch = true
           if (singleGestureRef.current.mode === 'mouse-draw') {
@@ -978,7 +988,7 @@ export function InteractiveViewport({
           cancelPendingSingleTap()
           lastTapRef.current = null
           onAbortStroke()
-          onDoubleTapEyedropper(rawCanvasPt)
+          onDoubleTapEyedropper()
           return
         }
 
@@ -1167,6 +1177,8 @@ export function InteractiveViewport({
           if (!g.moved) {
             return
           }
+          // Sliding cancels any pending double-tap gesture so slides are NEVER misrecognized as double-taps!
+          lastTouchTapRef.current = null
           const effScale = Math.max(0.5, transform.scale)
           const nextFloatX = allowsOutOfBoundsPoint
             ? Math.max(-512, Math.min(width + 512, subPixelCursorRef.current.x + dxCss / effScale))
@@ -1264,6 +1276,7 @@ export function InteractiveViewport({
         singleGestureRef.current = null
 
         if (cancelled) {
+          lastTouchTapRef.current = null
           if (g.mode === 'mouse-draw') {
             onAbortStroke()
           }
@@ -1275,32 +1288,34 @@ export function InteractiveViewport({
           return
         }
 
-        // Touch stationary tap: check double-tap eyedropper ONLY; NEVER jump/move the virtual cursor on tap! (Section 4-2)
-        if (g.mode === 'touch-cursor' && !g.moved && !g.hadMultiTouch) {
-          const cx = g.startCanvasPt.x
-          const cy = g.startCanvasPt.y
-          const inside = cx >= 0 && cx < width && cy >= 0 && cy < height
+        // Section 3: Touch stationary tap -> detect intentional double-tap gesture (~300ms) WITHOUT moving cursor!
+        // When triggered, `onDoubleTapEyedropper()` ALWAYS samples from the current in-app cursor position (NEVER from tap coordinates)!
+        if (g.mode === 'touch-cursor') {
+          if (g.moved || g.hadMultiTouch) {
+            lastTouchTapRef.current = null
+            return
+          }
           if (
             eyedropperDoubleTap &&
             tool !== 'eyedropper' &&
             stepPhase.kind === 'idle' &&
-            inside
+            !isPlaying
           ) {
             const now = performance.now()
-            const prev = lastTapRef.current
+            const prev = lastTouchTapRef.current
             if (
               prev &&
-              prev.canvasX === cx &&
-              prev.canvasY === cy &&
-              now - prev.time <= DOUBLE_TAP_EYEDROPPER_WINDOW_MS
+              now - prev.time <= DOUBLE_TAP_EYEDROPPER_WINDOW_MS &&
+              Math.hypot(g.lastVx - prev.vx, g.lastVy - prev.vy) <=
+                TOUCH_DOUBLE_TAP_MAX_SEPARATION_PX
             ) {
-              lastTapRef.current = null
-              onDoubleTapEyedropper({ x: cx, y: cy })
+              lastTouchTapRef.current = null
+              onDoubleTapEyedropper()
               return
             }
-            lastTapRef.current = { canvasX: cx, canvasY: cy, time: now }
+            lastTouchTapRef.current = { vx: g.lastVx, vy: g.lastVy, time: now }
           } else {
-            lastTapRef.current = null
+            lastTouchTapRef.current = null
           }
           // Stationary touch tap intentionally leaves cursor position untouched!
           return
