@@ -5,7 +5,9 @@ import { PixelSelect } from '../components/common/PixelSelect'
 import { PixelIcon } from '../components/common/PixelIcon'
 import { LayerPanelContent } from '../components/editor/LayerSheet'
 import { InteractiveViewport } from '../components/editor/InteractiveViewport'
-import { createPixelBuffer } from '../engine/pixelBuffer'
+import { createPixelBuffer, getPixel, setPixel } from '../engine/pixelBuffer'
+import { applyGradientFloodFill } from '../engine/floodFill'
+import { CanvasResizeModal } from '../components/editor/EditorModals'
 import type { LayerRuntime, ToolSettings } from '../types'
 
 afterEach(() => {
@@ -22,6 +24,8 @@ const BASE_TOOL_SETTINGS: ToolSettings = {
   fillConnectivity: 4,
   fillDither: 1,
   fillMode: 'normal',
+  gradientType: 'linear',
+  gradientFixedRatio: false,
   gradientSteps: 4,
   lineType: 'line',
   lineSize: 1,
@@ -394,5 +398,94 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
     } finally {
       document.elementFromPoint = origElementFromPoint
     }
+  })
+
+  it('4-5 & 4-8: supports Circular/Elliptical Gradient (1:1 circle vs ellipse, center opaque -> outer transparent + transparent color slot) and 1-256px W/H PixelSliders', () => {
+    // 1. 1:1 Circular gradient on 16x16 transparent canvas: center (8,8) alpha=255 -> outer ring lower alpha -> outside radius alpha=0
+    const bufCircle = createPixelBuffer(16, 16)
+    applyGradientFloodFill(bufCircle, {
+      width: 16,
+      height: 16,
+      startX: 8,
+      startY: 8,
+      endX: 12,
+      endY: 8, // radius = 4
+      color: { r: 100, g: 180, b: 240, a: 255 },
+      gradientType: 'radial',
+      fixedRatio: true,
+      steps: 4,
+    })
+    expect(getPixel(bufCircle, 16, 16, 8, 8)).toEqual({
+      r: 100,
+      g: 180,
+      b: 240,
+      a: 255,
+    })
+    // Symmetrical in X and Y when fixedRatio=true!
+    expect(getPixel(bufCircle, 16, 16, 11, 8).a).toBe(
+      getPixel(bufCircle, 16, 16, 8, 11).a
+    )
+    expect(getPixel(bufCircle, 16, 16, 11, 8).a).toBeLessThan(255)
+    expect(getPixel(bufCircle, 16, 16, 11, 8).a).toBeGreaterThan(0)
+    expect(getPixel(bufCircle, 16, 16, 14, 8).a).toBe(0)
+
+    // 2. Elliptical gradient when fixedRatio=false (rx=6, ry=2)
+    const bufEllipse = createPixelBuffer(16, 16)
+    applyGradientFloodFill(bufEllipse, {
+      width: 16,
+      height: 16,
+      startX: 8,
+      startY: 8,
+      endX: 14,
+      endY: 10, // rx=6, ry=2
+      color: { r: 220, g: 80, b: 120, a: 255 },
+      gradientType: 'radial',
+      fixedRatio: false,
+      steps: 4,
+    })
+    expect(getPixel(bufEllipse, 16, 16, 13, 8).a).toBeGreaterThan(0) // dx=5 <= rx=6
+    expect(getPixel(bufEllipse, 16, 16, 8, 13).a).toBe(0) // dy=5 > ry=2
+
+    // 3. Transparent Color Slot radial gradient erases center to alpha=0 and leaves outer untouched
+    const bufErase = createPixelBuffer(12, 12)
+    for (let y = 0; y < 12; y++) {
+      for (let x = 0; x < 12; x++) {
+        setPixel(bufErase, 12, 12, x, y, { r: 50, g: 200, b: 100, a: 255 })
+      }
+    }
+    applyGradientFloodFill(bufErase, {
+      width: 12,
+      height: 12,
+      startX: 6,
+      startY: 6,
+      endX: 9,
+      endY: 6,
+      color: { r: 0, g: 0, b: 0, a: 0 },
+      gradientType: 'radial',
+      fixedRatio: true,
+      steps: 4,
+    })
+    expect(getPixel(bufErase, 12, 12, 6, 6).a).toBe(0)
+    expect(getPixel(bufErase, 12, 12, 8, 6).a).toBeGreaterThan(0)
+    expect(getPixel(bufErase, 12, 12, 8, 6).a).toBeLessThan(255)
+    expect(getPixel(bufErase, 12, 12, 11, 6).a).toBe(255)
+
+    // 4. CanvasResizeModal exposes independent Width & Height PixelSliders (1-256px) with +-1 buttons
+    const onResize = vi.fn()
+    render(
+      <AppProvider>
+        <CanvasResizeModal
+          open={true}
+          currentWidth={32}
+          currentHeight={48}
+          onClose={vi.fn()}
+          onResize={onResize}
+        />
+      </AppProvider>
+    )
+    fireEvent.click(screen.getByTestId('resize-width-slider-plus'))
+    fireEvent.click(screen.getByTestId('resize-height-slider-minus'))
+    fireEvent.click(screen.getByTestId('confirm-resize-btn'))
+    expect(onResize).toHaveBeenCalledWith(33, 47, 'center')
   })
 })

@@ -1,4 +1,10 @@
-import type { Connectivity, DitherPatternId, GradientSteps, RGBA } from '../types'
+import type {
+  Connectivity,
+  DitherPatternId,
+  GradientSteps,
+  GradientType,
+  RGBA,
+} from '../types'
 import { GRADIENT_PATTERN_STEPS, shouldDrawWithDither } from './dithering'
 import { isInBounds, pixelsMatchAt } from './pixelBuffer'
 
@@ -139,6 +145,8 @@ export interface GradientFillOptions {
   color: RGBA
   /** Optional connectivity (defaults to 4-way for gradient mode) */
   connectivity?: Connectivity
+  gradientType?: GradientType
+  fixedRatio?: boolean
   steps: GradientSteps
   selectionMask?: Uint8Array | null
 }
@@ -161,6 +169,11 @@ export function applyGradientFloodFill(
   buffer: Uint8ClampedArray,
   options: GradientFillOptions
 ): void {
+  if (options.gradientType === 'radial') {
+    applyRadialGradientFloodFill(buffer, options)
+    return
+  }
+
   const {
     width,
     height,
@@ -231,6 +244,125 @@ export function applyGradientFloodFill(
         buffer[bIdx + 1] = color.g
         buffer[bIdx + 2] = color.b
         buffer[bIdx + 3] = color.a
+      }
+    }
+  }
+}
+
+/**
+ * Perform Pixel-Art Circular / Elliptical Gradient Fill (`gradientType === 'radial'`, Section 4-5):
+ * - Center `(startX, startY)` has maximum opacity (`color.a`, e.g. 255) and steps outward toward `(endX, endY)` with decreasing alpha, becoming completely transparent (`alpha = 0` / untouched) outside perimeter `t > 1`.
+ * - `fixedRatio = true` (1:1 ON): true circle of radius `hypot(endX - startX, endY - startY)`.
+ * - `fixedRatio = false` (1:1 OFF): axis-aligned ellipse with independent radii `rx = |endX - startX|`, `ry = |endY - startY|`.
+ * - Preserves crisp discrete pixel steps (`4` or `8` alpha bands), never blurs intermediate RGB colors on transparent pixels, and seamlessly supports the Transparent Color Slot (`color.a === 0` erases most strongly at center and fades out toward perimeter).
+ */
+export function applyRadialGradientFloodFill(
+  buffer: Uint8ClampedArray,
+  options: GradientFillOptions
+): void {
+  const {
+    width,
+    height,
+    startX,
+    startY,
+    endX,
+    endY,
+    color,
+    connectivity = 4,
+    fixedRatio = false,
+    steps,
+    selectionMask,
+  } = options
+
+  const region = computeConnectedRegion(
+    buffer,
+    width,
+    height,
+    startX,
+    startY,
+    connectivity,
+    selectionMask
+  )
+
+  const dxEnd = endX - startX
+  const dyEnd = endY - startY
+  const circleRadius = Math.hypot(dxEnd, dyEnd)
+  const absRx = Math.abs(dxEnd)
+  const absRy = Math.abs(dyEnd)
+  const isZeroRadius = fixedRatio
+    ? circleRadius === 0
+    : absRx === 0 && absRy === 0
+
+  const rx = fixedRatio ? circleRadius : Math.max(0.5, absRx)
+  const ry = fixedRatio ? circleRadius : Math.max(0.5, absRy)
+  const bandCount = steps
+
+  for (let y = 0; y < height; y++) {
+    const rowOffset = y * width
+    for (let x = 0; x < width; x++) {
+      const pIdx = rowOffset + x
+      if (region[pIdx] === 0) continue
+
+      let normDist = 0
+      if (isZeroRadius) {
+        if (x !== Math.trunc(startX) || y !== Math.trunc(startY)) continue
+        normDist = 0
+      } else {
+        const nx = (x - startX) / rx
+        const ny = (y - startY) / ry
+        normDist = Math.hypot(nx, ny)
+        if (normDist > 1 + 1e-9) continue
+      }
+
+      const bandIdx = Math.min(
+        bandCount - 1,
+        Math.max(0, Math.floor(normDist * bandCount))
+      )
+      const strength = (bandCount - bandIdx) / bandCount
+      const bIdx = pIdx * 4
+
+      if (color.a === 0) {
+        const dstA = buffer[bIdx + 3]!
+        if (dstA === 0) continue
+        const remainA = Math.round(dstA * (1 - strength))
+        if (remainA <= 0) {
+          buffer[bIdx] = 0
+          buffer[bIdx + 1] = 0
+          buffer[bIdx + 2] = 0
+          buffer[bIdx + 3] = 0
+        } else {
+          buffer[bIdx + 3] = remainA
+        }
+      } else {
+        const srcA = Math.max(1, Math.min(255, Math.round(color.a * strength)))
+        const dstA = buffer[bIdx + 3]!
+        if (dstA === 0 || srcA === 255) {
+          buffer[bIdx] = color.r
+          buffer[bIdx + 1] = color.g
+          buffer[bIdx + 2] = color.b
+          buffer[bIdx + 3] = srcA
+        } else {
+          const sa = srcA / 255
+          const da = dstA / 255
+          const outA = sa + da * (1 - sa)
+          if (outA <= 0) {
+            buffer[bIdx] = 0
+            buffer[bIdx + 1] = 0
+            buffer[bIdx + 2] = 0
+            buffer[bIdx + 3] = 0
+          } else {
+            buffer[bIdx] = Math.round(
+              (color.r * sa + buffer[bIdx]! * da * (1 - sa)) / outA
+            )
+            buffer[bIdx + 1] = Math.round(
+              (color.g * sa + buffer[bIdx + 1]! * da * (1 - sa)) / outA
+            )
+            buffer[bIdx + 2] = Math.round(
+              (color.b * sa + buffer[bIdx + 2]! * da * (1 - sa)) / outA
+            )
+            buffer[bIdx + 3] = Math.round(outA * 255)
+          }
+        }
       }
     }
   }

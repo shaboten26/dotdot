@@ -942,21 +942,66 @@ export function ToolDetailPopover({
                   onChange({ fillDither: id })
                 )
               ) : (
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-bold text-[var(--text-secondary)] shrink-0">
-                    {t('gradientSteps')}:
-                  </span>
-                  <PixelSelect<GradientSteps>
-                    value={settings.gradientSteps}
-                    options={[
-                      { value: 4, label: t('grad4Steps') },
-                      { value: 8, label: t('grad8Steps') },
-                    ]}
-                    onChange={(v) => onChange({ gradientSteps: v })}
-                    ariaLabel={t('gradientSteps')}
-                    className="flex-1 max-w-[220px]"
-                    testId="gradient-steps-select"
-                  />
+                <div className="space-y-2">
+                  {/* Section 4-5: Linear Gradient vs Circular/Radial Gradient + 1:1 Aspect Ratio Lock */}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => onChange({ gradientType: 'linear' })}
+                        className={`min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1 ${
+                          settings.gradientType === 'linear'
+                            ? 'pixel-btn pixel-btn-active'
+                            : 'pixel-btn'
+                        }`}
+                        data-testid="gradient-type-linear"
+                      >
+                        <PixelIcon name="line" size={13} />
+                        <span>{t('gradientLinear')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onChange({ gradientType: 'radial' })}
+                        className={`min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1 ${
+                          settings.gradientType === 'radial'
+                            ? 'pixel-btn pixel-btn-active'
+                            : 'pixel-btn'
+                        }`}
+                        data-testid="gradient-type-radial"
+                      >
+                        <PixelIcon name="ellipse" size={13} />
+                        <span>{t('gradientRadial')}</span>
+                      </button>
+                    </div>
+
+                    {settings.gradientType === 'radial' && (
+                      <PixelCheckbox
+                        checked={settings.gradientFixedRatio}
+                        onChange={(next) =>
+                          onChange({ gradientFixedRatio: next })
+                        }
+                        label={t('gradientFixedRatio')}
+                        testId="gradient-fixed-ratio-checkbox"
+                      />
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-[var(--text-secondary)] shrink-0">
+                      {t('gradientSteps')}:
+                    </span>
+                    <PixelSelect<GradientSteps>
+                      value={settings.gradientSteps}
+                      options={[
+                        { value: 4, label: t('grad4Steps') },
+                        { value: 8, label: t('grad8Steps') },
+                      ]}
+                      onChange={(v) => onChange({ gradientSteps: v })}
+                      ariaLabel={t('gradientSteps')}
+                      className="flex-1 max-w-[220px]"
+                      testId="gradient-steps-select"
+                    />
+                  </div>
                 </div>
               )}
             </div>

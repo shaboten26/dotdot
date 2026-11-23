@@ -24,6 +24,8 @@ export type Connectivity = 4 | 8
 
 export type FillMode = 'normal' | 'gradient'
 
+export type GradientType = 'linear' | 'radial'
+
 export type GradientSteps = 4 | 8
 
 export type LineSubTool = 'line' | 'bezier'
@@ -235,6 +237,10 @@ export interface AppSettings {
   theme: ThemeMode
   language: LanguageCode
   historyLimit: number | 'unlimited'
+  /** True when user explicitly selected a history limit in Settings (distinguishes legacy default 100 from user choice) */
+  historyLimitCustomized?: boolean
+  /** Optional snooze timestamp for Origin low-storage warning */
+  lowStorageSnoozedUntil?: number | null
   showGrid: boolean
   checkerboardDark: boolean
   confirmDestructive: boolean
@@ -294,6 +300,8 @@ export interface ToolSettings {
   fillConnectivity: Connectivity
   fillDither: DitherPatternId
   fillMode: FillMode
+  gradientType: GradientType
+  gradientFixedRatio: boolean
   gradientSteps: GradientSteps
 
   lineType: LineSubTool

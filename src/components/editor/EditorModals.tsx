@@ -13,6 +13,7 @@ import {
 import { Modal } from '../common/Modal'
 import { PixelIcon } from '../common/PixelIcon'
 import { PixelSelect } from '../common/PixelSelect'
+import { PixelSlider } from '../common/PixelSlider'
 import { getCheckerboardStyle } from '../common/PixelThumbnail'
 import { CanvasSizePresetsPicker } from '../common/CanvasSizePresetsPicker'
 import { useI18n } from '../../i18n/I18nContext'
@@ -94,35 +95,73 @@ export function CanvasResizeModal({
       maxWidthClass="max-w-md"
     >
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
-          <label className="space-y-1">
-            <span className="text-xs font-bold text-[var(--text-secondary)]">
-              {t('widthPx')}
-            </span>
-            <input
-              type="number"
+        {/* Section 4-8: Independent Width & Height PixelSliders (1-256px with +-1 step buttons & live numeric display) */}
+        <div className="space-y-3 p-3 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)]">
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-[var(--text-secondary)]">
+                {t('widthPx')}:{' '}
+                <strong className="text-[var(--text-primary)]">{clampedW}px</strong>
+              </span>
+              <input
+                type="number"
+                min={MIN_CANVAS_SIZE}
+                max={MAX_CANVAS_SIZE}
+                value={w}
+                onChange={(e) => {
+                  const v = Number(e.target.value)
+                  if (!Number.isNaN(v)) {
+                    setW(Math.max(MIN_CANVAS_SIZE, Math.min(MAX_CANVAS_SIZE, Math.round(v))))
+                  }
+                }}
+                className="w-20 min-h-[34px] px-2 text-xs font-bold text-right pixel-input"
+                data-testid="resize-width-input"
+              />
+            </div>
+            <PixelSlider
               min={MIN_CANVAS_SIZE}
               max={MAX_CANVAS_SIZE}
-              value={w}
-              onChange={(e) => setW(Number(e.target.value))}
-              className="w-full min-h-[40px] px-3 text-sm pixel-input"
-              data-testid="resize-width-input"
+              step={1}
+              value={clampedW}
+              unit="px"
+              ariaLabel={t('widthPx')}
+              onChange={setW}
+              testId="resize-width-slider"
             />
-          </label>
-          <label className="space-y-1">
-            <span className="text-xs font-bold text-[var(--text-secondary)]">
-              {t('heightPx')}
-            </span>
-            <input
-              type="number"
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-[var(--text-secondary)]">
+                {t('heightPx')}:{' '}
+                <strong className="text-[var(--text-primary)]">{clampedH}px</strong>
+              </span>
+              <input
+                type="number"
+                min={MIN_CANVAS_SIZE}
+                max={MAX_CANVAS_SIZE}
+                value={h}
+                onChange={(e) => {
+                  const v = Number(e.target.value)
+                  if (!Number.isNaN(v)) {
+                    setH(Math.max(MIN_CANVAS_SIZE, Math.min(MAX_CANVAS_SIZE, Math.round(v))))
+                  }
+                }}
+                className="w-20 min-h-[34px] px-2 text-xs font-bold text-right pixel-input"
+                data-testid="resize-height-input"
+              />
+            </div>
+            <PixelSlider
               min={MIN_CANVAS_SIZE}
               max={MAX_CANVAS_SIZE}
-              value={h}
-              onChange={(e) => setH(Number(e.target.value))}
-              className="w-full min-h-[40px] px-3 text-sm pixel-input"
-              data-testid="resize-height-input"
+              step={1}
+              value={clampedH}
+              unit="px"
+              ariaLabel={t('heightPx')}
+              onChange={setH}
+              testId="resize-height-slider"
             />
-          </label>
+          </div>
         </div>
 
         <CanvasSizePresetsPicker

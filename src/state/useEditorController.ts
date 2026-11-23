@@ -108,6 +108,8 @@ const DEFAULT_TOOL_SETTINGS: ToolSettings = {
   fillConnectivity: 4,
   fillDither: 1,
   fillMode: 'normal',
+  gradientType: 'linear',
+  gradientFixedRatio: false,
   gradientSteps: 4,
 
   lineType: 'line',
@@ -907,6 +909,9 @@ export function useEditorController(options: UseEditorOptions) {
         endX: cursor.x,
         endY: cursor.y,
         color: activeRgba,
+        connectivity: toolSettings.fillConnectivity,
+        gradientType: toolSettings.gradientType,
+        fixedRatio: toolSettings.gradientFixedRatio,
         steps: toolSettings.gradientSteps,
         selectionMask: effectiveSelectionMask,
       })
@@ -1326,6 +1331,9 @@ export function useEditorController(options: UseEditorOptions) {
               endX: pt.x,
               endY: pt.y,
               color: activeRgba,
+              connectivity: toolSettings.fillConnectivity,
+              gradientType: toolSettings.gradientType,
+              fixedRatio: toolSettings.gradientFixedRatio,
               steps: toolSettings.gradientSteps,
               selectionMask: effectiveSelectionMask,
             })

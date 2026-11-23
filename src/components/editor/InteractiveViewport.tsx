@@ -602,6 +602,28 @@ export function InteractiveViewport({
       drawDashedGuide(stepPhase.start, cursor, '#579b91')
       const s0 = pixelCenter(stepPhase.start)
       const s1 = pixelCenter(cursor)
+      if (toolSettings.gradientType === 'radial') {
+        const rxPx = toolSettings.gradientFixedRatio
+          ? Math.hypot(s1.sx - s0.sx, s1.sy - s0.sy)
+          : Math.abs(s1.sx - s0.sx)
+        const ryPx = toolSettings.gradientFixedRatio
+          ? Math.hypot(s1.sx - s0.sx, s1.sy - s0.sy)
+          : Math.abs(s1.sy - s0.sy)
+        if (rxPx > 1 || ryPx > 1) {
+          ctx.save()
+          ctx.setLineDash([Math.round(4 * dpr), Math.round(4 * dpr)])
+          ctx.lineWidth = Math.max(1.5, Math.round(1.5 * dpr))
+          ctx.strokeStyle = '#579b91'
+          ctx.beginPath()
+          if (typeof ctx.ellipse === 'function') {
+            ctx.ellipse(s0.sx, s0.sy, Math.max(1, rxPx), Math.max(1, ryPx), 0, 0, Math.PI * 2)
+          } else {
+            ctx.rect(s0.sx - rxPx, s0.sy - ryPx, rxPx * 2, ryPx * 2)
+          }
+          ctx.stroke()
+          ctx.restore()
+        }
+      }
       drawPixelHandle(ctx, s0.sx, s0.sy, '#579b91', dpr)
       drawPixelHandle(ctx, s1.sx, s1.sy, '#c47388', dpr)
     } else if (stepPhase.kind === 'line-end' || stepPhase.kind === 'shape-end') {
