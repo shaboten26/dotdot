@@ -720,7 +720,7 @@ export function ToolDetailPopover({
           animate={{ opacity: 1, y: 0 }}
           exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
           transition={{ duration: reducedMotion ? 0 : 0.12 }}
-          className="absolute bottom-full left-2 right-2 mb-1.5 z-30 pixel-panel p-3 space-y-2.5 max-h-[46dvh] overflow-y-auto"
+          className="absolute bottom-full left-2 right-2 sm:left-auto sm:right-2.5 sm:w-[360px] mb-1.5 z-30 pixel-popover-translucent p-2.5 space-y-2 max-h-[42dvh] overflow-y-auto"
           data-testid="tool-detail-panel"
         >
           <div className="flex items-center justify-between pb-1 border-b border-[var(--border-subtle)]">

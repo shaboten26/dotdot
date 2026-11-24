@@ -45,6 +45,7 @@ interface InteractiveViewportProps {
   compositedBuffer: Uint8ClampedArray | null
   onionPrevBuffer?: Uint8ClampedArray | null
   onionNextBuffer?: Uint8ClampedArray | null
+  onionOpacity?: number
   isPlaying?: boolean
   tool: ToolId
   toolSettings: ToolSettings
@@ -147,6 +148,7 @@ export function InteractiveViewport({
   compositedBuffer,
   onionPrevBuffer = null,
   onionNextBuffer = null,
+  onionOpacity = 35,
   isPlaying = false,
   tool,
   toolSettings,
@@ -430,8 +432,9 @@ export function InteractiveViewport({
       ctx.imageSmoothingEnabled = false
       ctx.drawImage(oc, 0, 0, width, height, devLeft, devTop, devW, devH)
     }
-    drawOnionBuffer(onionPrevBuffer, [216, 108, 130], 0.34)
-    drawOnionBuffer(onionNextBuffer, [87, 175, 162], 0.3)
+    const baseOnionAlpha = Math.max(0.05, Math.min(0.85, onionOpacity / 100))
+    drawOnionBuffer(onionPrevBuffer, [216, 108, 130], baseOnionAlpha)
+    drawOnionBuffer(onionNextBuffer, [87, 175, 162], baseOnionAlpha * 0.9)
 
     if (compositedBuffer && compositedBuffer.length === width * height * 4) {
       if (!offscreenCanvasRef.current) {
@@ -868,6 +871,7 @@ export function InteractiveViewport({
     compositedBuffer,
     onionPrevBuffer,
     onionNextBuffer,
+    onionOpacity,
     isPlaying,
     tool,
     toolSettings,
@@ -1283,7 +1287,6 @@ export function InteractiveViewport({
         !floatingShape &&
         !moveSession
       ) {
-        setModality('mouse')
         const rawPt = screenToCanvasPixel(vx, vy, transform)
         if (allowsOutOfBoundsPoint && stepPhase.kind !== 'idle') {
           subPixelCursorRef.current = { x: rawPt.x, y: rawPt.y }

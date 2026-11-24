@@ -16,10 +16,16 @@ import {
 } from '../components/editor/ToolPanels'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
 import { LayerSheet } from '../components/editor/LayerSheet'
+import { TimelinePanel } from '../components/editor/TimelinePanel'
+import { ExportGifModal } from '../components/editor/ExportGifModal'
 import {
   CanvasResizeModal,
   ExportPngModal,
 } from '../components/editor/EditorModals'
+import {
+  detectInitialInputModality,
+  type InputModality,
+} from '../utils/inputDetect'
 import { PixelIcon, PixelLoadingIndicator } from '../components/common/PixelIcon'
 import { PixelCheckbox } from '../components/common/PixelCheckbox'
 import {
@@ -50,6 +56,12 @@ export function EditorPage() {
   const [layersOpen, setLayersOpen] = useState(false)
   const [resizeOpen, setResizeOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
+  const [exportGifOpen, setExportGifOpen] = useState(false)
+  const [workspaceTab, setWorkspaceTab] = useState<'tools' | 'frames'>('tools')
+  const [inputModality, setInputModality] = useState<InputModality>(() =>
+    detectInitialInputModality()
+  )
+  const [loadWarningDismissed, setLoadWarningDismissed] = useState(false)
   const [fitTrigger, setFitTrigger] = useState(0)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
@@ -144,6 +156,26 @@ export function EditorPage() {
         else if (k === 'u') handleTapTool('shape')
         else if (k === 'm') handleTapTool('select')
         else if (k === 'i') handleTapTool('eyedropper')
+        else if (e.key === ',' || e.key === '<') {
+          e.preventDefault()
+          editor.stepFrame(-1)
+        } else if (e.key === '.' || e.key === '>') {
+          e.preventDefault()
+          editor.stepFrame(1)
+        } else if (k === 'o') {
+          editor.updateOnionSkin({ enabled: !editor.onionSkin.enabled })
+        }
+      } else if (e.altKey && !e.metaKey && !e.ctrlKey) {
+        if (e.key.toLowerCase() === 'p') {
+          e.preventDefault()
+          editor.togglePlay()
+        } else if (e.key === 'ArrowLeft') {
+          e.preventDefault()
+          editor.stepFrame(-1)
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault()
+          editor.stepFrame(1)
+        }
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -223,7 +255,11 @@ export function EditorPage() {
               >
                 <span className="truncate">{editor.project.name}</span>
                 <span className="text-[10px] text-[var(--text-secondary)] shrink-0">
-                  [{editor.project.width}×{editor.project.height}]
+                  [{editor.project.width}×{editor.project.height}
+                  {editor.timeline.frames.length > 1
+                    ? ` · ${editor.timeline.frames.length}f`
+                    : ''}
+                  ]
                 </span>
               </button>
             )}
@@ -312,6 +348,19 @@ export function EditorPage() {
                     type="button"
                     onClick={() => {
                       setHeaderMenuOpen(false)
+                      setExportGifOpen(true)
+                    }}
+                    className="w-full min-h-[42px] px-3 pixel-btn pixel-btn-active flex items-center gap-2 text-xs font-bold text-left"
+                    data-testid="editor-export-gif-btn"
+                  >
+                    <PixelIcon name="film" size={16} />
+                    <span>{t('exportGif')}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false)
                       vtNavigate(`/project/${editor.project!.id}`)
                     }}
                     className="w-full min-h-[42px] px-3 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
@@ -339,7 +388,30 @@ export function EditorPage() {
           </AnimatePresence>
         </header>
 
-        {/* 1. Large Expansive Canvas */}
+        {/* Non-Blocking Load Warning Banner (when cel memory or expanded GIF size enters caution/high tier) */}
+        {editor.loadEstimate &&
+          editor.loadEstimate.level !== 'normal' &&
+          !loadWarningDismissed && (
+            <div
+              className="px-3 py-1 bg-[var(--bg-elevated)] border-b-2 border-[var(--accent-amber)] flex items-center justify-between gap-2 text-[11px] shrink-0 z-20"
+              data-testid="project-load-warning-banner"
+            >
+              <span className="font-bold text-[var(--text-primary)] truncate">
+                {editor.loadEstimate.level === 'high'
+                  ? t('loadWarningHeavy')
+                  : t('loadWarningCaution')}
+              </span>
+              <button
+                type="button"
+                onClick={() => setLoadWarningDismissed(true)}
+                className="pixel-btn px-1.5 py-0.5 text-[10px] font-bold shrink-0"
+              >
+                {t('close')}
+              </button>
+            </div>
+          )}
+
+        {/* 1. Large Expansive Always-Visible Canvas */}
         <main
           className="flex-1 min-h-0 relative"
           onPointerDown={() => {
@@ -351,6 +423,10 @@ export function EditorPage() {
             width={editor.project.width}
             height={editor.project.height}
             compositedBuffer={editor.compositedBuffer}
+            onionPrevBuffer={editor.onionPrevBuffer}
+            onionNextBuffer={editor.onionNextBuffer}
+            onionOpacity={editor.onionSkin.opacity}
+            isPlaying={editor.isPlaying}
             tool={editor.tool}
             toolSettings={editor.toolSettings}
             cursor={editor.cursor}
@@ -366,6 +442,7 @@ export function EditorPage() {
             isTransparentColor={editor.isTransparentColorSelected}
             eyedropperDoubleTap={settings.eyedropperDoubleTap}
             fitTrigger={fitTrigger}
+            onModalityChange={setInputModality}
             onMoveCursor={editor.moveCursorTo}
             onBeginDrawAt={(pt, allowOutOfBounds) => {
               if (optionsOpen) setOptionsOpen(false)
@@ -434,23 +511,181 @@ export function EditorPage() {
             />
           )}
 
-          {/* 2. Multi-row Tool Grid */}
-          <MultiRowToolGrid
-            tool={editor.tool}
-            toolSettings={editor.toolSettings}
-            optionsOpen={optionsOpen}
-            canUndo={editor.canUndo}
-            canRedo={editor.canRedo}
-            layerCount={editor.layers.length}
-            hasSelection={editor.hasSelection}
-            onTapTool={handleTapTool}
-            onOpenLayers={() => {
-              setOptionsOpen(false)
-              setLayersOpen(true)
-            }}
-            onUndo={editor.undo}
-            onRedo={editor.redo}
-          />
+          {/* Workspace Mode Switcher: `ツール` vs (`レイヤー` [1 frame] / `タイムライン` [>=2 frames]) */}
+          <div
+            className="flex items-center justify-between gap-1.5 px-2.5 py-1 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] shrink-0"
+            data-testid="workspace-mode-bar"
+          >
+            <div className="grid grid-cols-2 gap-1.5 flex-1 max-w-xs">
+              <button
+                type="button"
+                onClick={() => setWorkspaceTab('tools')}
+                className={`min-h-[32px] px-2.5 text-xs font-bold flex items-center justify-center gap-1 ${
+                  workspaceTab === 'tools'
+                    ? 'pixel-btn pixel-btn-active'
+                    : 'pixel-btn'
+                }`}
+                data-testid="workspace-tab-tools"
+              >
+                <PixelIcon name="pen" size={13} />
+                <span>{t('tabTools')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOptionsOpen(false)
+                  setWorkspaceTab('frames')
+                }}
+                className={`min-h-[32px] px-2.5 text-xs font-bold flex items-center justify-center gap-1 ${
+                  workspaceTab === 'frames'
+                    ? 'pixel-btn pixel-btn-active'
+                    : 'pixel-btn'
+                }`}
+                data-testid={
+                  editor.timeline.frames.length >= 2
+                    ? 'workspace-tab-timeline'
+                    : 'workspace-tab-layers'
+                }
+              >
+                <PixelIcon
+                  name={editor.timeline.frames.length >= 2 ? 'film' : 'layers'}
+                  size={13}
+                />
+                <span>
+                  {editor.timeline.frames.length >= 2
+                    ? `${t('tabTimeline')} (${editor.timeline.frames.length})`
+                    : `${t('tabLayers')} (${editor.layers.length})`}
+                </span>
+              </button>
+            </div>
+
+            {editor.timeline.frames.length >= 2 && workspaceTab === 'tools' && (
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => editor.stepFrame(-1)}
+                  className="pixel-btn min-w-[30px] min-h-[30px] flex items-center justify-center"
+                  title={t('prevFrameBtn')}
+                >
+                  <PixelIcon name="arrowLeft" size={12} />
+                </button>
+                <button
+                  type="button"
+                  onClick={editor.togglePlay}
+                  className={`min-h-[30px] px-2 text-[11px] font-bold flex items-center gap-1 ${
+                    editor.isPlaying
+                      ? 'pixel-btn pixel-btn-teal'
+                      : 'pixel-btn'
+                  }`}
+                  data-testid="quick-play-toggle-btn"
+                >
+                  <PixelIcon
+                    name={editor.isPlaying ? 'pause' : 'play'}
+                    size={11}
+                  />
+                  <span>
+                    {Math.max(
+                      1,
+                      editor.timeline.frames.findIndex(
+                        (f) => f.id === editor.timeline.activeFrameId
+                      ) + 1
+                    )}
+                    /{editor.timeline.frames.length}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => editor.stepFrame(1)}
+                  className="pixel-btn min-w-[30px] min-h-[30px] flex items-center justify-center"
+                  title={t('nextFrameBtn')}
+                >
+                  <PixelIcon name="arrowRight" size={12} />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 2. Workspace Content (`ツール` Multi-Row Grid OR `レイヤー`/`タイムライン` Inline Panel) */}
+          {workspaceTab === 'tools' ? (
+            <MultiRowToolGrid
+              tool={editor.tool}
+              toolSettings={editor.toolSettings}
+              optionsOpen={optionsOpen}
+              canUndo={editor.canUndo}
+              canRedo={editor.canRedo}
+              layerCount={editor.layers.length}
+              hasSelection={editor.hasSelection}
+              onTapTool={handleTapTool}
+              onOpenLayers={() => {
+                setOptionsOpen(false)
+                setLayersOpen(true)
+              }}
+              onUndo={editor.undo}
+              onRedo={editor.redo}
+            />
+          ) : (
+            <TimelinePanel
+              canvasWidth={editor.project.width}
+              canvasHeight={editor.project.height}
+              checkerDark={settings.checkerboardDark}
+              layers={editor.layers}
+              activeLayerId={editor.activeLayerId}
+              timeline={editor.timeline}
+              selectedCellKeys={editor.selectedCellKeys}
+              celClipboard={editor.celClipboard}
+              isPlaying={editor.isPlaying}
+              playbackSpeed={editor.playbackSpeed}
+              onionSkin={editor.onionSkin}
+              onSelectLayer={editor.setActiveLayerId}
+              onUpdateLayer={editor.updateLayerProps}
+              onAddLayer={() => {
+                if (!editor.addNewLayer()) {
+                  showToast(t('layerMaxReached'), 'warning')
+                }
+              }}
+              onOpenLayerSheet={() => setLayersOpen(true)}
+              onSelectFrame={editor.selectFrame}
+              onStepFrame={editor.stepFrame}
+              onAddEmptyFrame={() => {
+                editor.addEmptyFrame()
+              }}
+              onDuplicateFrame={(mode) => {
+                editor.duplicateFrame(mode)
+              }}
+              onDeleteFrame={(fid) => {
+                if (!editor.deleteFrame(fid)) {
+                  showToast(t('cannotDeleteLastFrame'), 'warning')
+                }
+              }}
+              onSetFrameDuration={editor.setFrameDuration}
+              onApplyBatchDuration={editor.applyBatchDuration}
+              onClearCell={editor.clearCell}
+              onUnlinkCell={editor.unlinkCell}
+              onLinkCellTo={editor.linkCellTo}
+              onMoveCellTo={editor.moveCellTo}
+              onToggleCellSelected={editor.toggleCellSelected}
+              onClearCellSelection={editor.clearCellSelection}
+              onBatchClearCells={editor.batchClearSelectedCells}
+              onBatchUnlinkCells={editor.batchUnlinkSelectedCells}
+              onBatchLinkCells={editor.batchLinkSelectedCells}
+              onCopyActiveCell={() => {
+                if (editor.copyActiveCell()) {
+                  showToast(t('toastCopied'))
+                }
+              }}
+              onPasteToActiveCell={(asLinked) => {
+                if (editor.pasteToActiveCell(asLinked)) {
+                  showToast(t('toastPasted'))
+                }
+              }}
+              onTogglePlay={editor.togglePlay}
+              onSetPlaybackSpeed={editor.setPlaybackSpeed}
+              onSetPlaybackDirection={editor.setPlaybackDirection}
+              onSetLoopPlayback={editor.setLoopPlayback}
+              onUpdateOnionSkin={editor.updateOnionSkin}
+              onOpenExportGif={() => setExportGifOpen(true)}
+            />
+          )}
 
           {/* 3. Palette Swatch Strip (with fixed leftmost Transparent Slot & Drag Reorder) */}
           <PaletteBar
@@ -470,23 +705,25 @@ export function EditorPage() {
             }}
           />
 
-          {/* 4. Massive Bottom Push / Draw Button */}
-          <DrawButton
-            tool={editor.tool}
-            toolSettings={editor.toolSettings}
-            stepPhase={editor.stepPhase}
-            floatingShape={editor.floatingShape}
-            moveSession={editor.moveSession}
-            isContinuousDrawing={editor.isContinuousDrawing}
-            activeHexColor={editor.activeHexColor}
-            isTransparentColor={editor.isTransparentColorSelected}
-            checkerDark={settings.checkerboardDark}
-            onBeginDraw={() => editor.beginDrawAction()}
-            onEndDraw={editor.endDrawAction}
-            onCancelStep={editor.cancelMultiStep}
-            onCommitShape={editor.commitFloatingShape}
-            onCommitMove={editor.commitActiveMove}
-          />
+          {/* 4. Bottom Push / Draw Button (Thumb-first on Smartphone/Touch; hidden on PC Mouse!) */}
+          {inputModality !== 'mouse' && (
+            <DrawButton
+              tool={editor.tool}
+              toolSettings={editor.toolSettings}
+              stepPhase={editor.stepPhase}
+              floatingShape={editor.floatingShape}
+              moveSession={editor.moveSession}
+              isContinuousDrawing={editor.isContinuousDrawing}
+              activeHexColor={editor.activeHexColor}
+              isTransparentColor={editor.isTransparentColorSelected}
+              checkerDark={settings.checkerboardDark}
+              onBeginDraw={() => editor.beginDrawAction()}
+              onEndDraw={editor.endDrawAction}
+              onCancelStep={editor.cancelMultiStep}
+              onCommitShape={editor.commitFloatingShape}
+              onCommitMove={editor.commitActiveMove}
+            />
+          )}
         </section>
 
         {/* Modals & Sheets */}
@@ -582,6 +819,25 @@ export function EditorPage() {
           onClose={() => setExportOpen(false)}
           onDownloaded={() => showToast(t('toastExportedPng'), 'success')}
           onShared={() => showToast(t('toastSharedPng'), 'success')}
+        />
+
+        <ExportGifModal
+          open={exportGifOpen}
+          projectName={editor.project.name}
+          width={editor.project.width}
+          height={editor.project.height}
+          layerMetas={editor.layers}
+          frames={editor.timeline.frames}
+          cels={editor.timeline.cels}
+          celBuffers={editor.timeline.celBuffers}
+          fallbackSingleFrameLayers={editor.layers}
+          defaultDirection={editor.timeline.playbackDirection}
+          defaultLoop={editor.timeline.loopPlayback}
+          checkerDark={settings.checkerboardDark}
+          onClose={() => setExportGifOpen(false)}
+          onDownloaded={() => showToast(t('toastExportedGif'), 'success')}
+          onShared={() => showToast(t('toastSharedGif'), 'success')}
+          onCancelled={() => showToast(t('toastGifCancelled'), 'info')}
         />
       </div>
     </ViewTransition>

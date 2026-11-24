@@ -3,10 +3,13 @@ import {
   TRANSPARENT_COLOR_INDEX,
   type ActiveMoveSession,
   type BlendMode,
+  type CelBufferRuntime,
+  type CelMap,
   type ClipboardBuffer,
   type FloatingShapeState,
   type LayerOffsetTransition,
   type LayerRuntime,
+  type PlaybackDirection,
   type Point,
   type ProjectPalette,
   type ProjectRecord,
@@ -76,8 +79,48 @@ import {
   createLayerPixelPatch,
   HistoryManager,
 } from '../engine/history'
+import {
+  applyBatchFrameDuration,
+  clampFrameDurationMs,
+  computePlaybackFrameIndices,
+  copyCellAsIndependent,
+  createSingleFrameTimelineFromLayers,
+  DEFAULT_FRAME_DURATION_MS,
+  deleteFrameFromTimeline,
+  insertNewFrame,
+  linkCellToSourceCell,
+  makeCellKey,
+  projectFrameLayers,
+  pruneUnreferencedCelBuffers,
+  reorderTimelineFrames,
+  resolveBatchDurationTargetFrameIds,
+  setCellToEmpty,
+  unlinkCellToIndependent,
+  type TimelineState,
+} from '../engine/animation'
+import { estimateProjectLoad } from '../engine/loadEstimator'
 import { clampCanvasPoint } from '../utils/coordinates'
 import { playUiTick } from '../utils/sound'
+
+export interface OnionSkinConfig {
+  enabled: boolean
+  showPrev: boolean
+  showNext: boolean
+  prevCount: number // 1..3
+  nextCount: number // 1..3
+  opacity: number // 10..80 (%)
+}
+
+export interface CelClipboardItem {
+  offsetX: number
+  offsetY: number
+  dataWidth: number
+  dataHeight: number
+  data: Uint8ClampedArray
+  isEmpty: boolean
+  sourceLayerId: string
+  sourceFrameId: string
+}
 
 export type MultiStepPhase =
   | { kind: 'idle' }
@@ -171,6 +214,31 @@ export function useEditorController(options: UseEditorOptions) {
   const [saving, setSaving] = useState(false)
   const [project, setProject] = useState<ProjectRecord | null>(null)
   const [layers, setLayers] = useState<LayerRuntime[]>([])
+  const [timeline, setTimeline] = useState<TimelineState>(() => ({
+    frames: [{ id: 'frame-1', durationMs: DEFAULT_FRAME_DURATION_MS }],
+    cels: {},
+    celBuffers: {},
+    activeFrameId: 'frame-1',
+    defaultFrameDurationMs: DEFAULT_FRAME_DURATION_MS,
+    playbackDirection: 'forward',
+    loopPlayback: true,
+  }))
+  const timelineRef = useRef<TimelineState>(timeline)
+  timelineRef.current = timeline
+
+  const [selectedCellKeys, setSelectedCellKeys] = useState<string[]>([])
+  const [celClipboard, setCelClipboard] = useState<CelClipboardItem | null>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [playbackSpeed, setPlaybackSpeed] = useState<number>(1)
+  const [onionSkin, setOnionSkin] = useState<OnionSkinConfig>({
+    enabled: false,
+    showPrev: true,
+    showNext: true,
+    prevCount: 1,
+    nextCount: 1,
+    opacity: 35,
+  })
+
   const [activeLayerId, setActiveLayerId] = useState<string>('')
   /** Section 8: Multi-layer checkbox selection IDs (independent of `activeLayerId`) */
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([])
@@ -272,12 +340,18 @@ export function useEditorController(options: UseEditorOptions) {
 
       setProject(loaded.project)
       setLayers(loaded.layers)
+      setTimeline(loaded.timeline)
+      timelineRef.current = loaded.timeline
+      setSelectedCellKeys([])
+      setIsPlaying(false)
       setActiveLayerId(loaded.project.activeLayerId || loaded.layers[0]?.id || '')
       setSelectedLayerIds([])
       setPalette({
         name: loaded.project.palette.name,
         colors: loadedColors,
         sourcePaletteId: loaded.project.palette.sourcePaletteId,
+        author: loaded.project.palette.author,
+        sourceUrl: loaded.project.palette.sourceUrl,
       })
       setSelectedColorIndex(initialColorIdx)
       outlineColorExplicitRef.current = false
@@ -394,11 +468,13 @@ export function useEditorController(options: UseEditorOptions) {
       nextLayers: readonly LayerRuntime[],
       nextPalette: ProjectPalette,
       nextSelectedColorIdx: number,
-      nextActiveLayerId: string
+      nextActiveLayerId: string,
+      explicitTimeline?: TimelineState
     ) => {
       if (saveTimerRef.current !== null) {
         window.clearTimeout(saveTimerRef.current)
       }
+      const tlToSave = explicitTimeline ?? timelineRef.current
       setSaving(true)
       saveTimerRef.current = window.setTimeout(async () => {
         saveTimerRef.current = null
@@ -406,10 +482,18 @@ export function useEditorController(options: UseEditorOptions) {
           const projToSave: ProjectRecord = {
             ...nextProj,
             activeLayerId: nextActiveLayerId,
+            frames: tlToSave.frames,
+            cels: tlToSave.cels,
+            activeFrameId: tlToSave.activeFrameId,
+            defaultFrameDurationMs: tlToSave.defaultFrameDurationMs,
+            playbackDirection: tlToSave.playbackDirection,
+            loopPlayback: tlToSave.loopPlayback,
             palette: {
               name: nextPalette.name,
               colors: [...nextPalette.colors],
               sourcePaletteId: nextPalette.sourcePaletteId,
+              author: nextPalette.author,
+              sourceUrl: nextPalette.sourceUrl,
             },
             selectedColorIndex: nextSelectedColorIdx,
           }
@@ -417,6 +501,7 @@ export function useEditorController(options: UseEditorOptions) {
             {
               project: projToSave,
               layers: nextLayers,
+              timeline: tlToSave,
               history: historyRef.current.serialize(),
             },
             db
@@ -506,8 +591,44 @@ export function useEditorController(options: UseEditorOptions) {
       }
     ) => {
       if (!project) return
-      const patch = createLayerPixelPatch(beforeLayer, afterLayer)
-      if (!patch && !selectionTransition) return
+      const curTl = timelineRef.current
+      const activeFrameId = curTl.activeFrameId
+      const cellKey = makeCellKey(beforeLayer.id, activeFrameId)
+      const existingRef = curTl.cels[cellKey]
+
+      const baseDiff = createLayerPixelPatch(beforeLayer, afterLayer)
+      if (!baseDiff && !selectionTransition) return
+
+      let targetCelId: string | undefined
+      let celAllocation:
+        | { cellKey: string; allocatedCelId: string }
+        | undefined
+      let nextCels = curTl.cels
+      let nextCelBuffers = curTl.celBuffers
+
+      if (baseDiff) {
+        nextCels = { ...curTl.cels }
+        nextCelBuffers = { ...curTl.celBuffers }
+        if (existingRef?.kind === 'cel' && nextCelBuffers[existingRef.celId]) {
+          targetCelId = existingRef.celId
+        } else {
+          targetCelId = generateId('cel')
+          celAllocation = { cellKey, allocatedCelId: targetCelId }
+          nextCels[cellKey] = { kind: 'cel', celId: targetCelId }
+        }
+        nextCelBuffers[targetCelId] = {
+          id: targetCelId,
+          offsetX: afterLayer.offsetX,
+          offsetY: afterLayer.offsetY,
+          dataWidth: afterLayer.dataWidth,
+          dataHeight: afterLayer.dataHeight,
+          data: new Uint8ClampedArray(afterLayer.data),
+        }
+      }
+
+      const patch = baseDiff
+        ? { ...baseDiff, ...(targetCelId ? { celId: targetCelId } : {}) }
+        : null
 
       const resolvedBeforeWorld =
         selectionTransition?.beforeWorld !== undefined
@@ -535,6 +656,8 @@ export function useEditorController(options: UseEditorOptions) {
         label,
         timestamp: Date.now(),
         kind: patch ? 'pixel-diff' : 'selection',
+        frameId: activeFrameId,
+        celAllocation,
         pixelPatches: patch ? [patch] : undefined,
         beforeSelection: selectionTransition?.before,
         afterSelection: selectionTransition?.after,
@@ -542,6 +665,18 @@ export function useEditorController(options: UseEditorOptions) {
         afterWorldSelection: cloneWorldSelectionMask(resolvedAfterWorld),
       })
       syncHistoryCounts()
+
+      const nextTl: TimelineState = patch
+        ? {
+            ...curTl,
+            cels: nextCels,
+            celBuffers: nextCelBuffers,
+          }
+        : curTl
+      if (patch) {
+        timelineRef.current = nextTl
+        setTimeline(nextTl)
+      }
 
       const nextLayers = layers.map((l) => (l.id === beforeLayer.id ? afterLayer : l))
       setLayers(nextLayers)
@@ -571,7 +706,8 @@ export function useEditorController(options: UseEditorOptions) {
         nextLayers,
         palette,
         selectedColorIndex,
-        activeLayerId
+        activeLayerId,
+        nextTl
       )
     },
     [
@@ -647,7 +783,7 @@ export function useEditorController(options: UseEditorOptions) {
    * Works seamlessly even when the selection is already partially or completely outside `[0..width-1, 0..height-1]`!
    */
   const startSelectionMove = useCallback((): boolean => {
-    if (!project || !activeLayer || !effectiveWorldSelection) {
+    if (!project || !activeLayer || activeLayer.locked || !effectiveWorldSelection) {
       return false
     }
     const { extractedBuffer, clearedLayer } = extractWorldSelectionFromLayer(
@@ -698,7 +834,7 @@ export function useEditorController(options: UseEditorOptions) {
       if (!project) return false
       const target =
         layers.find((l) => l.id === (targetLayerId ?? activeLayerId)) ?? activeLayer
-      if (!target) return false
+      if (!target || target.locked) return false
       if (target.id !== activeLayerId) {
         setActiveLayerId(target.id)
       }
@@ -810,6 +946,8 @@ export function useEditorController(options: UseEditorOptions) {
     if (moveSession.mode === 'layer' || moveSession.mode === 'multi-layer') {
       const targetSet = new Set(moveSession.layerIds)
       const offsetTransitions: LayerOffsetTransition[] = []
+      const curTl = timelineRef.current
+      const nextCelBuffers = { ...curTl.celBuffers }
 
       const nextLayers = layers.map((l) => {
         if (!targetSet.has(l.id)) return l
@@ -819,8 +957,18 @@ export function useEditorController(options: UseEditorOptions) {
         }
         const afterOx = init.offsetX + moveSession.dx
         const afterOy = init.offsetY + moveSession.dy
+        const ref = curTl.cels[makeCellKey(l.id, curTl.activeFrameId)]
+        const celId = ref?.kind === 'cel' ? ref.celId : undefined
+        if (celId && nextCelBuffers[celId]) {
+          nextCelBuffers[celId] = {
+            ...nextCelBuffers[celId]!,
+            offsetX: afterOx,
+            offsetY: afterOy,
+          }
+        }
         offsetTransitions.push({
           layerId: l.id,
+          ...(celId ? { celId } : {}),
           beforeOffsetX: init.offsetX,
           beforeOffsetY: init.offsetY,
           afterOffsetX: afterOx,
@@ -840,11 +988,18 @@ export function useEditorController(options: UseEditorOptions) {
           offsetTransitions.length > 1 ? 'Move Selected Layers' : 'Move Layer',
         timestamp: Date.now(),
         kind: 'layer-offset',
+        frameId: curTl.activeFrameId,
         layerOffsetChange: offsetTransitions[0],
         layerOffsetChanges: offsetTransitions,
       })
       syncHistoryCounts()
 
+      const nextTl: TimelineState = {
+        ...curTl,
+        celBuffers: nextCelBuffers,
+      }
+      timelineRef.current = nextTl
+      setTimeline(nextTl)
       setMoveSession(null)
       setLayers(nextLayers)
       playUiTick('draw', soundEnabled)
@@ -853,7 +1008,8 @@ export function useEditorController(options: UseEditorOptions) {
         nextLayers,
         palette,
         selectedColorIndex,
-        activeLayerId
+        activeLayerId,
+        nextTl
       )
       return
     }
@@ -1334,12 +1490,18 @@ export function useEditorController(options: UseEditorOptions) {
   const beginDrawAction = useCallback(
     (targetPoint?: Point, allowOutOfBounds = false) => {
       if (!project || !activeLayer || !activeLayerCanvasView) return
+      if (isPlaying) {
+        setIsPlaying(false)
+      }
       if (moveSession) {
         commitActiveMove()
         return
       }
       if (floatingShape) {
         commitFloatingShape()
+        return
+      }
+      if (activeLayer.locked && tool !== 'eyedropper' && tool !== 'select') {
         return
       }
 
@@ -2027,33 +2189,147 @@ export function useEditorController(options: UseEditorOptions) {
         currentLayers: LayerRuntime[],
         currentActiveId: string,
         w: number,
-        h: number
+        h: number,
+        currentTimeline: TimelineState
       ) => {
         width: number
         height: number
         layers: LayerRuntime[]
         activeLayerId: string
+        timeline?: TimelineState
         clearSelection?: boolean
       } | null
     ) => {
       if (!project) return false
+      const curTl = timelineRef.current
       const beforeSnap = captureCanvasSnapshot(
         project.width,
         project.height,
         layers,
-        activeLayerId
+        activeLayerId,
+        curTl
       )
       const beforeSel = cloneSelectionMask(selectionMask)
       const beforeWorld = cloneWorldSelectionMask(effectiveWorldSelection)
 
-      const mutated = mutator(layers, activeLayerId, project.width, project.height)
+      const mutated = mutator(
+        layers,
+        activeLayerId,
+        project.width,
+        project.height,
+        curTl
+      )
       if (!mutated) return false
+
+      // Reconcile timeline automatically if mutator didn't construct an explicit TimelineState
+      let resolvedTl: TimelineState
+      if (mutated.timeline) {
+        resolvedTl = {
+          ...mutated.timeline,
+          celBuffers: pruneUnreferencedCelBuffers(
+            mutated.timeline.cels,
+            mutated.timeline.celBuffers
+          ),
+        }
+      } else {
+        const nextCels: CelMap = {}
+        const nextCelBuffers: Record<string, CelBufferRuntime> = {
+          ...curTl.celBuffers,
+        }
+        const survivingLayerIds = new Set(mutated.layers.map((l) => l.id))
+        const prevLayerMap = new Map(layers.map((l) => [l.id, l]))
+
+        // Copy surviving cel mappings first
+        for (const [k, v] of Object.entries(curTl.cels)) {
+          const sep = k.indexOf(':')
+          if (sep < 0) continue
+          const lId = k.slice(0, sep)
+          if (survivingLayerIds.has(lId)) {
+            nextCels[k] = v
+          }
+        }
+
+        // Sync active frame buffers & populate newly added layers across frames
+        for (const nl of mutated.layers) {
+          const existedBefore = prevLayerMap.has(nl.id)
+          const activeKey = makeCellKey(nl.id, curTl.activeFrameId)
+
+          if (!existedBefore) {
+            // Newly created or duplicated layer
+            for (const f of curTl.frames) {
+              const fk = makeCellKey(nl.id, f.id)
+              if (f.id === curTl.activeFrameId || curTl.frames.length === 1) {
+                const cid = generateId('cel')
+                nextCelBuffers[cid] = {
+                  id: cid,
+                  offsetX: nl.offsetX,
+                  offsetY: nl.offsetY,
+                  dataWidth: nl.dataWidth,
+                  dataHeight: nl.dataHeight,
+                  data: new Uint8ClampedArray(nl.data),
+                }
+                nextCels[fk] = { kind: 'cel', celId: cid }
+              } else {
+                nextCels[fk] = { kind: 'empty' }
+              }
+            }
+          } else {
+            const prevL = prevLayerMap.get(nl.id)!
+            const changedGeometryOrPixels =
+              prevL.data !== nl.data ||
+              prevL.offsetX !== nl.offsetX ||
+              prevL.offsetY !== nl.offsetY ||
+              prevL.dataWidth !== nl.dataWidth ||
+              prevL.dataHeight !== nl.dataHeight
+            if (changedGeometryOrPixels) {
+              const existingRef = nextCels[activeKey]
+              if (existingRef?.kind === 'cel' && nextCelBuffers[existingRef.celId]) {
+                nextCelBuffers[existingRef.celId] = {
+                  id: existingRef.celId,
+                  offsetX: nl.offsetX,
+                  offsetY: nl.offsetY,
+                  dataWidth: nl.dataWidth,
+                  dataHeight: nl.dataHeight,
+                  data: new Uint8ClampedArray(nl.data),
+                }
+              } else {
+                const cid = generateId('cel')
+                nextCelBuffers[cid] = {
+                  id: cid,
+                  offsetX: nl.offsetX,
+                  offsetY: nl.offsetY,
+                  dataWidth: nl.dataWidth,
+                  dataHeight: nl.dataHeight,
+                  data: new Uint8ClampedArray(nl.data),
+                }
+                nextCels[activeKey] = { kind: 'cel', celId: cid }
+              }
+            }
+          }
+        }
+
+        resolvedTl = {
+          ...curTl,
+          cels: nextCels,
+          celBuffers: pruneUnreferencedCelBuffers(nextCels, nextCelBuffers),
+        }
+      }
+
+      const projectedLayers = projectFrameLayers(
+        mutated.layers,
+        resolvedTl.cels,
+        resolvedTl.celBuffers,
+        resolvedTl.activeFrameId,
+        mutated.width,
+        mutated.height
+      )
 
       const afterSnap = captureCanvasSnapshot(
         mutated.width,
         mutated.height,
-        mutated.layers,
-        mutated.activeLayerId
+        projectedLayers,
+        mutated.activeLayerId,
+        resolvedTl
       )
       const afterSel = mutated.clearSelection ? null : beforeSel
       const afterWorld = mutated.clearSelection ? null : beforeWorld
@@ -2077,9 +2353,17 @@ export function useEditorController(options: UseEditorOptions) {
         width: mutated.width,
         height: mutated.height,
         activeLayerId: mutated.activeLayerId,
+        frames: resolvedTl.frames,
+        cels: resolvedTl.cels,
+        activeFrameId: resolvedTl.activeFrameId,
+        defaultFrameDurationMs: resolvedTl.defaultFrameDurationMs,
+        playbackDirection: resolvedTl.playbackDirection,
+        loopPlayback: resolvedTl.loopPlayback,
       }
+      timelineRef.current = resolvedTl
+      setTimeline(resolvedTl)
       setProject(updatedProject)
-      setLayers(mutated.layers)
+      setLayers(projectedLayers)
       setActiveLayerId(mutated.activeLayerId)
       if (mutated.clearSelection) {
         setSelectionMask(null)
@@ -2089,10 +2373,11 @@ export function useEditorController(options: UseEditorOptions) {
 
       persistCommittedState(
         updatedProject,
-        mutated.layers,
+        projectedLayers,
         palette,
         selectedColorIndex,
-        mutated.activeLayerId
+        mutated.activeLayerId,
+        resolvedTl
       )
       return true
     },
@@ -2101,6 +2386,7 @@ export function useEditorController(options: UseEditorOptions) {
       layers,
       activeLayerId,
       selectionMask,
+      effectiveWorldSelection,
       syncHistoryCounts,
       persistCommittedState,
       palette,
@@ -2135,20 +2421,64 @@ export function useEditorController(options: UseEditorOptions) {
   const duplicateLayer = useCallback(
     (layerId: string): boolean => {
       if (layers.length >= MAX_LAYERS) return false
-      return executeStructuralChange('Duplicate Layer', (curr, _currActive, w, h) => {
-        const idx = curr.findIndex((l) => l.id === layerId)
-        if (idx < 0) return null
-        const src = curr[idx]
-        const newId = generateId('layer')
-        const copy: LayerRuntime = {
-          ...src,
-          id: newId,
-          name: `${src.name} Copy`,
-          data: new Uint8ClampedArray(src.data),
+      return executeStructuralChange(
+        'Duplicate Layer',
+        (curr, _currActive, w, h, curTl) => {
+          const idx = curr.findIndex((l) => l.id === layerId)
+          if (idx < 0) return null
+          const src = curr[idx]!
+          const newId = generateId('layer')
+          const copy: LayerRuntime = {
+            ...src,
+            id: newId,
+            name: `${src.name} Copy`,
+            data: new Uint8ClampedArray(src.data),
+          }
+          const next = [...curr.slice(0, idx + 1), copy, ...curr.slice(idx + 1)]
+
+          // Clone cel structure across ALL frames (preserving linked-cel groupings within the new layer!)
+          const nextCels: CelMap = { ...curTl.cels }
+          const nextCelBuffers: Record<string, CelBufferRuntime> = {
+            ...curTl.celBuffers,
+          }
+          const clonedCelIdMap = new Map<string, string>()
+          for (const f of curTl.frames) {
+            const srcRef = curTl.cels[makeCellKey(layerId, f.id)]
+            const dstKey = makeCellKey(newId, f.id)
+            if (!srcRef || srcRef.kind === 'empty' || !nextCelBuffers[srcRef.celId]) {
+              nextCels[dstKey] = { kind: 'empty' }
+            } else {
+              let mappedId = clonedCelIdMap.get(srcRef.celId)
+              if (!mappedId) {
+                mappedId = generateId('cel')
+                clonedCelIdMap.set(srcRef.celId, mappedId)
+                const sb = nextCelBuffers[srcRef.celId]!
+                nextCelBuffers[mappedId] = {
+                  id: mappedId,
+                  offsetX: sb.offsetX,
+                  offsetY: sb.offsetY,
+                  dataWidth: sb.dataWidth,
+                  dataHeight: sb.dataHeight,
+                  data: new Uint8ClampedArray(sb.data),
+                }
+              }
+              nextCels[dstKey] = { kind: 'cel', celId: mappedId }
+            }
+          }
+
+          return {
+            width: w,
+            height: h,
+            layers: next,
+            activeLayerId: newId,
+            timeline: {
+              ...curTl,
+              cels: nextCels,
+              celBuffers: nextCelBuffers,
+            },
+          }
         }
-        const next = [...curr.slice(0, idx + 1), copy, ...curr.slice(idx + 1)]
-        return { width: w, height: h, layers: next, activeLayerId: newId }
-      })
+      )
     },
     [layers.length, executeStructuralChange]
   )
@@ -2175,29 +2505,92 @@ export function useEditorController(options: UseEditorOptions) {
 
   const mergeLayerDown = useCallback(
     (layerId: string): boolean => {
-      return executeStructuralChange('Merge Down', (curr, _currActive, w, h) => {
-        const idx = curr.findIndex((l) => l.id === layerId)
-        if (idx <= 0) return null
-        const lower = curr[idx - 1]
-        const upper = curr[idx]
-        const merged = mergeTwoLayers(lower, upper, w, h)
-        const mergedLayer: LayerRuntime = {
-          ...lower,
-          opacity: 100,
-          visible: true,
-          offsetX: merged.offsetX,
-          offsetY: merged.offsetY,
-          dataWidth: merged.dataWidth,
-          dataHeight: merged.dataHeight,
-          data: merged.data,
+      return executeStructuralChange(
+        'Merge Down',
+        (curr, _currActive, w, h, curTl) => {
+          const idx = curr.findIndex((l) => l.id === layerId)
+          if (idx <= 0) return null
+          const lower = curr[idx - 1]!
+          const upper = curr[idx]!
+
+          const nextCels: CelMap = {}
+          const nextCelBuffers: Record<string, CelBufferRuntime> = {
+            ...curTl.celBuffers,
+          }
+          for (const [k, v] of Object.entries(curTl.cels)) {
+            const sep = k.indexOf(':')
+            const lId = sep >= 0 ? k.slice(0, sep) : ''
+            if (lId !== upper.id && lId !== lower.id) {
+              nextCels[k] = v
+            }
+          }
+
+          let activeMergedGeo: ReturnType<typeof mergeTwoLayers> | null = null
+          for (const f of curTl.frames) {
+            const projectedPair = projectFrameLayers(
+              [lower, upper],
+              curTl.cels,
+              curTl.celBuffers,
+              f.id,
+              w,
+              h
+            )
+            const lowerRef = curTl.cels[makeCellKey(lower.id, f.id)]
+            const upperRef = curTl.cels[makeCellKey(upper.id, f.id)]
+            const bothEmpty =
+              (!lowerRef || lowerRef.kind === 'empty') &&
+              (!upperRef || upperRef.kind === 'empty')
+
+            if (bothEmpty && curTl.frames.length > 1) {
+              nextCels[makeCellKey(lower.id, f.id)] = { kind: 'empty' }
+              continue
+            }
+
+            const m = mergeTwoLayers(projectedPair[0]!, projectedPair[1]!, w, h)
+            if (f.id === curTl.activeFrameId) {
+              activeMergedGeo = m
+            }
+            const cid = generateId('cel')
+            nextCelBuffers[cid] = {
+              id: cid,
+              offsetX: m.offsetX,
+              offsetY: m.offsetY,
+              dataWidth: m.dataWidth,
+              dataHeight: m.dataHeight,
+              data: new Uint8ClampedArray(m.data),
+            }
+            nextCels[makeCellKey(lower.id, f.id)] = { kind: 'cel', celId: cid }
+          }
+
+          const merged = activeMergedGeo ?? mergeTwoLayers(lower, upper, w, h)
+          const mergedLayer: LayerRuntime = {
+            ...lower,
+            opacity: 100,
+            visible: true,
+            offsetX: merged.offsetX,
+            offsetY: merged.offsetY,
+            dataWidth: merged.dataWidth,
+            dataHeight: merged.dataHeight,
+            data: merged.data,
+          }
+          const next = [
+            ...curr.slice(0, idx - 1),
+            mergedLayer,
+            ...curr.slice(idx + 1),
+          ]
+          return {
+            width: w,
+            height: h,
+            layers: next,
+            activeLayerId: mergedLayer.id,
+            timeline: {
+              ...curTl,
+              cels: nextCels,
+              celBuffers: pruneUnreferencedCelBuffers(nextCels, nextCelBuffers),
+            },
+          }
         }
-        const next = [
-          ...curr.slice(0, idx - 1),
-          mergedLayer,
-          ...curr.slice(idx + 1),
-        ]
-        return { width: w, height: h, layers: next, activeLayerId: mergedLayer.id }
-      })
+      )
     },
     [executeStructuralChange]
   )
@@ -2331,7 +2724,10 @@ export function useEditorController(options: UseEditorOptions) {
     (
       layerId: string,
       patch: Partial<
-        Pick<LayerRuntime, 'name' | 'visible' | 'opacity' | 'blendMode' | 'clipping'>
+        Pick<
+          LayerRuntime,
+          'name' | 'visible' | 'locked' | 'opacity' | 'blendMode' | 'clipping'
+        >
       >
     ) => {
       executeStructuralChange('Update Layer', (curr, currActive, w, h) => {
@@ -2430,13 +2826,27 @@ export function useEditorController(options: UseEditorOptions) {
       const afterOx = beforeOx + sx
       const afterOy = beforeOy + sy
 
+      const curTl = timelineRef.current
+      const ref = curTl.cels[makeCellKey(layerId, curTl.activeFrameId)]
+      const celId = ref?.kind === 'cel' ? ref.celId : undefined
+      const nextCelBuffers = { ...curTl.celBuffers }
+      if (celId && nextCelBuffers[celId]) {
+        nextCelBuffers[celId] = {
+          ...nextCelBuffers[celId]!,
+          offsetX: afterOx,
+          offsetY: afterOy,
+        }
+      }
+
       historyRef.current.push({
         id: generateId('hist'),
         label: 'Move Layer',
         timestamp: Date.now(),
         kind: 'layer-offset',
+        frameId: curTl.activeFrameId,
         layerOffsetChange: {
           layerId,
+          ...(celId ? { celId } : {}),
           beforeOffsetX: beforeOx,
           beforeOffsetY: beforeOy,
           afterOffsetX: afterOx,
@@ -2444,6 +2854,13 @@ export function useEditorController(options: UseEditorOptions) {
         },
       })
       syncHistoryCounts()
+
+      const nextTl: TimelineState = {
+        ...curTl,
+        celBuffers: nextCelBuffers,
+      }
+      timelineRef.current = nextTl
+      setTimeline(nextTl)
 
       const nextLayers = layers.map((l) =>
         l.id === layerId ? { ...l, offsetX: afterOx, offsetY: afterOy } : l
@@ -2454,7 +2871,8 @@ export function useEditorController(options: UseEditorOptions) {
         nextLayers,
         palette,
         selectedColorIndex,
-        activeLayerId
+        activeLayerId,
+        nextTl
       )
     },
     [
@@ -2483,21 +2901,30 @@ export function useEditorController(options: UseEditorOptions) {
         MIN_CANVAS_SIZE,
         Math.min(MAX_CANVAS_SIZE, Math.round(newHeightRaw))
       )
-      executeStructuralChange('Resize Canvas', (curr, currActive, w, h) => {
+      executeStructuralChange('Resize Canvas', (curr, currActive, w, h, curTl) => {
         if (nw === w && nh === h) return null
-        const { layers: resizedLayers } = resizeLayersWithAnchor(
-          curr,
-          w,
-          h,
-          nw,
-          nh,
-          anchor
-        )
+        const {
+          layers: resizedLayers,
+          shiftX,
+          shiftY,
+        } = resizeLayersWithAnchor(curr, w, h, nw, nh, anchor)
+        const shiftedCelBuffers: Record<string, CelBufferRuntime> = {}
+        for (const [cid, cb] of Object.entries(curTl.celBuffers)) {
+          shiftedCelBuffers[cid] = {
+            ...cb,
+            offsetX: cb.offsetX + shiftX,
+            offsetY: cb.offsetY + shiftY,
+          }
+        }
         return {
           width: nw,
           height: nh,
           layers: resizedLayers,
           activeLayerId: currActive,
+          timeline: {
+            ...curTl,
+            celBuffers: shiftedCelBuffers,
+          },
           clearSelection: true,
         }
       })
@@ -2516,6 +2943,8 @@ export function useEditorController(options: UseEditorOptions) {
         name: nextPalette.name.trim() || 'Palette',
         colors: safeColors,
         sourcePaletteId: nextPalette.sourcePaletteId,
+        author: nextPalette.author,
+        sourceUrl: nextPalette.sourceUrl,
       }
       historyRef.current.push({
         id: generateId('hist'),
@@ -2582,6 +3011,7 @@ export function useEditorController(options: UseEditorOptions) {
       return
     }
 
+    const curTl = timelineRef.current
     const prev = historyRef.current.undo({
       width: project.width,
       height: project.height,
@@ -2590,17 +3020,43 @@ export function useEditorController(options: UseEditorOptions) {
       selectionMask,
       worldSelection: effectiveWorldSelection,
       palette,
+      frames: curTl.frames,
+      cels: curTl.cels,
+      celBuffers: curTl.celBuffers,
+      activeFrameId: curTl.activeFrameId,
     })
     if (!prev) return
 
     playUiTick('undo', soundEnabled)
     syncHistoryCounts()
 
+    const nextTl: TimelineState =
+      prev.frames && prev.cels && prev.celBuffers && prev.activeFrameId
+        ? {
+            ...curTl,
+            frames: prev.frames,
+            cels: prev.cels,
+            celBuffers: prev.celBuffers,
+            activeFrameId: prev.activeFrameId,
+          }
+        : createSingleFrameTimelineFromLayers(prev.layers, {
+            frameId: curTl.activeFrameId,
+            defaultFrameDurationMs: curTl.defaultFrameDurationMs,
+            playbackDirection: curTl.playbackDirection,
+            loopPlayback: curTl.loopPlayback,
+          })
+
+    timelineRef.current = nextTl
+    setTimeline(nextTl)
+
     const updatedProj: ProjectRecord = {
       ...project,
       width: prev.width,
       height: prev.height,
       activeLayerId: prev.activeLayerId,
+      frames: nextTl.frames,
+      cels: nextTl.cels,
+      activeFrameId: nextTl.activeFrameId,
     }
     const safeIdx =
       selectedColorIndex === TRANSPARENT_COLOR_INDEX
@@ -2622,7 +3078,8 @@ export function useEditorController(options: UseEditorOptions) {
       prev.layers,
       prev.palette,
       safeIdx,
-      prev.activeLayerId
+      prev.activeLayerId,
+      nextTl
     )
   }, [
     project,
@@ -2642,6 +3099,7 @@ export function useEditorController(options: UseEditorOptions) {
 
   const redo = useCallback(() => {
     if (!project) return
+    const curTl = timelineRef.current
     const next = historyRef.current.redo({
       width: project.width,
       height: project.height,
@@ -2650,17 +3108,43 @@ export function useEditorController(options: UseEditorOptions) {
       selectionMask,
       worldSelection: effectiveWorldSelection,
       palette,
+      frames: curTl.frames,
+      cels: curTl.cels,
+      celBuffers: curTl.celBuffers,
+      activeFrameId: curTl.activeFrameId,
     })
     if (!next) return
 
     playUiTick('step', soundEnabled)
     syncHistoryCounts()
 
+    const nextTl: TimelineState =
+      next.frames && next.cels && next.celBuffers && next.activeFrameId
+        ? {
+            ...curTl,
+            frames: next.frames,
+            cels: next.cels,
+            celBuffers: next.celBuffers,
+            activeFrameId: next.activeFrameId,
+          }
+        : createSingleFrameTimelineFromLayers(next.layers, {
+            frameId: curTl.activeFrameId,
+            defaultFrameDurationMs: curTl.defaultFrameDurationMs,
+            playbackDirection: curTl.playbackDirection,
+            loopPlayback: curTl.loopPlayback,
+          })
+
+    timelineRef.current = nextTl
+    setTimeline(nextTl)
+
     const updatedProj: ProjectRecord = {
       ...project,
       width: next.width,
       height: next.height,
       activeLayerId: next.activeLayerId,
+      frames: nextTl.frames,
+      cels: nextTl.cels,
+      activeFrameId: nextTl.activeFrameId,
     }
     const safeIdx =
       selectedColorIndex === TRANSPARENT_COLOR_INDEX
@@ -2677,25 +3161,834 @@ export function useEditorController(options: UseEditorOptions) {
     )
     setPalette(next.palette)
     setSelectedColorIndex(safeIdx)
-    persistCommittedState(
-      updatedProj,
-      next.layers,
-      next.palette,
-      safeIdx,
-      next.activeLayerId
+      persistCommittedState(
+        updatedProj,
+        next.layers,
+        next.palette,
+        safeIdx,
+        next.activeLayerId,
+        nextTl
+      )
+    }, [
+      project,
+      layers,
+      activeLayerId,
+      selectionMask,
+      effectiveWorldSelection,
+      palette,
+      soundEnabled,
+      syncHistoryCounts,
+      selectedColorIndex,
+      persistCommittedState,
+    ])
+
+  // ---------------------------------------------------------------------------
+  // Unified Frame / Cel / Playback / Onion-Skin / Load Estimator Operations
+  // ---------------------------------------------------------------------------
+
+  const selectFrame = useCallback(
+    (frameId: string) => {
+      if (!project) return
+      const curTl = timelineRef.current
+      if (curTl.activeFrameId === frameId) return
+      if (!curTl.frames.some((f) => f.id === frameId)) return
+
+      if (moveSession) {
+        setMoveSession(null)
+      }
+      if (floatingShape) {
+        setFloatingShape(null)
+      }
+      if (stepPhase.kind !== 'idle') {
+        setStepPhase({ kind: 'idle' })
+      }
+
+      const nextTl: TimelineState = {
+        ...curTl,
+        activeFrameId: frameId,
+      }
+      const nextLayers = projectFrameLayers(
+        layers,
+        nextTl.cels,
+        nextTl.celBuffers,
+        frameId,
+        project.width,
+        project.height
+      )
+      timelineRef.current = nextTl
+      setTimeline(nextTl)
+      setLayers(nextLayers)
+      persistCommittedState(
+        { ...project, activeFrameId: frameId },
+        nextLayers,
+        palette,
+        selectedColorIndex,
+        activeLayerId,
+        nextTl
+      )
+    },
+    [
+      project,
+      moveSession,
+      floatingShape,
+      stepPhase.kind,
+      layers,
+      persistCommittedState,
+      palette,
+      selectedColorIndex,
+      activeLayerId,
+    ]
+  )
+
+  const stepFrame = useCallback(
+    (delta: -1 | 1) => {
+      const curTl = timelineRef.current
+      if (curTl.frames.length <= 1) return
+      const idx = curTl.frames.findIndex((f) => f.id === curTl.activeFrameId)
+      if (idx < 0) return
+      const nextIdx = (idx + delta + curTl.frames.length) % curTl.frames.length
+      selectFrame(curTl.frames[nextIdx]!.id)
+    },
+    [selectFrame]
+  )
+
+  const addEmptyFrame = useCallback(
+    (afterFrameId?: string): boolean => {
+      setIsPlaying(false)
+      return executeStructuralChange(
+        'Add Empty Frame',
+        (curr, currActive, w, h, curTl) => {
+          const nextTl = insertNewFrame(curTl, curr, 'empty', afterFrameId)
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: nextTl,
+          }
+        }
+      )
+    },
+    [executeStructuralChange]
+  )
+
+  const duplicateFrame = useCallback(
+    (mode: 'independent' | 'linked' = 'independent', frameId?: string): boolean => {
+      setIsPlaying(false)
+      return executeStructuralChange(
+        mode === 'linked' ? 'Duplicate Linked Frame' : 'Duplicate Frame',
+        (curr, currActive, w, h, curTl) => {
+          const nextTl = insertNewFrame(
+            curTl,
+            curr,
+            mode === 'linked' ? 'duplicate-linked' : 'duplicate-independent',
+            frameId ?? curTl.activeFrameId
+          )
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: nextTl,
+          }
+        }
+      )
+    },
+    [executeStructuralChange]
+  )
+
+  const deleteFrame = useCallback(
+    (frameId?: string): boolean => {
+      setIsPlaying(false)
+      const targetId = frameId ?? timelineRef.current.activeFrameId
+      if (timelineRef.current.frames.length <= 1) return false
+      return executeStructuralChange(
+        'Delete Frame',
+        (curr, currActive, w, h, curTl) => {
+          const nextTl = deleteFrameFromTimeline(curTl, targetId)
+          if (!nextTl) return null
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: nextTl,
+          }
+        }
+      )
+    },
+    [executeStructuralChange]
+  )
+
+  const reorderFrames = useCallback(
+    (orderedFrameIds: readonly string[]) => {
+      executeStructuralChange(
+        'Reorder Frames',
+        (curr, currActive, w, h, curTl) => {
+          const nextTl = reorderTimelineFrames(curTl, orderedFrameIds)
+          if (nextTl === curTl) return null
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: nextTl,
+          }
+        }
+      )
+    },
+    [executeStructuralChange]
+  )
+
+  const setFrameDuration = useCallback(
+    (frameId: string, durationMs: number) => {
+      const clamped = clampFrameDurationMs(durationMs)
+      executeStructuralChange(
+        'Set Frame Duration',
+        (curr, currActive, w, h, curTl) => {
+          const target = curTl.frames.find((f) => f.id === frameId)
+          if (!target || target.durationMs === clamped) return null
+          const nextFrames = curTl.frames.map((f) =>
+            f.id === frameId ? { ...f, durationMs: clamped } : f
+          )
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: { ...curTl, frames: nextFrames },
+          }
+        }
+      )
+    },
+    [executeStructuralChange]
+  )
+
+  const applyBatchDuration = useCallback(
+    (
+      scope:
+        | { mode: 'selected'; selectedFrameIds: readonly string[] }
+        | { mode: 'range'; fromFrameNumber: number; toFrameNumber: number }
+        | { mode: 'all' },
+      durationMs: number
+    ): boolean => {
+      return executeStructuralChange(
+        'Batch Frame Duration',
+        (curr, currActive, w, h, curTl) => {
+          const ids = resolveBatchDurationTargetFrameIds(curTl.frames, scope)
+          if (ids.length === 0) return null
+          const nextFrames = applyBatchFrameDuration(curTl.frames, ids, durationMs)
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: { ...curTl, frames: nextFrames },
+          }
+        }
+      )
+    },
+    [executeStructuralChange]
+  )
+
+  // Cell-level operations
+  const clearCell = useCallback(
+    (layerId?: string, frameId?: string): boolean => {
+      const lId = layerId ?? activeLayerId
+      const fId = frameId ?? timelineRef.current.activeFrameId
+      return executeStructuralChange(
+        'Clear Cel to Empty',
+        (curr, currActive, w, h, curTl) => {
+          const res = setCellToEmpty(curTl.cels, curTl.celBuffers, lId, fId)
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: { ...curTl, cels: res.cels, celBuffers: res.celBuffers },
+          }
+        }
+      )
+    },
+    [activeLayerId, executeStructuralChange]
+  )
+
+  const unlinkCell = useCallback(
+    (layerId?: string, frameId?: string): boolean => {
+      const lId = layerId ?? activeLayerId
+      const fId = frameId ?? timelineRef.current.activeFrameId
+      return executeStructuralChange(
+        'Unlink Cel',
+        (curr, currActive, w, h, curTl) => {
+          const res = unlinkCellToIndependent(
+            curTl.cels,
+            curTl.celBuffers,
+            lId,
+            fId
+          )
+          if (!res.changed) return null
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: { ...curTl, cels: res.cels, celBuffers: res.celBuffers },
+          }
+        }
+      )
+    },
+    [activeLayerId, executeStructuralChange]
+  )
+
+  const linkCellTo = useCallback(
+    (layerId: string, sourceFrameId: string, targetFrameId: string): boolean => {
+      return executeStructuralChange(
+        'Link Cels',
+        (curr, currActive, w, h, curTl) => {
+          const res = linkCellToSourceCell(
+            curTl.cels,
+            curTl.celBuffers,
+            layerId,
+            sourceFrameId,
+            targetFrameId
+          )
+          if (!res.changed) return null
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: { ...curTl, cels: res.cels, celBuffers: res.celBuffers },
+          }
+        }
+      )
+    },
+    [executeStructuralChange]
+  )
+
+  const copyCellTo = useCallback(
+    (layerId: string, sourceFrameId: string, targetFrameId: string): boolean => {
+      return executeStructuralChange(
+        'Copy Cel',
+        (curr, currActive, w, h, curTl) => {
+          const res = copyCellAsIndependent(
+            curTl.cels,
+            curTl.celBuffers,
+            layerId,
+            sourceFrameId,
+            targetFrameId
+          )
+          if (!res.changed) return null
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: { ...curTl, cels: res.cels, celBuffers: res.celBuffers },
+          }
+        }
+      )
+    },
+    [executeStructuralChange]
+  )
+
+  const moveCellTo = useCallback(
+    (layerId: string, sourceFrameId: string, targetFrameId: string): boolean => {
+      if (sourceFrameId === targetFrameId) return false
+      return executeStructuralChange(
+        'Move Cel',
+        (curr, currActive, w, h, curTl) => {
+          const srcKey = makeCellKey(layerId, sourceFrameId)
+          const dstKey = makeCellKey(layerId, targetFrameId)
+          const srcRef = curTl.cels[srcKey] ?? { kind: 'empty' as const }
+          const dstRef = curTl.cels[dstKey] ?? { kind: 'empty' as const }
+          const nextCels: CelMap = {
+            ...curTl.cels,
+            [srcKey]: dstRef,
+            [dstKey]: srcRef,
+          }
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: {
+              ...curTl,
+              cels: nextCels,
+              activeFrameId: targetFrameId,
+            },
+          }
+        }
+      )
+    },
+    [executeStructuralChange]
+  )
+
+  const toggleCellSelected = useCallback((cellKey: string) => {
+    setSelectedCellKeys((prev) =>
+      prev.includes(cellKey) ? prev.filter((k) => k !== cellKey) : [...prev, cellKey]
     )
+  }, [])
+
+  const clearCellSelection = useCallback(() => {
+    setSelectedCellKeys([])
+  }, [])
+
+  const batchClearSelectedCells = useCallback((): boolean => {
+    if (selectedCellKeys.length === 0) return false
+    const ok = executeStructuralChange(
+      'Clear Selected Cels',
+      (curr, currActive, w, h, curTl) => {
+        let nextCels = { ...curTl.cels }
+        for (const ck of selectedCellKeys) {
+          nextCels[ck] = { kind: 'empty' }
+        }
+        return {
+          width: w,
+          height: h,
+          layers: curr,
+          activeLayerId: currActive,
+          timeline: {
+            ...curTl,
+            cels: nextCels,
+            celBuffers: pruneUnreferencedCelBuffers(nextCels, curTl.celBuffers),
+          },
+        }
+      }
+    )
+    if (ok) setSelectedCellKeys([])
+    return ok
+  }, [selectedCellKeys, executeStructuralChange])
+
+  const batchUnlinkSelectedCells = useCallback((): boolean => {
+    if (selectedCellKeys.length === 0) return false
+    return executeStructuralChange(
+      'Unlink Selected Cels',
+      (curr, currActive, w, h, curTl) => {
+        let nextCels = curTl.cels
+        let nextBuffers = curTl.celBuffers
+        let anyChanged = false
+        for (const ck of selectedCellKeys) {
+          const sep = ck.indexOf(':')
+          if (sep < 0) continue
+          const res = unlinkCellToIndependent(
+            nextCels,
+            nextBuffers,
+            ck.slice(0, sep),
+            ck.slice(sep + 1)
+          )
+          if (res.changed) {
+            nextCels = res.cels
+            nextBuffers = res.celBuffers
+            anyChanged = true
+          }
+        }
+        if (!anyChanged) return null
+        return {
+          width: w,
+          height: h,
+          layers: curr,
+          activeLayerId: currActive,
+          timeline: { ...curTl, cels: nextCels, celBuffers: nextBuffers },
+        }
+      }
+    )
+  }, [selectedCellKeys, executeStructuralChange])
+
+  const batchLinkSelectedCells = useCallback((): boolean => {
+    if (selectedCellKeys.length < 2) return false
+    return executeStructuralChange(
+      'Link Selected Cels',
+      (curr, currActive, w, h, curTl) => {
+        // Group selected cells by layerId; link within each layer to the earliest frame in timeline order
+        const byLayer = new Map<string, string[]>()
+        for (const ck of selectedCellKeys) {
+          const sep = ck.indexOf(':')
+          if (sep < 0) continue
+          const lId = ck.slice(0, sep)
+          const fId = ck.slice(sep + 1)
+          const arr = byLayer.get(lId) ?? []
+          arr.push(fId)
+          byLayer.set(lId, arr)
+        }
+        const frameOrder = new Map(curTl.frames.map((f, idx) => [f.id, idx]))
+        let nextCels = { ...curTl.cels }
+        let nextBuffers = { ...curTl.celBuffers }
+        let anyChanged = false
+
+        for (const [lId, fIds] of byLayer.entries()) {
+          if (fIds.length < 2) continue
+          fIds.sort((a, b) => (frameOrder.get(a) ?? 0) - (frameOrder.get(b) ?? 0))
+          // Pick first non-empty frame if available, else allocate a blank shared cel
+          let srcFrameId =
+            fIds.find((fid) => nextCels[makeCellKey(lId, fid)]?.kind === 'cel') ??
+            fIds[0]!
+          const srcKey = makeCellKey(lId, srcFrameId)
+          if (nextCels[srcKey]?.kind !== 'cel') {
+            const newCid = generateId('cel')
+            nextBuffers[newCid] = {
+              id: newCid,
+              offsetX: 0,
+              offsetY: 0,
+              dataWidth: w,
+              dataHeight: h,
+              data: createPixelBuffer(w, h),
+            }
+            nextCels[srcKey] = { kind: 'cel', celId: newCid }
+          }
+          for (const dstFrameId of fIds) {
+            if (dstFrameId === srcFrameId) continue
+            const res = linkCellToSourceCell(
+              nextCels,
+              nextBuffers,
+              lId,
+              srcFrameId,
+              dstFrameId
+            )
+            if (res.changed) {
+              nextCels = res.cels
+              nextBuffers = res.celBuffers
+              anyChanged = true
+            }
+          }
+        }
+        if (!anyChanged) return null
+        return {
+          width: w,
+          height: h,
+          layers: curr,
+          activeLayerId: currActive,
+          timeline: { ...curTl, cels: nextCels, celBuffers: nextBuffers },
+        }
+      }
+    )
+  }, [selectedCellKeys, executeStructuralChange])
+
+  const copyActiveCell = useCallback((): boolean => {
+    const curTl = timelineRef.current
+    const ref = curTl.cels[makeCellKey(activeLayerId, curTl.activeFrameId)]
+    if (!ref || ref.kind === 'empty' || !curTl.celBuffers[ref.celId]) {
+      setCelClipboard({
+        offsetX: 0,
+        offsetY: 0,
+        dataWidth: project?.width ?? 1,
+        dataHeight: project?.height ?? 1,
+        data: new Uint8ClampedArray(0),
+        isEmpty: true,
+        sourceLayerId: activeLayerId,
+        sourceFrameId: curTl.activeFrameId,
+      })
+      return true
+    }
+    const sb = curTl.celBuffers[ref.celId]!
+    setCelClipboard({
+      offsetX: sb.offsetX,
+      offsetY: sb.offsetY,
+      dataWidth: sb.dataWidth,
+      dataHeight: sb.dataHeight,
+      data: new Uint8ClampedArray(sb.data),
+      isEmpty: false,
+      sourceLayerId: activeLayerId,
+      sourceFrameId: curTl.activeFrameId,
+    })
+    return true
+  }, [activeLayerId, project])
+
+  const pasteToActiveCell = useCallback(
+    (asLinked = false): boolean => {
+      if (!celClipboard) return false
+      const targetLayerId = activeLayerId
+      const targetFrameId = timelineRef.current.activeFrameId
+      if (
+        asLinked &&
+        celClipboard.sourceLayerId === targetLayerId &&
+        celClipboard.sourceFrameId !== targetFrameId
+      ) {
+        return linkCellTo(
+          targetLayerId,
+          celClipboard.sourceFrameId,
+          targetFrameId
+        )
+      }
+      return executeStructuralChange(
+        'Paste Cel',
+        (curr, currActive, w, h, curTl) => {
+          const dstKey = makeCellKey(targetLayerId, targetFrameId)
+          if (celClipboard.isEmpty) {
+            const res = setCellToEmpty(
+              curTl.cels,
+              curTl.celBuffers,
+              targetLayerId,
+              targetFrameId
+            )
+            return {
+              width: w,
+              height: h,
+              layers: curr,
+              activeLayerId: currActive,
+              timeline: { ...curTl, cels: res.cels, celBuffers: res.celBuffers },
+            }
+          }
+          const cid = generateId('cel')
+          const nextBuffers = {
+            ...curTl.celBuffers,
+            [cid]: {
+              id: cid,
+              offsetX: celClipboard.offsetX,
+              offsetY: celClipboard.offsetY,
+              dataWidth: celClipboard.dataWidth,
+              dataHeight: celClipboard.dataHeight,
+              data: new Uint8ClampedArray(celClipboard.data),
+            },
+          }
+          const nextCels: CelMap = {
+            ...curTl.cels,
+            [dstKey]: { kind: 'cel', celId: cid },
+          }
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: {
+              ...curTl,
+              cels: nextCels,
+              celBuffers: pruneUnreferencedCelBuffers(nextCels, nextBuffers),
+            },
+          }
+        }
+      )
+    },
+    [celClipboard, activeLayerId, linkCellTo, executeStructuralChange]
+  )
+
+  // Playback Controls & Timer Loop
+  const setPlaybackDirection = useCallback(
+    (dir: PlaybackDirection) => {
+      if (!project) return
+      const nextTl: TimelineState = {
+        ...timelineRef.current,
+        playbackDirection: dir,
+      }
+      timelineRef.current = nextTl
+      setTimeline(nextTl)
+      persistCommittedState(
+        { ...project, playbackDirection: dir },
+        layers,
+        palette,
+        selectedColorIndex,
+        activeLayerId,
+        nextTl
+      )
+    },
+    [project, persistCommittedState, layers, palette, selectedColorIndex, activeLayerId]
+  )
+
+  const setLoopPlayback = useCallback(
+    (loop: boolean) => {
+      if (!project) return
+      const nextTl: TimelineState = {
+        ...timelineRef.current,
+        loopPlayback: loop,
+      }
+      timelineRef.current = nextTl
+      setTimeline(nextTl)
+      persistCommittedState(
+        { ...project, loopPlayback: loop },
+        layers,
+        palette,
+        selectedColorIndex,
+        activeLayerId,
+        nextTl
+      )
+    },
+    [project, persistCommittedState, layers, palette, selectedColorIndex, activeLayerId]
+  )
+
+  const togglePlay = useCallback(() => {
+    if (timelineRef.current.frames.length <= 1) return
+    setIsPlaying((prev) => !prev)
+  }, [])
+
+  const stopPlay = useCallback(() => {
+    setIsPlaying(false)
+  }, [])
+
+  const playStepCursorRef = useRef<number>(0)
+  useEffect(() => {
+    if (!isPlaying || !project || timeline.frames.length <= 1) {
+      if (isPlaying && timeline.frames.length <= 1) {
+        setIsPlaying(false)
+      }
+      return
+    }
+
+    const seq = computePlaybackFrameIndices(
+      timeline.frames.length,
+      timeline.playbackDirection,
+      !timeline.loopPlayback
+    )
+    if (seq.length === 0) return
+
+    // Align initial step cursor to current activeFrameId if needed
+    const curFrameIdx = timeline.frames.findIndex(
+      (f) => f.id === timeline.activeFrameId
+    )
+    let seqPos = playStepCursorRef.current
+    if (seqPos < 0 || seqPos >= seq.length || seq[seqPos] !== curFrameIdx) {
+      const found = seq.indexOf(Math.max(0, curFrameIdx))
+      seqPos = found >= 0 ? found : 0
+      playStepCursorRef.current = seqPos
+    }
+
+    const activeFrameMeta = timeline.frames[seq[seqPos]!] ?? timeline.frames[0]!
+    const effectiveDelay = Math.max(
+      10,
+      Math.round(activeFrameMeta.durationMs / Math.max(0.1, playbackSpeed))
+    )
+
+    const timer = window.setTimeout(() => {
+      const nextPos = seqPos + 1
+      if (nextPos >= seq.length) {
+        if (!timeline.loopPlayback) {
+          setIsPlaying(false)
+          playStepCursorRef.current = 0
+          return
+        }
+        playStepCursorRef.current = 0
+      } else {
+        playStepCursorRef.current = nextPos
+      }
+
+      const targetFrame =
+        timelineRef.current.frames[seq[playStepCursorRef.current]!]
+      if (!targetFrame) return
+      const nextTl: TimelineState = {
+        ...timelineRef.current,
+        activeFrameId: targetFrame.id,
+      }
+      const nextLayers = projectFrameLayers(
+        layers,
+        nextTl.cels,
+        nextTl.celBuffers,
+        targetFrame.id,
+        project.width,
+        project.height
+      )
+      timelineRef.current = nextTl
+      setTimeline(nextTl)
+      setLayers(nextLayers)
+    }, effectiveDelay)
+
+    return () => window.clearTimeout(timer)
+  }, [
+    isPlaying,
+    project,
+    timeline.frames,
+    timeline.activeFrameId,
+    timeline.playbackDirection,
+    timeline.loopPlayback,
+    playbackSpeed,
+    layers,
+  ])
+
+  const updateOnionSkin = useCallback((patch: Partial<OnionSkinConfig>) => {
+    setOnionSkin((prev) => ({ ...prev, ...patch }))
+  }, [])
+
+  // Onion-skin composited buffers (multi-step weighted composite for Prev & Next frames)
+  const { onionPrevBuffer, onionNextBuffer } = useMemo((): {
+    onionPrevBuffer: Uint8ClampedArray | null
+    onionNextBuffer: Uint8ClampedArray | null
+  } => {
+    if (
+      !project ||
+      !onionSkin.enabled ||
+      isPlaying ||
+      timeline.frames.length <= 1
+    ) {
+      return { onionPrevBuffer: null, onionNextBuffer: null }
+    }
+    const w = project.width
+    const h = project.height
+    const curIdx = timeline.frames.findIndex(
+      (f) => f.id === timeline.activeFrameId
+    )
+    if (curIdx < 0) return { onionPrevBuffer: null, onionNextBuffer: null }
+
+    const buildDirectionalBuffer = (
+      dir: -1 | 1,
+      count: number
+    ): Uint8ClampedArray | null => {
+      const acc = createPixelBuffer(w, h)
+      let anyDrawn = false
+      for (let step = count; step >= 1; step--) {
+        let idx = curIdx + dir * step
+        if (timeline.loopPlayback) {
+          idx = (idx + timeline.frames.length * 4) % timeline.frames.length
+          if (idx === curIdx) continue
+        } else if (idx < 0 || idx >= timeline.frames.length) {
+          continue
+        }
+        const f = timeline.frames[idx]
+        if (!f) continue
+        const fLayers = projectFrameLayers(
+          layers,
+          timeline.cels,
+          timeline.celBuffers,
+          f.id,
+          w,
+          h
+        )
+        const comp = compositeLayers(fLayers, w, h)
+        const falloff = 1 / step
+        for (let i = 0; i < comp.length; i += 4) {
+          const sa = comp[i + 3]!
+          if (sa === 0) continue
+          anyDrawn = true
+          const effA = Math.round(sa * falloff)
+          if (effA >= acc[i + 3]!) {
+            acc[i] = comp[i]!
+            acc[i + 1] = comp[i + 1]!
+            acc[i + 2] = comp[i + 2]!
+            acc[i + 3] = effA
+          }
+        }
+      }
+      return anyDrawn ? acc : null
+    }
+
+    return {
+      onionPrevBuffer: onionSkin.showPrev
+        ? buildDirectionalBuffer(-1, Math.max(1, Math.min(3, onionSkin.prevCount)))
+        : null,
+      onionNextBuffer: onionSkin.showNext
+        ? buildDirectionalBuffer(1, Math.max(1, Math.min(3, onionSkin.nextCount)))
+        : null,
+    }
   }, [
     project,
+    onionSkin,
+    isPlaying,
+    timeline.frames,
+    timeline.activeFrameId,
+    timeline.loopPlayback,
+    timeline.cels,
+    timeline.celBuffers,
     layers,
-    activeLayerId,
-    selectionMask,
-    effectiveWorldSelection,
-    palette,
-    soundEnabled,
-    syncHistoryCounts,
-    selectedColorIndex,
-    persistCommittedState,
   ])
+
+  const loadEstimate = useMemo(() => {
+    if (!project) return null
+    return estimateProjectLoad({
+      canvasWidth: project.width,
+      canvasHeight: project.height,
+      layers,
+      frames: timeline.frames,
+      cels: timeline.cels,
+      celBuffers: timeline.celBuffers,
+    })
+  }, [project, layers, timeline.frames, timeline.cels, timeline.celBuffers])
 
   return {
     loading,
@@ -2779,5 +4072,41 @@ export function useEditorController(options: UseEditorOptions) {
     resizeCanvas,
     updateProjectPalette,
     renameProject,
+    // Timeline, Cels, Playback, Onion Skin & Load Estimate
+    timeline,
+    selectFrame,
+    stepFrame,
+    addEmptyFrame,
+    duplicateFrame,
+    deleteFrame,
+    reorderFrames,
+    setFrameDuration,
+    applyBatchDuration,
+    clearCell,
+    unlinkCell,
+    linkCellTo,
+    copyCellTo,
+    moveCellTo,
+    selectedCellKeys,
+    toggleCellSelected,
+    clearCellSelection,
+    batchClearSelectedCells,
+    batchUnlinkSelectedCells,
+    batchLinkSelectedCells,
+    celClipboard,
+    copyActiveCell,
+    pasteToActiveCell,
+    isPlaying,
+    togglePlay,
+    stopPlay,
+    playbackSpeed,
+    setPlaybackSpeed,
+    setPlaybackDirection,
+    setLoopPlayback,
+    onionSkin,
+    updateOnionSkin,
+    onionPrevBuffer,
+    onionNextBuffer,
+    loadEstimate,
   }
 }

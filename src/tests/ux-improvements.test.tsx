@@ -1190,9 +1190,8 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
       clientX: -340,
       clientY: 160,
     })
-    // Commit active move via Draw button (or commit button)
-    fireEvent.pointerDown(drawBtn, { pointerId: 11 })
-    fireEvent.pointerUp(drawBtn, { pointerId: 11 })
+    // Commit active move via ActiveMoveBar commit button (since mouse modality hides bottom DrawButton)
+    fireEvent.click(screen.getByTestId('commit-move-btn'))
 
     // CRITICAL CHECK: Selection is now 100% outside `[0..7, 0..7]`, yet `hasSelection` MUST STILL BE TRUE!
     fireEvent.click(screen.getByTestId('tool-select'))
@@ -1201,7 +1200,7 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
     )) as HTMLButtonElement
     expect(startMoveAgain.disabled).toBe(false)
 
-    // Drag selection back inside (+500px right) and commit -> pixels & selection return intact!
+    // Drag selection back inside (+500px right) via touch and commit via remounted Draw button -> pixels & selection return intact!
     fireEvent.click(startMoveAgain)
     fireEvent.pointerDown(vp, {
       pointerId: 12,
@@ -1221,8 +1220,9 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
       clientX: 520,
       clientY: 160,
     })
-    fireEvent.pointerDown(drawBtn, { pointerId: 13 })
-    fireEvent.pointerUp(drawBtn, { pointerId: 13 })
+    const remountedDrawBtn = await screen.findByTestId('draw-button')
+    fireEvent.pointerDown(remountedDrawBtn, { pointerId: 13 })
+    fireEvent.pointerUp(remountedDrawBtn, { pointerId: 13 })
 
     // Undo twice + Redo twice works without losing selection state!
     fireEvent.click(screen.getByTestId('undo-btn'))

@@ -143,6 +143,14 @@ body,
   border: 2px solid var(--border-pixel);
 }
 
+/* Compact Translucent + Blurred Floating Tool Detail Popover (zero shadows preserved!) */
+.pixel-popover-translucent {
+  background-color: color-mix(in srgb, var(--bg-panel) 84%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 2px solid var(--border-pixel);
+}
+
 .pixel-btn {
   position: relative;
   background-color: var(--bg-elevated);
