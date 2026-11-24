@@ -34,3 +34,65 @@ if (typeof globalThis.CSS === 'undefined') {
     String(ident).replace(/[^a-zA-Z0-9_-]/g, '\\$&')
 }
 
+// Polyfill PointerEvent in jsdom so pointerType ('mouse' | 'touch' | 'pen') and pointerId are preserved
+if (typeof globalThis.PointerEvent === 'undefined') {
+  class PolyfillPointerEvent extends MouseEvent {
+    pointerId: number
+    pointerType: string
+    isPrimary: boolean
+    constructor(
+      type: string,
+      params: PointerEventInit & { pointerId?: number; pointerType?: string } = {}
+    ) {
+      super(type, params)
+      this.pointerId = params.pointerId ?? 1
+      this.pointerType = params.pointerType ?? 'mouse'
+      this.isPrimary = params.isPrimary ?? true
+    }
+  }
+  // @ts-expect-error polyfill for jsdom
+  globalThis.PointerEvent = PolyfillPointerEvent
+}
+
+// Minimal 2D Canvas & URL.createObjectURL mock for jsdom tests
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = (() => {
+    return {
+      save: () => {},
+      restore: () => {},
+      scale: () => {},
+      translate: () => {},
+      setTransform: () => {},
+      resetTransform: () => {},
+      clearRect: () => {},
+      fillRect: () => {},
+      strokeRect: () => {},
+      beginPath: () => {},
+      rect: () => {},
+      clip: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      stroke: () => {},
+      fill: () => {},
+      arc: () => {},
+      setLineDash: () => {},
+      putImageData: () => {},
+      drawImage: () => {},
+      strokeText: () => {},
+      fillText: () => {},
+      measureText: (txt: string) => ({ width: txt.length * 6 }),
+      imageSmoothingEnabled: false,
+    } as unknown as CanvasRenderingContext2D
+  }) as unknown as typeof HTMLCanvasElement.prototype.getContext
+}
+
+if (typeof URL !== 'undefined') {
+  if (!URL.createObjectURL) {
+    URL.createObjectURL = () => 'blob:mock-url'
+  }
+  if (!URL.revokeObjectURL) {
+    URL.revokeObjectURL = () => {}
+  }
+}
+
+

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   TRANSPARENT_COLOR_INDEX,
   type PaletteData,
@@ -12,11 +12,17 @@ import {
   normalizeHex,
   rgbaToHex,
 } from '../../engine/color'
+import {
+  mergeLospecPaletteColors,
+  type LospecFetchedPalette,
+} from '../../db/lospec'
 import { Modal } from '../common/Modal'
+import { LospecImportModal } from '../common/LospecImportModal'
 import { PixelIcon } from '../common/PixelIcon'
 import { PixelSlider } from '../common/PixelSlider'
 import { PixelSelect } from '../common/PixelSelect'
 import { getCheckerboardStyle } from '../common/PixelThumbnail'
+import { useLongPressReorder } from '../../utils/useLongPressReorder'
 import { useI18n } from '../../i18n/I18nContext'
 
 interface PaletteSheetProps {
@@ -28,7 +34,11 @@ interface PaletteSheetProps {
   libraryPalettes: PaletteData[]
   onSelectColor: (index: number) => void
   onUpdatePalette: (next: ProjectPalette, nextSelectedIdx?: number) => void
-  onSaveToLibrary: (name: string, colors: string[]) => Promise<void>
+  onSaveToLibrary: (
+    name: string,
+    colors: string[],
+    meta?: Partial<Pick<PaletteData, 'author' | 'sourceUrl' | 'lospecSlug' | 'licenseNote'>>
+  ) => Promise<void>
 }
 
 export function PaletteSheet({
@@ -44,7 +54,27 @@ export function PaletteSheet({
 }: PaletteSheetProps) {
   const { t } = useI18n()
   const [tab, setTab] = useState<'hsv' | 'rgb' | 'hex'>('hsv')
-  const [dragIdx, setDragIdx] = useState<number | null>(null)
+  const swatchGridRef = useRef<HTMLDivElement | null>(null)
+
+  const colorIds = palette.colors.map((_, idx) => `ps-${idx}`)
+  const { dragState, getItemProps, shouldSuppressClick } = useLongPressReorder({
+    ids: colorIds,
+    enabled: palette.colors.length > 1,
+    axis: 'both',
+    longPressMs: 150,
+    scopeId: 'palette-sheet-colors',
+    scrollContainerRef: swatchGridRef,
+    onReorder: (nextIds) => {
+      const nextIndices = nextIds.map((id) => Number(id.slice(3)))
+      const nextColors = nextIndices.map((i) => palette.colors[i]!)
+      let nextSel = selectedIndex
+      if (selectedIndex >= 0) {
+        const movedTo = nextIndices.indexOf(selectedIndex)
+        if (movedTo >= 0) nextSel = movedTo
+      }
+      onUpdatePalette({ ...palette, colors: nextColors }, nextSel)
+    },
+  })
 
   const isTransparentSelected = selectedIndex === TRANSPARENT_COLOR_INDEX
   const editableColorIndex = isTransparentSelected
@@ -55,6 +85,12 @@ export function PaletteSheet({
   const [hsv, setHsv] = useState(() => hexToHsv(currentHex))
   const [hexInput, setHexInput] = useState(currentHex)
   const [nameInput, setNameInput] = useState(palette.name)
+  const [lospecOpen, setLospecOpen] = useState(false)
+  const nameInputRef = useRef<HTMLInputElement | null>(null)
+  /** Preserve selection across initial mouseup/pointerup after focusing the palette name input! */
+  const selectAllOnMouseUpRef = useRef(false)
+  /** Suppress onBlur commit when user explicitly cancels via Escape */
+  const skipNextBlurCommitRef = useRef(false)
 
   useEffect(() => {
     setHsv(hexToHsv(currentHex))
@@ -144,16 +180,63 @@ export function PaletteSheet({
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-1.5">
             <input
+              ref={nameInputRef}
               type="text"
               value={nameInput}
+              onPointerDown={() => {
+                if (document.activeElement !== nameInputRef.current) {
+                  selectAllOnMouseUpRef.current = true
+                }
+              }}
+              onFocus={(e) => {
+                e.currentTarget.select()
+              }}
+              onMouseUp={(e) => {
+                if (selectAllOnMouseUpRef.current) {
+                  selectAllOnMouseUpRef.current = false
+                  e.preventDefault()
+                  e.currentTarget.select()
+                }
+              }}
               onChange={(e) => setNameInput(e.target.value)}
               onBlur={() => {
-                if (nameInput.trim() && nameInput.trim() !== palette.name) {
-                  onUpdatePalette({ ...palette, name: nameInput.trim() })
+                selectAllOnMouseUpRef.current = false
+                if (skipNextBlurCommitRef.current) {
+                  skipNextBlurCommitRef.current = false
+                  return
+                }
+                const trimmed = nameInput.trim()
+                if (trimmed && trimmed !== palette.name) {
+                  onUpdatePalette({ ...palette, name: trimmed })
+                } else {
+                  setNameInput(palette.name)
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  const trimmed = nameInput.trim()
+                  if (trimmed) {
+                    if (trimmed !== palette.name) {
+                      onUpdatePalette({ ...palette, name: trimmed })
+                    }
+                    skipNextBlurCommitRef.current = true
+                    e.currentTarget.blur()
+                  } else {
+                    setNameInput(palette.name)
+                  }
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  selectAllOnMouseUpRef.current = false
+                  skipNextBlurCommitRef.current = true
+                  setNameInput(palette.name)
+                  e.currentTarget.blur()
                 }
               }}
               placeholder={t('paletteName')}
-              className="flex-1 min-w-[130px] min-h-[40px] px-2.5 text-xs font-bold pixel-input"
+              className="flex-1 min-w-[130px] min-h-[40px] px-2.5 text-xs font-bold pixel-input select-text"
+              data-testid="palette-name-input"
             />
             <button
               type="button"
@@ -179,7 +262,39 @@ export function PaletteSheet({
               <PixelIcon name="copy" size={14} />
               {t('duplicatePalette')}
             </button>
+            <button
+              type="button"
+              onClick={() => setLospecOpen(true)}
+              className="pixel-btn pixel-btn-teal min-h-[40px] px-2.5 text-xs font-bold flex items-center gap-1"
+              data-testid="open-lospec-import-btn"
+            >
+              <PixelIcon name="download" size={14} />
+              {t('lospecImportBtn')}
+            </button>
           </div>
+
+          {(palette.author || palette.sourceUrl) && (
+            <div
+              className="text-[11px] text-[var(--text-secondary)] flex flex-wrap items-center gap-x-3 gap-y-0.5 px-1"
+              data-testid="palette-attribution-info"
+            >
+              {palette.author && (
+                <span>
+                  {t('lospecAuthorLabel')}: <strong className="text-[var(--text-primary)]">{palette.author}</strong>
+                </span>
+              )}
+              {palette.sourceUrl && (
+                <a
+                  href={palette.sourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:text-[var(--accent-teal)] truncate max-w-[240px]"
+                >
+                  {palette.sourceUrl}
+                </a>
+              )}
+            </div>
+          )}
 
           {libraryOptions.length > 0 && (
             <div className="flex items-center gap-2">
@@ -197,6 +312,8 @@ export function PaletteSheet({
                       name: lib.name,
                       colors: [...lib.colors],
                       sourcePaletteId: lib.id,
+                      author: lib.author,
+                      sourceUrl: lib.sourceUrl,
                     },
                     0
                   )
@@ -260,7 +377,10 @@ export function PaletteSheet({
             </div>
           </div>
 
-          <div className="grid grid-cols-8 sm:grid-cols-10 gap-1.5 max-h-40 overflow-y-auto p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)]">
+          <div
+            ref={swatchGridRef}
+            className="grid grid-cols-8 sm:grid-cols-10 gap-1.5 max-h-40 overflow-y-auto p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)]"
+          >
             {/* Fixed Leftmost Transparent Slot */}
             <button
               type="button"
@@ -293,28 +413,30 @@ export function PaletteSheet({
 
             {palette.colors.map((hex, idx) => {
               const active = idx === selectedIndex
+              const itemId = `ps-${idx}`
+              const isDragging = dragState?.draggingId === itemId
+              const isDropTarget =
+                dragState !== null &&
+                dragState.overId === itemId &&
+                dragState.draggingId !== itemId
               return (
                 <button
                   key={`${idx}-${hex}`}
                   type="button"
-                  draggable
-                  onDragStart={() => setDragIdx(idx)}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => {
-                    if (dragIdx === null || dragIdx === idx) return
-                    const nextColors = [...palette.colors]
-                    const [moved] = nextColors.splice(dragIdx, 1)
-                    nextColors.splice(idx, 0, moved)
-                    setDragIdx(null)
-                    onUpdatePalette({ ...palette, colors: nextColors }, idx)
+                  {...getItemProps(itemId)}
+                  onClick={() => {
+                    if (shouldSuppressClick()) return
+                    onSelectColor(idx)
                   }}
-                  onClick={() => onSelectColor(idx)}
                   style={{ backgroundColor: hex }}
                   className={`relative aspect-square cursor-pointer ${
-                    active
-                      ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)] z-10'
-                      : 'border-2 border-[var(--border-pixel)]'
-                  }`}
+                    isDropTarget
+                      ? 'border-2 border-[var(--accent-teal)] outline-2 outline-dashed outline-[var(--accent-teal)] z-20'
+                      : active
+                        ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)] z-10'
+                        : 'border-2 border-[var(--border-pixel)]'
+                  } ${isDragging ? 'opacity-60' : ''}`}
+                  data-testid={`sheet-color-${idx}`}
                 >
                   {active && (
                     <span
@@ -468,6 +590,41 @@ export function PaletteSheet({
           </div>
         )}
       </div>
+
+      <LospecImportModal
+        open={lospecOpen}
+        onClose={() => setLospecOpen(false)}
+        allowAppendReplace={true}
+        onConfirmImport={async (
+          fetched: LospecFetchedPalette,
+          mode,
+          alsoSaveToLib
+        ) => {
+          const merged = mergeLospecPaletteColors(
+            palette.colors,
+            fetched.colors,
+            mode
+          )
+          const nextName = mode === 'replace' ? fetched.name : palette.name
+          onUpdatePalette(
+            {
+              name: nextName,
+              colors: merged.colors,
+              author: mode === 'replace' ? fetched.author || undefined : palette.author,
+              sourceUrl:
+                mode === 'replace' ? fetched.sourceUrl : palette.sourceUrl,
+            },
+            mode === 'replace' ? 0 : Math.min(palette.colors.length, merged.colors.length - 1)
+          )
+          if (alsoSaveToLib) {
+            await onSaveToLibrary(fetched.name, fetched.colors, {
+              author: fetched.author || undefined,
+              sourceUrl: fetched.sourceUrl,
+              lospecSlug: fetched.slug,
+            })
+          }
+        }}
+      />
     </Modal>
   )
 }

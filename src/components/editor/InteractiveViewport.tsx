@@ -6,6 +6,7 @@ import type {
   Point,
   ToolId,
   ToolSettings,
+  WorldSelectionMask,
 } from '../../types'
 import type { MultiStepPhase } from '../../state/useEditorController'
 import { getBrushOffsets } from '../../engine/brush'
@@ -31,11 +32,21 @@ import {
 /** Section 9-2: Double-tap detection threshold in ms (default ~300ms) */
 export const DOUBLE_TAP_EYEDROPPER_WINDOW_MS = 300
 
+/** Section 4-2: Minimum touch slide distance in CSS px before moving the virtual cursor (taps NEVER move cursor) */
+export const TOUCH_SLIDE_DEADZONE_PX = 6
+
+/** Maximum screen distance (CSS px) between two stationary touch taps to count as an intentional double-tap gesture */
+export const TOUCH_DOUBLE_TAP_MAX_SEPARATION_PX = 44
+
 interface InteractiveViewportProps {
   projectId: string
   width: number
   height: number
   compositedBuffer: Uint8ClampedArray | null
+  onionPrevBuffer?: Uint8ClampedArray | null
+  onionNextBuffer?: Uint8ClampedArray | null
+  onionOpacity?: number
+  isPlaying?: boolean
   tool: ToolId
   toolSettings: ToolSettings
   cursor: Point
@@ -44,17 +55,20 @@ interface InteractiveViewportProps {
   moveSession: ActiveMoveSession | null
   hasSelection: boolean
   selectionMask: Uint8Array | null
+  worldSelection?: WorldSelectionMask | null
   showGrid: boolean
   checkerboardDark: boolean
   activeHexColor: string
   isTransparentColor: boolean
   eyedropperDoubleTap: boolean
   fitTrigger: number
+  onModalityChange?: (modality: InputModality) => void
   onMoveCursor: (pt: Point, allowOutOfBounds?: boolean) => void
   onBeginDrawAt: (pt?: Point, allowOutOfBounds?: boolean) => void
   onEndDraw: () => void
   onAbortStroke: () => void
-  onDoubleTapEyedropper: (pt: Point) => void
+  /** Invoked on double-tap eyedropper gesture; ALWAYS samples from current in-app cursor (NEVER from tap coordinates) */
+  onDoubleTapEyedropper: () => void
   onMoveFloatingShape: (dx: number, dy: number) => void
   onUpdateMoveOffset: (dx: number, dy: number) => void
 }
@@ -132,6 +146,10 @@ export function InteractiveViewport({
   width,
   height,
   compositedBuffer,
+  onionPrevBuffer = null,
+  onionNextBuffer = null,
+  onionOpacity = 35,
+  isPlaying = false,
   tool,
   toolSettings,
   cursor,
@@ -140,12 +158,14 @@ export function InteractiveViewport({
   moveSession,
   hasSelection,
   selectionMask,
+  worldSelection = null,
   showGrid,
   checkerboardDark,
   activeHexColor,
   isTransparentColor,
   eyedropperDoubleTap,
   fitTrigger,
+  onModalityChange,
   onMoveCursor,
   onBeginDrawAt,
   onEndDraw,
@@ -160,6 +180,7 @@ export function InteractiveViewport({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const displayCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const onionCanvasRef = useRef<HTMLCanvasElement | null>(null)
 
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({
     w: 360,
@@ -170,9 +191,20 @@ export function InteractiveViewport({
     panX: 24,
     panY: 24,
   })
-  const [modality, setModality] = useState<InputModality>(() =>
+  const [modality, setModalityState] = useState<InputModality>(() =>
     detectInitialInputModality()
   )
+  const setModality = useCallback(
+    (next: InputModality) => {
+      setModalityState((prev) => (prev === next ? prev : next))
+      onModalityChange?.(next)
+    },
+    [onModalityChange]
+  )
+
+  useEffect(() => {
+    onModalityChange?.(modality)
+  }, [modality, onModalityChange])
   const [spacePressed, setSpacePressed] = useState(false)
   const [antsOffset, setAntsOffset] = useState(0)
 
@@ -234,9 +266,14 @@ export function InteractiveViewport({
   } | null>(null)
 
   /**
-   * Section 9: Double-tap same canvas pixel state & short single-tap commit timer for mouse/direct taps
-   * so the first tap of a double-tap NEVER commits an unintended dot!
+   * Section 3: Touch double-tap gesture state (strictly decoupled from cursor sample coordinates!)
+   * & Mouse double-tap state so the 1st mouse click does not leave an unintended dot.
    */
+  const lastTouchTapRef = useRef<{
+    vx: number
+    vy: number
+    time: number
+  } | null>(null)
   const lastTapRef = useRef<{
     canvasX: number
     canvasY: number
@@ -365,6 +402,40 @@ export function InteractiveViewport({
       }
     }
 
+    // 1b. Optional Onion Skin Underlays (Prev frame tinted warm rose, Next frame tinted cool teal) when not playing
+    const drawOnionBuffer = (
+      buf: Uint8ClampedArray | null,
+      tint: [number, number, number],
+      alpha: number
+    ) => {
+      if (isPlaying || !buf || buf.length !== width * height * 4) return
+      if (!onionCanvasRef.current) {
+        onionCanvasRef.current = document.createElement('canvas')
+      }
+      const oc = onionCanvasRef.current
+      if (oc.width !== width || oc.height !== height) {
+        oc.width = width
+        oc.height = height
+      }
+      const octx = oc.getContext('2d')
+      if (!octx) return
+      const tinted = new Uint8ClampedArray(buf.length)
+      for (let i = 0; i < buf.length; i += 4) {
+        const a = buf[i + 3]!
+        if (a === 0) continue
+        tinted[i] = Math.round(buf[i]! * 0.45 + tint[0] * 0.55)
+        tinted[i + 1] = Math.round(buf[i + 1]! * 0.45 + tint[1] * 0.55)
+        tinted[i + 2] = Math.round(buf[i + 2]! * 0.45 + tint[2] * 0.55)
+        tinted[i + 3] = Math.round(a * alpha)
+      }
+      octx.putImageData(new ImageData(tinted, width, height), 0, 0)
+      ctx.imageSmoothingEnabled = false
+      ctx.drawImage(oc, 0, 0, width, height, devLeft, devTop, devW, devH)
+    }
+    const baseOnionAlpha = Math.max(0.05, Math.min(0.85, onionOpacity / 100))
+    drawOnionBuffer(onionPrevBuffer, [216, 108, 130], baseOnionAlpha)
+    drawOnionBuffer(onionNextBuffer, [87, 175, 162], baseOnionAlpha * 0.9)
+
     if (compositedBuffer && compositedBuffer.length === width * height * 4) {
       if (!offscreenCanvasRef.current) {
         offscreenCanvasRef.current = document.createElement('canvas')
@@ -427,8 +498,53 @@ export function InteractiveViewport({
     ctx.fillRect(devLeft - borderPx, devTop, borderPx, devH)
     ctx.fillRect(devLeft + devW, devTop, borderPx, devH)
 
-    // 4. Animated Marching Ants Selection Boundary
-    if (selectionMask && selectionMask.length === width * height) {
+    // 4. Animated Marching Ants Selection Boundary (renders in full world space so off-canvas selections remain visible in viewport!)
+    if (worldSelection && worldSelection.width > 0 && worldSelection.height > 0) {
+      ctx.save()
+      ctx.beginPath()
+      const { originX, originY, width: sw, height: sh, mask: sm } = worldSelection
+      for (let ly = 0; ly < sh; ly++) {
+        const wy = originY + ly
+        const py0 = rowDevY(wy)
+        const py1 = rowDevY(wy + 1)
+        if (py1 < -4 || py0 > devViewportH + 4) continue
+        for (let lx = 0; lx < sw; lx++) {
+          if (sm[ly * sw + lx] === 0) continue
+          const wx = originX + lx
+          const px0 = colDevX(wx)
+          const px1 = colDevX(wx + 1)
+          if (px1 < -4 || px0 > devViewportW + 4) continue
+
+          if (ly === 0 || sm[(ly - 1) * sw + lx] === 0) {
+            ctx.moveTo(px0, py0)
+            ctx.lineTo(px1, py0)
+          }
+          if (ly === sh - 1 || sm[(ly + 1) * sw + lx] === 0) {
+            ctx.moveTo(px0, py1)
+            ctx.lineTo(px1, py1)
+          }
+          if (lx === 0 || sm[ly * sw + (lx - 1)] === 0) {
+            ctx.moveTo(px0, py0)
+            ctx.lineTo(px0, py1)
+          }
+          if (lx === sw - 1 || sm[ly * sw + (lx + 1)] === 0) {
+            ctx.moveTo(px1, py0)
+            ctx.lineTo(px1, py1)
+          }
+        }
+      }
+      const dashLen = Math.max(4, Math.round(4 * dpr))
+      ctx.lineWidth = Math.max(2, Math.round(2 * dpr))
+      ctx.strokeStyle = '#181521'
+      ctx.setLineDash([])
+      ctx.stroke()
+
+      ctx.strokeStyle = '#f8f6f2'
+      ctx.setLineDash([dashLen, dashLen])
+      ctx.lineDashOffset = -Math.round((antsOffset / 8) * dashLen * 2)
+      ctx.stroke()
+      ctx.restore()
+    } else if (selectionMask && selectionMask.length === width * height) {
       ctx.save()
       ctx.beginPath()
       for (let y = 0; y < height; y++) {
@@ -546,6 +662,28 @@ export function InteractiveViewport({
       drawDashedGuide(stepPhase.start, cursor, '#579b91')
       const s0 = pixelCenter(stepPhase.start)
       const s1 = pixelCenter(cursor)
+      if (toolSettings.gradientType === 'radial') {
+        const rxPx = toolSettings.gradientFixedRatio
+          ? Math.hypot(s1.sx - s0.sx, s1.sy - s0.sy)
+          : Math.abs(s1.sx - s0.sx)
+        const ryPx = toolSettings.gradientFixedRatio
+          ? Math.hypot(s1.sx - s0.sx, s1.sy - s0.sy)
+          : Math.abs(s1.sy - s0.sy)
+        if (rxPx > 1 || ryPx > 1) {
+          ctx.save()
+          ctx.setLineDash([Math.round(4 * dpr), Math.round(4 * dpr)])
+          ctx.lineWidth = Math.max(1.5, Math.round(1.5 * dpr))
+          ctx.strokeStyle = '#579b91'
+          ctx.beginPath()
+          if (typeof ctx.ellipse === 'function') {
+            ctx.ellipse(s0.sx, s0.sy, Math.max(1, rxPx), Math.max(1, ryPx), 0, 0, Math.PI * 2)
+          } else {
+            ctx.rect(s0.sx - rxPx, s0.sy - ryPx, rxPx * 2, ryPx * 2)
+          }
+          ctx.stroke()
+          ctx.restore()
+        }
+      }
       drawPixelHandle(ctx, s0.sx, s0.sy, '#579b91', dpr)
       drawPixelHandle(ctx, s1.sx, s1.sy, '#c47388', dpr)
     } else if (stepPhase.kind === 'line-end' || stepPhase.kind === 'shape-end') {
@@ -595,8 +733,9 @@ export function InteractiveViewport({
       drawPixelHandle(ctx, s2.sx, s2.sy, '#d99b52', dpr)
     }
 
-    // 8. Tool-Specific Pixel Cursor (Section 2: Line/Bezier cursor matches exact `lineSize` & `lineShape`!)
-    if (!floatingShape && !moveSession) {
+    // 8. Tool-Specific Virtual Pixel Cursor
+    // Section 3-1: On PC (`modality === 'mouse'`), hide the app's custom virtual cursor and draw with OS mouse cursor!
+    if (!floatingShape && !moveSession && !isPlaying && modality !== 'mouse') {
       const cellX0 = colDevX(cursor.x)
       const cellY0 = rowDevY(cursor.y)
       const cellW = Math.max(Math.round(2 * dpr), colDevX(cursor.x + 1) - cellX0)
@@ -730,6 +869,10 @@ export function InteractiveViewport({
     width,
     height,
     compositedBuffer,
+    onionPrevBuffer,
+    onionNextBuffer,
+    onionOpacity,
+    isPlaying,
     tool,
     toolSettings,
     showGrid,
@@ -779,8 +922,12 @@ export function InteractiveViewport({
       if (activePointersRef.current.size === 2) {
         cancelPendingSingleTap()
         lastTapRef.current = null
-        if (singleGestureRef.current?.mode === 'mouse-draw') {
-          onAbortStroke()
+        lastTouchTapRef.current = null
+        if (singleGestureRef.current) {
+          singleGestureRef.current.hadMultiTouch = true
+          if (singleGestureRef.current.mode === 'mouse-draw') {
+            onAbortStroke()
+          }
         }
         singleGestureRef.current = null
         const pts = Array.from(activePointersRef.current.values())
@@ -893,7 +1040,7 @@ export function InteractiveViewport({
           cancelPendingSingleTap()
           lastTapRef.current = null
           onAbortStroke()
-          onDoubleTapEyedropper(rawCanvasPt)
+          onDoubleTapEyedropper()
           return
         }
 
@@ -1020,10 +1167,13 @@ export function InteractiveViewport({
       if (g && g.pointerId === e.pointerId) {
         const dxCss = vx - g.lastVx
         const dyCss = vy - g.lastVy
+        const distFromStart = Math.hypot(vx - g.startVx, vy - g.startVy)
         g.lastVx = vx
         g.lastVy = vy
 
-        if (Math.hypot(vx - g.startVx, vy - g.startVy) > 4) {
+        const moveThreshold =
+          g.mode === 'touch-cursor' ? TOUCH_SLIDE_DEADZONE_PX : 4
+        if (!g.moved && distFromStart >= moveThreshold) {
           g.moved = true
         }
 
@@ -1073,8 +1223,15 @@ export function InteractiveViewport({
         }
 
         if (g.mode === 'touch-cursor') {
+          // Section 4-2: Touching/tapping alone MUST NOT move the cursor!
+          // Only start moving the cursor AFTER the finger slides past TOUCH_SLIDE_DEADZONE_PX,
+          // and move purely by relative finger delta from the existing cursor (never jump to tap point).
+          if (!g.moved) {
+            return
+          }
+          // Sliding cancels any pending double-tap gesture so slides are NEVER misrecognized as double-taps!
+          lastTouchTapRef.current = null
           const effScale = Math.max(0.5, transform.scale)
-          // Section 12: Do NOT clamp to `[0..width-1]` when tool supports out-of-canvas endpoints!
           const nextFloatX = allowsOutOfBoundsPoint
             ? Math.max(-512, Math.min(width + 512, subPixelCursorRef.current.x + dxCss / effScale))
             : Math.max(0, Math.min(width - 1, subPixelCursorRef.current.x + dxCss / effScale))
@@ -1130,7 +1287,6 @@ export function InteractiveViewport({
         !floatingShape &&
         !moveSession
       ) {
-        setModality('mouse')
         const rawPt = screenToCanvasPixel(vx, vy, transform)
         if (allowsOutOfBoundsPoint && stepPhase.kind !== 'idle') {
           subPixelCursorRef.current = { x: rawPt.x, y: rawPt.y }
@@ -1171,6 +1327,7 @@ export function InteractiveViewport({
         singleGestureRef.current = null
 
         if (cancelled) {
+          lastTouchTapRef.current = null
           if (g.mode === 'mouse-draw') {
             onAbortStroke()
           }
@@ -1182,41 +1339,36 @@ export function InteractiveViewport({
           return
         }
 
-        // Touch stationary tap: check double-tap on exact same canvas pixel!
-        if (g.mode === 'touch-cursor' && !g.moved && !g.hadMultiTouch) {
-          const cx = g.startCanvasPt.x
-          const cy = g.startCanvasPt.y
-          const inside = cx >= 0 && cx < width && cy >= 0 && cy < height
+        // Section 3: Touch stationary tap -> detect intentional double-tap gesture (~300ms) WITHOUT moving cursor!
+        // When triggered, `onDoubleTapEyedropper()` ALWAYS samples from the current in-app cursor position (NEVER from tap coordinates)!
+        if (g.mode === 'touch-cursor') {
+          if (g.moved || g.hadMultiTouch) {
+            lastTouchTapRef.current = null
+            return
+          }
           if (
             eyedropperDoubleTap &&
             tool !== 'eyedropper' &&
             stepPhase.kind === 'idle' &&
-            inside
+            !isPlaying
           ) {
             const now = performance.now()
-            const prev = lastTapRef.current
+            const prev = lastTouchTapRef.current
             if (
               prev &&
-              prev.canvasX === cx &&
-              prev.canvasY === cy &&
-              now - prev.time <= DOUBLE_TAP_EYEDROPPER_WINDOW_MS
+              now - prev.time <= DOUBLE_TAP_EYEDROPPER_WINDOW_MS &&
+              Math.hypot(g.lastVx - prev.vx, g.lastVy - prev.vy) <=
+                TOUCH_DOUBLE_TAP_MAX_SEPARATION_PX
             ) {
-              lastTapRef.current = null
-              onDoubleTapEyedropper({ x: cx, y: cy })
+              lastTouchTapRef.current = null
+              onDoubleTapEyedropper()
               return
             }
-            lastTapRef.current = { canvasX: cx, canvasY: cy, time: now }
+            lastTouchTapRef.current = { vx: g.lastVx, vy: g.lastVy, time: now }
           } else {
-            lastTapRef.current = null
+            lastTouchTapRef.current = null
           }
-          // Move cursor to tapped cell on single touch tap (touch mode uses Draw button to draw, so zero unwanted paint!)
-          if (inside || allowsOutOfBoundsPoint) {
-            const nextPt = allowsOutOfBoundsPoint
-              ? { x: cx, y: cy }
-              : clampCanvasPoint({ x: cx, y: cy }, width, height)
-            subPixelCursorRef.current = { x: nextPt.x, y: nextPt.y }
-            onMoveCursor(nextPt, allowsOutOfBoundsPoint)
-          }
+          // Stationary touch tap intentionally leaves cursor position untouched!
           return
         }
 

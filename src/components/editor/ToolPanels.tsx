@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import {
   TRANSPARENT_COLOR_INDEX,
@@ -11,6 +11,7 @@ import {
 } from '../../types'
 import { ALL_DITHER_PATTERN_IDS } from '../../engine/dithering'
 import { resolveToolIconName } from '../../utils/toolIcon'
+import { useLongPressReorder } from '../../utils/useLongPressReorder'
 import { PixelIcon, type PixelIconName } from '../common/PixelIcon'
 import { PixelCheckbox } from '../common/PixelCheckbox'
 import { PixelSlider } from '../common/PixelSlider'
@@ -38,23 +39,48 @@ interface PaletteBarProps {
   selectedIndex: number
   checkerDark?: boolean
   onSelectColor: (index: number) => void
+  onReorderColors?: (nextColors: string[], nextSelectedIndex: number) => void
   onOpenPaletteSheet: () => void
 }
 
 /**
- * Flat Dotpict-inspired Palette Swatch Bar:
+ * Flat Dotpict-inspired Single-Row Palette Swatch Bar (Sections 3-1 & 4-3):
+ * - Strictly 1-row horizontal display (`flex-nowrap overflow-x-auto`)
  * - Fixed leftmost Transparent Color Slot (`TRANSPARENT_COLOR_INDEX = -1`) outside normal 256-color cap & scroll
- * - Active color is marked by crisp double pixel border + pixel checkmark badge (zero shadows)
+ * - Normal colors support horizontal scrolling AND drag reordering on both PC mouse and Smartphone touch!
  */
 export function PaletteBar({
   colors,
   selectedIndex,
   checkerDark = false,
   onSelectColor,
+  onReorderColors,
   onOpenPaletteSheet,
 }: PaletteBarProps) {
   const { t } = useI18n()
+  const scrollStripRef = useRef<HTMLDivElement | null>(null)
   const isTransparentSelected = selectedIndex === TRANSPARENT_COLOR_INDEX
+
+  const colorIds = colors.map((_, idx) => `c-${idx}`)
+  const { dragState, getItemProps, shouldSuppressClick } = useLongPressReorder({
+    ids: colorIds,
+    enabled: Boolean(onReorderColors) && colors.length > 1,
+    axis: 'horizontal',
+    longPressMs: 170,
+    scopeId: 'palette-bar-colors',
+    scrollContainerRef: scrollStripRef,
+    onReorder: (nextIds) => {
+      if (!onReorderColors) return
+      const nextIndices = nextIds.map((id) => Number(id.slice(2)))
+      const nextColors = nextIndices.map((i) => colors[i]!)
+      let nextSel = selectedIndex
+      if (selectedIndex >= 0) {
+        const movedTo = nextIndices.indexOf(selectedIndex)
+        if (movedTo >= 0) nextSel = movedTo
+      }
+      onReorderColors(nextColors, nextSel)
+    },
+  })
 
   return (
     <div
@@ -114,16 +140,28 @@ export function PaletteBar({
       </button>
 
       <div
+        ref={scrollStripRef}
         style={{ gap: 'var(--ui-gap, 6px)' }}
-        className="flex items-center overflow-x-auto no-scrollbar py-1 flex-1 min-w-0"
+        className="flex flex-nowrap items-center overflow-x-auto no-scrollbar py-1 flex-1 min-w-0"
+        data-testid="palette-bar-scroll-strip"
       >
         {colors.map((hex, idx) => {
           const active = idx === selectedIndex
+          const itemId = `c-${idx}`
+          const isDragging = dragState?.draggingId === itemId
+          const isDropTarget =
+            dragState !== null &&
+            dragState.overId === itemId &&
+            dragState.draggingId !== itemId
           return (
             <button
               key={`${idx}-${hex}`}
               type="button"
-              onClick={() => onSelectColor(idx)}
+              {...getItemProps(itemId)}
+              onClick={() => {
+                if (shouldSuppressClick()) return
+                onSelectColor(idx)
+              }}
               style={{
                 width: 'var(--swatch-size, 34px)',
                 height: 'var(--swatch-size, 34px)',
@@ -131,10 +169,12 @@ export function PaletteBar({
                 backgroundColor: hex,
               }}
               className={`relative shrink-0 cursor-pointer transition-transform duration-75 ${
-                active
-                  ? 'border-2 border-[var(--border-strong)] outline-2 outline-offset-1 outline-[var(--accent-primary)] -translate-y-0.5'
-                  : 'border-2 border-[var(--border-pixel)] opacity-90 hover:opacity-100'
-              }`}
+                isDropTarget
+                  ? 'border-2 border-[var(--accent-teal)] outline-2 outline-dashed outline-[var(--accent-teal)] scale-105 z-10'
+                  : active
+                    ? 'border-2 border-[var(--border-strong)] outline-2 outline-offset-1 outline-[var(--accent-primary)] -translate-y-0.5'
+                    : 'border-2 border-[var(--border-pixel)] opacity-90 hover:opacity-100'
+              } ${isDragging ? 'opacity-60' : ''}`}
               aria-pressed={active}
               aria-label={`Color ${idx + 1} ${hex}`}
               data-testid={`quick-color-${idx}`}
@@ -211,7 +251,8 @@ export function MultiRowToolGrid({
     {
       id: 'fill',
       icon: resolveToolIconName('fill', toolSettings),
-      label: t('toolFill'),
+      label:
+        toolSettings.fillMode === 'gradient' ? t('fillGradient') : t('toolFill'),
       hasDetail: true,
     },
     {
@@ -679,7 +720,7 @@ export function ToolDetailPopover({
           animate={{ opacity: 1, y: 0 }}
           exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
           transition={{ duration: reducedMotion ? 0 : 0.12 }}
-          className="absolute bottom-full left-2 right-2 mb-1.5 z-30 pixel-panel p-3 space-y-2.5 max-h-[46dvh] overflow-y-auto"
+          className="absolute bottom-full left-2 right-2 sm:left-auto sm:right-2.5 sm:w-[360px] mb-1.5 z-30 pixel-popover-translucent p-2.5 space-y-2 max-h-[42dvh] overflow-y-auto"
           data-testid="tool-detail-panel"
         >
           <div className="flex items-center justify-between pb-1 border-b border-[var(--border-subtle)]">
@@ -846,26 +887,28 @@ export function ToolDetailPopover({
                   <button
                     type="button"
                     onClick={() => onChange({ fillMode: 'normal' })}
-                    className={`min-h-[36px] px-2.5 text-xs font-bold ${
+                    className={`min-h-[36px] px-2.5 text-xs font-bold flex items-center gap-1.5 ${
                       settings.fillMode === 'normal'
                         ? 'pixel-btn pixel-btn-active'
                         : 'pixel-btn'
                     }`}
                     data-testid="fill-mode-normal"
                   >
-                    {t('fillNormal')}
+                    <PixelIcon name="fill" size={14} />
+                    <span>{t('fillNormal')}</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => onChange({ fillMode: 'gradient' })}
-                    className={`min-h-[36px] px-2.5 text-xs font-bold ${
+                    className={`min-h-[36px] px-2.5 text-xs font-bold flex items-center gap-1.5 ${
                       settings.fillMode === 'gradient'
                         ? 'pixel-btn pixel-btn-active'
                         : 'pixel-btn'
                     }`}
                     data-testid="fill-mode-gradient"
                   >
-                    {t('fillGradient')}
+                    <PixelIcon name="gradient" size={14} />
+                    <span>{t('fillGradient')}</span>
                   </button>
                 </div>
 
@@ -902,21 +945,66 @@ export function ToolDetailPopover({
                   onChange({ fillDither: id })
                 )
               ) : (
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-bold text-[var(--text-secondary)] shrink-0">
-                    {t('gradientSteps')}:
-                  </span>
-                  <PixelSelect<GradientSteps>
-                    value={settings.gradientSteps}
-                    options={[
-                      { value: 4, label: t('grad4Steps') },
-                      { value: 8, label: t('grad8Steps') },
-                    ]}
-                    onChange={(v) => onChange({ gradientSteps: v })}
-                    ariaLabel={t('gradientSteps')}
-                    className="flex-1 max-w-[220px]"
-                    testId="gradient-steps-select"
-                  />
+                <div className="space-y-2">
+                  {/* Section 4-5: Linear Gradient vs Circular/Radial Gradient + 1:1 Aspect Ratio Lock */}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => onChange({ gradientType: 'linear' })}
+                        className={`min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1 ${
+                          settings.gradientType === 'linear'
+                            ? 'pixel-btn pixel-btn-active'
+                            : 'pixel-btn'
+                        }`}
+                        data-testid="gradient-type-linear"
+                      >
+                        <PixelIcon name="line" size={13} />
+                        <span>{t('gradientLinear')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onChange({ gradientType: 'radial' })}
+                        className={`min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1 ${
+                          settings.gradientType === 'radial'
+                            ? 'pixel-btn pixel-btn-active'
+                            : 'pixel-btn'
+                        }`}
+                        data-testid="gradient-type-radial"
+                      >
+                        <PixelIcon name="ellipse" size={13} />
+                        <span>{t('gradientRadial')}</span>
+                      </button>
+                    </div>
+
+                    {settings.gradientType === 'radial' && (
+                      <PixelCheckbox
+                        checked={settings.gradientFixedRatio}
+                        onChange={(next) =>
+                          onChange({ gradientFixedRatio: next })
+                        }
+                        label={t('gradientFixedRatio')}
+                        testId="gradient-fixed-ratio-checkbox"
+                      />
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-[var(--text-secondary)] shrink-0">
+                      {t('gradientSteps')}:
+                    </span>
+                    <PixelSelect<GradientSteps>
+                      value={settings.gradientSteps}
+                      options={[
+                        { value: 4, label: t('grad4Steps') },
+                        { value: 8, label: t('grad8Steps') },
+                      ]}
+                      onChange={(v) => onChange({ gradientSteps: v })}
+                      ariaLabel={t('gradientSteps')}
+                      className="flex-1 max-w-[220px]"
+                      testId="gradient-steps-select"
+                    />
+                  </div>
                 </div>
               )}
             </div>

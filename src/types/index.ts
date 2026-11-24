@@ -24,6 +24,8 @@ export type Connectivity = 4 | 8
 
 export type FillMode = 'normal' | 'gradient'
 
+export type GradientType = 'linear' | 'radial'
+
 export type GradientSteps = 4 | 8
 
 export type LineSubTool = 'line' | 'bezier'
@@ -60,7 +62,7 @@ export type BlendMode =
 export const TRANSPARENT_COLOR_INDEX = -1
 
 /**
- * 9-directional anchor for Canvas Resize (Section 5).
+ * 9-directional anchor for Canvas Resize.
  * Default selection is `'center'`.
  */
 export type ResizeAnchor =
@@ -78,12 +80,12 @@ export interface LayerMeta {
   id: string
   name: string
   visible: boolean
+  locked?: boolean
   opacity: number // 0 - 100
   blendMode: BlendMode
   clipping: boolean
   /**
    * Non-destructive layer origin & backing buffer dimensions relative to canvas top-left (0,0).
-   * When omitted on legacy v1 projects, defaults to offsetX=0, offsetY=0, dataWidth=project.width, dataHeight=project.height.
    */
   offsetX?: number
   offsetY?: number
@@ -103,6 +105,44 @@ export interface LayerRuntime extends LayerMeta {
   data: Uint8ClampedArray
 }
 
+/**
+ * Unified Still (1-frame) & Animation (N-frame) Timeline Types (Phase 5–8)
+ * - Still image is simply `frames.length === 1`!
+ * - Cels support Empty (`null` / `{ kind: 'empty' }`), Independent (unique `celId`), and Linked (shared `celId` across multiple frames of a layer).
+ */
+export type PlaybackDirection = 'forward' | 'reverse' | 'pingpong'
+
+export interface FrameMeta {
+  id: string
+  /** Display duration in milliseconds (default 100ms; rounded to 10ms / 1cs on GIF export) */
+  durationMs: number
+}
+
+export type CelRef = { kind: 'empty' } | { kind: 'cel'; celId: string }
+
+/** Map keyed by `${layerId}:${frameId}` */
+export type CelMap = Record<string, CelRef>
+
+export interface CelBufferRuntime {
+  id: string
+  offsetX: number
+  offsetY: number
+  dataWidth: number
+  dataHeight: number
+  data: Uint8ClampedArray
+}
+
+export interface CelBufferRecord {
+  key: string // `${projectId}:${celId}`
+  projectId: string
+  celId: string
+  offsetX: number
+  offsetY: number
+  dataWidth: number
+  dataHeight: number
+  data: Uint8Array
+}
+
 export interface CanvasSizePreset {
   id: string
   name: string
@@ -118,12 +158,19 @@ export interface PaletteData {
   order: number
   createdAt: number
   updatedAt: number
+  /** Optional Lospec / attribution metadata preserved locally in IndexedDB */
+  author?: string
+  sourceUrl?: string
+  lospecSlug?: string
+  licenseNote?: string
 }
 
 export interface ProjectPalette {
   name: string
   colors: string[] // Independent copy for this project (max 256)
   sourcePaletteId?: string
+  author?: string
+  sourceUrl?: string
 }
 
 export interface ProjectRecord {
@@ -133,6 +180,14 @@ export interface ProjectRecord {
   height: number // 1..256
   layers: LayerMeta[]
   activeLayerId: string
+  /** Unified frame timeline: 1 frame = Still artwork, >=2 frames = Animation */
+  frames?: FrameMeta[]
+  /** Keyed by `${layerId}:${frameId}` */
+  cels?: CelMap
+  activeFrameId?: string
+  defaultFrameDurationMs?: number
+  playbackDirection?: PlaybackDirection
+  loopPlayback?: boolean
   palette: ProjectPalette
   selectedColorIndex: number // -1 for Transparent slot, or 0..colors.length-1
   order: number
@@ -160,27 +215,16 @@ export type UiSizePreset = 'compact' | 'standard' | 'large' | 'custom'
 
 export interface UiSizeConfig {
   preset: UiSizePreset
-  /** Overall UI scale percentage (85 - 125) */
   overallScale: number
-  /** Pixel icon size in CSS px (integer multiple of 8/16 preferred: 16, 20, 24, 32) */
   toolIconSize: number
-  /** Tool button minimum height in CSS px (44 - 68) */
   toolButtonHeight: number
-  /** Tool short label font size in CSS px (10 - 15) */
   toolLabelSize: number
-  /** Palette color swatch size in CSS px (28 - 48) */
   swatchSize: number
-  /** Pixel checkbox size in CSS px (16 - 28) */
   checkboxSize: number
-  /** Spacing gap between UI elements in CSS px (4 - 12) */
   uiGap: number
-  /** Draw button height percentage of viewport height (10 - 20, default 15%) */
   drawButtonVh: number
 }
 
-/**
- * Backup reminder timestamps stored in IndexedDB (`AppSettings.backupMeta`, Section 11).
- */
 export interface BackupReminderMeta {
   lastExportAt: number | null
   lastNotifiedAt: number | null
@@ -193,18 +237,19 @@ export interface AppSettings {
   theme: ThemeMode
   language: LanguageCode
   historyLimit: number | 'unlimited'
+  /** True when user explicitly selected a history limit in Settings (distinguishes legacy default 100 from user choice) */
+  historyLimitCustomized?: boolean
+  /** Optional snooze timestamp for Origin low-storage warning */
+  lowStorageSnoozedUntil?: number | null
   showGrid: boolean
   checkerboardDark: boolean
   confirmDestructive: boolean
   soundEnabled: boolean
-  /** Section 9: Double-tap same canvas pixel to pick color & restore previous tool (default ON) */
   eyedropperDoubleTap: boolean
   activeProjectId: string | null
   gallerySortMode: 'manual' | 'newest' | 'oldest' | 'updated' | 'name'
   uiSize: UiSizeConfig
-  /** User-created custom canvas size presets (persisted in IndexedDB & Environment Pack) */
   customCanvasPresets: CanvasSizePreset[]
-  /** Backup reminder tracking metadata (Section 11) */
   backupMeta: BackupReminderMeta
 }
 
@@ -218,29 +263,34 @@ export interface FloatingShapeState {
 }
 
 /**
- * Interactive Move Session shared by Selection Move (Section 7), Single-Layer Move, and Multi-Layer Batch Move (Section 8).
- * Moving never destroys off-canvas pixels!
+ * World-space selection mask (`[originX..originX+width-1, originY..originY+height-1]`).
+ * Allows selections and selected pixels to move partially or completely outside `[0..canvasW-1, 0..canvasH-1]`
+ * without losing selection state or pixel data, and recover cleanly when dragged back inside or undone!
  */
+export interface WorldSelectionMask {
+  originX: number
+  originY: number
+  width: number
+  height: number
+  /** Local binary mask of length `width * height` (`1` = selected, `0` = unselected) */
+  mask: Uint8Array
+}
+
 export interface ActiveMoveSession {
   mode: 'selection' | 'layer' | 'multi-layer'
   layerId: string
-  /** Target layer IDs when moving one or multiple layers (`mode === 'layer' | 'multi-layer'`) */
   layerIds: string[]
-  /** Initial world offsets per layer ID before drag started */
   initialLayerOffsets: Record<string, { offsetX: number; offsetY: number }>
   dx: number
   dy: number
-  /** For 'selection': initial canvas-space selection mask before drag */
   initialMask: Uint8Array | null
-  /** For 'selection': active layer with originally selected pixels cleared */
+  initialWorldSelection?: WorldSelectionMask | null
   clearedLayer: LayerRuntime | null
-  /** For 'selection': extracted RGBA buffer of selected pixels */
   extractedBuffer: Uint8ClampedArray | null
   extractedWidth: number
   extractedHeight: number
   extractedOriginX: number
   extractedOriginY: number
-  /** For 'layer' / 'multi-layer': bounding box origin & dimensions of moving layer(s) before drag */
   initialLayerOffsetX: number
   initialLayerOffsetY: number
 }
@@ -265,6 +315,8 @@ export interface ToolSettings {
   fillConnectivity: Connectivity
   fillDither: DitherPatternId
   fillMode: FillMode
+  gradientType: GradientType
+  gradientFixedRatio: boolean
   gradientSteps: GradientSteps
 
   lineType: LineSubTool
@@ -288,6 +340,8 @@ export interface ToolSettings {
 
 export interface PixelPatch {
   layerId: string
+  /** Optional shared celBuffer ID for multi-frame / linked-cel sparse Undo/Redo */
+  celId?: string
   indices: Uint32Array
   before: Uint8Array
   after: Uint8Array
@@ -307,10 +361,25 @@ export interface PixelPatch {
 
 export interface LayerOffsetTransition {
   layerId: string
+  celId?: string
   beforeOffsetX: number
   beforeOffsetY: number
   afterOffsetX: number
   afterOffsetY: number
+}
+
+export interface TimelineSnapshot {
+  frames: FrameMeta[]
+  cels: CelMap
+  activeFrameId: string
+  celBuffers: Array<{
+    id: string
+    offsetX: number
+    offsetY: number
+    dataWidth: number
+    dataHeight: number
+    data: Uint8Array
+  }>
 }
 
 export interface CanvasSnapshot {
@@ -321,6 +390,7 @@ export interface CanvasSnapshot {
     data: Uint8Array
   }>
   activeLayerId: string
+  timeline?: TimelineSnapshot
 }
 
 export interface HistoryEntry {
@@ -328,6 +398,12 @@ export interface HistoryEntry {
   label: string
   timestamp: number
   kind: 'pixel-diff' | 'structure' | 'selection' | 'palette' | 'layer-offset'
+  frameId?: string
+  /** If an empty cel was auto-allocated during a stroke, record the cel transition */
+  celAllocation?: {
+    cellKey: string
+    allocatedCelId: string
+  }
   pixelPatches?: PixelPatch[]
   layerOffsetChange?: LayerOffsetTransition
   layerOffsetChanges?: LayerOffsetTransition[]
@@ -335,6 +411,8 @@ export interface HistoryEntry {
   afterStructure?: CanvasSnapshot
   beforeSelection?: Uint8Array | null
   afterSelection?: Uint8Array | null
+  beforeWorldSelection?: WorldSelectionMask | null
+  afterWorldSelection?: WorldSelectionMask | null
   beforePalette?: ProjectPalette
   afterPalette?: ProjectPalette
 }
@@ -348,6 +426,7 @@ export interface ProjectHistoryRecord {
 
 export interface SerializedPixelPatch {
   layerId: string
+  celId?: string
   indices: Uint32Array
   before: Uint8Array
   after: Uint8Array
@@ -370,6 +449,11 @@ export interface SerializedHistoryEntry {
   label: string
   timestamp: number
   kind: 'pixel-diff' | 'structure' | 'selection' | 'palette' | 'layer-offset'
+  frameId?: string
+  celAllocation?: {
+    cellKey: string
+    allocatedCelId: string
+  }
   pixelPatches?: SerializedPixelPatch[]
   layerOffsetChange?: LayerOffsetTransition
   layerOffsetChanges?: LayerOffsetTransition[]
@@ -377,6 +461,8 @@ export interface SerializedHistoryEntry {
   afterStructure?: CanvasSnapshot
   beforeSelection?: Uint8Array | null
   afterSelection?: Uint8Array | null
+  beforeWorldSelection?: WorldSelectionMask | null
+  afterWorldSelection?: WorldSelectionMask | null
   beforePalette?: ProjectPalette
   afterPalette?: ProjectPalette
 }

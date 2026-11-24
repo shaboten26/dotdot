@@ -2,36 +2,37 @@ export type InputModality = 'touch' | 'mouse'
 
 /**
  * Detect initial input modality using Pointer Media Queries & device capabilities
- * rather than relying solely on User-Agent strings (Section 2-1).
- * Dynamically switches at runtime when actual PointerEvents arrive on hybrid touch+mouse devices.
+ * rather than relying solely on User-Agent strings (Section 2-1 & 3-1).
+ * - On real PC browsers (`(any-pointer: fine)` matches and `(pointer: coarse)` does NOT match), returns `'mouse'`
+ *   so the Draw button & virtual cursor are hidden immediately.
+ * - On smartphones / tablets / headless environments without fine pointer media queries, defaults to `'touch'`
+ *   (thumb-first mode with Draw button).
+ * - Dynamically switches at runtime whenever actual PointerEvents (`'mouse'` vs `'touch'`) arrive!
  */
 export function detectInitialInputModality(): InputModality {
-  if (typeof window === 'undefined') return 'mouse'
-
-  const coarseQuery =
-    typeof window.matchMedia === 'function'
-      ? window.matchMedia('(pointer: coarse)')
-      : null
-  const fineQuery =
-    typeof window.matchMedia === 'function'
-      ? window.matchMedia('(any-pointer: fine)')
-      : null
-
-  // Pure coarse pointer (smartphones / tablets without mouse)
-  if (coarseQuery?.matches && !fineQuery?.matches) {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
     return 'touch'
   }
 
-  // Narrow mobile viewport with touch points (e.g. mobile emulation or handheld)
+  const coarseQuery = window.matchMedia('(pointer: coarse)')
+  const fineQuery = window.matchMedia('(any-pointer: fine)')
+
+  if (coarseQuery.matches && !fineQuery.matches) {
+    return 'touch'
+  }
+
   if (navigator.maxTouchPoints > 0 && window.innerWidth < 768) {
     return 'touch'
   }
 
-  return 'mouse'
+  if (fineQuery.matches && !coarseQuery.matches) {
+    return 'mouse'
+  }
+
+  return 'touch'
 }
 
 export function modalityFromPointerType(pointerType: string): InputModality {
   if (pointerType === 'touch') return 'touch'
-  // Stylus ('pen') or 'mouse' operates directly at pointer location unless user uses touch
   return 'mouse'
 }

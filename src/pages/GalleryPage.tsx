@@ -12,6 +12,7 @@ import {
   PixelLoadingIndicator,
 } from '../components/common/PixelIcon'
 import { PixelSelect } from '../components/common/PixelSelect'
+import { PixelSlider } from '../components/common/PixelSlider'
 import { PixelThumbnail } from '../components/common/PixelThumbnail'
 import { CanvasSizePresetsPicker } from '../components/common/CanvasSizePresetsPicker'
 import { useLongPressReorder } from '../utils/useLongPressReorder'
@@ -35,11 +36,14 @@ export function GalleryPage() {
     palettes,
     settings,
     backupReminderDue,
+    originStorageStatus,
+    lowStorageWarningDue,
     updateSettings,
     refreshProjects,
     reorderProjectsManual,
     markEnvPackExported,
     snoozeBackupReminder,
+    snoozeLowStorageWarning,
     showToast,
   } = useApp()
   const { t } = useI18n()
@@ -212,13 +216,67 @@ export function GalleryPage() {
             <VTButtonLink
               to="/settings"
               title={t('navSettings')}
-              className="pixel-btn min-w-[44px] min-h-[44px] flex items-center justify-center"
+              className="pixel-btn w-[44px] h-[44px] min-w-[44px] min-h-[44px] p-0 aspect-square shrink-0 flex items-center justify-center"
               data-testid="gallery-settings-btn"
             >
               <PixelIcon name="settings" size={18} />
             </VTButtonLink>
           </div>
         </header>
+
+        {/* Section 12: Origin Low-Storage Backup Warning Banner */}
+        {lowStorageWarningDue && (
+          <section
+            className={`mx-3.5 mt-3 max-w-5xl self-center w-[calc(100%-1.75rem)] p-3.5 pixel-card space-y-2.5 ${
+              originStorageStatus.level === 'critical'
+                ? 'border-[var(--accent-danger)]'
+                : 'border-[var(--accent-amber)]'
+            }`}
+            data-testid="origin-low-storage-banner"
+          >
+            <div className="flex items-start gap-2.5">
+              <PixelIcon
+                name="storage"
+                size={18}
+                className={`${
+                  originStorageStatus.level === 'critical'
+                    ? 'text-[var(--accent-danger)]'
+                    : 'text-[var(--accent-amber)]'
+                } mt-0.5 shrink-0`}
+              />
+              <div className="space-y-1 flex-1 min-w-0">
+                <h2 className="text-xs sm:text-sm font-bold text-[var(--text-primary)]">
+                  {originStorageStatus.level === 'critical'
+                    ? t('originLowStorageCriticalTitle')
+                    : t('originLowStorageTitle')}
+                </h2>
+                <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                  {t('originLowStorageDesc')}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => void handleBackupNow()}
+                className="pixel-btn pixel-btn-active min-h-[38px] px-3 text-xs font-bold flex items-center gap-1.5"
+                data-testid="origin-low-storage-backup-btn"
+              >
+                <PixelIcon name="download" size={14} />
+                <span>{t('backupNowBtn')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void snoozeLowStorageWarning()}
+                className="pixel-btn min-h-[38px] px-3 text-xs font-bold"
+                data-testid="origin-low-storage-snooze-btn"
+              >
+                {t('originLowStorageSnoozeBtn')}
+              </button>
+            </div>
+          </section>
+        )}
 
         {/* Section 11: Non-intrusive 30-day / 7-day Environment Pack Backup Reminder */}
         {backupReminderDue && (
@@ -440,35 +498,77 @@ export function GalleryPage() {
               />
             </label>
 
-            <div className="grid grid-cols-2 gap-3">
-              <label className="space-y-1">
-                <span className="text-xs font-bold text-[var(--text-secondary)]">
-                  {t('widthPx')}
-                </span>
-                <input
-                  type="number"
+            {/* Section 4-8: Independent Width & Height PixelSliders (1-256px with +-1 step buttons & live numeric display) */}
+            <div className="space-y-3 p-3 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)]">
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-[var(--text-secondary)]">
+                    {t('widthPx')}:{' '}
+                    <strong className="text-[var(--text-primary)]">{newW}px</strong>
+                  </span>
+                  <input
+                    type="number"
+                    min={MIN_CANVAS_SIZE}
+                    max={MAX_CANVAS_SIZE}
+                    value={newW}
+                    onChange={(e) => {
+                      const v = Number(e.target.value)
+                      if (!Number.isNaN(v)) {
+                        setNewW(
+                          Math.max(MIN_CANVAS_SIZE, Math.min(MAX_CANVAS_SIZE, Math.round(v)))
+                        )
+                      }
+                    }}
+                    className="w-20 min-h-[34px] px-2 text-xs font-bold text-right pixel-input"
+                    data-testid="new-project-width-input"
+                  />
+                </div>
+                <PixelSlider
                   min={MIN_CANVAS_SIZE}
                   max={MAX_CANVAS_SIZE}
+                  step={1}
                   value={newW}
-                  onChange={(e) => setNewW(Number(e.target.value))}
-                  className="w-full min-h-[42px] px-3 text-sm pixel-input"
-                  data-testid="new-project-width-input"
+                  unit="px"
+                  ariaLabel={t('widthPx')}
+                  onChange={setNewW}
+                  testId="new-project-width-slider"
                 />
-              </label>
-              <label className="space-y-1">
-                <span className="text-xs font-bold text-[var(--text-secondary)]">
-                  {t('heightPx')}
-                </span>
-                <input
-                  type="number"
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-[var(--text-secondary)]">
+                    {t('heightPx')}:{' '}
+                    <strong className="text-[var(--text-primary)]">{newH}px</strong>
+                  </span>
+                  <input
+                    type="number"
+                    min={MIN_CANVAS_SIZE}
+                    max={MAX_CANVAS_SIZE}
+                    value={newH}
+                    onChange={(e) => {
+                      const v = Number(e.target.value)
+                      if (!Number.isNaN(v)) {
+                        setNewH(
+                          Math.max(MIN_CANVAS_SIZE, Math.min(MAX_CANVAS_SIZE, Math.round(v)))
+                        )
+                      }
+                    }}
+                    className="w-20 min-h-[34px] px-2 text-xs font-bold text-right pixel-input"
+                    data-testid="new-project-height-input"
+                  />
+                </div>
+                <PixelSlider
                   min={MIN_CANVAS_SIZE}
                   max={MAX_CANVAS_SIZE}
+                  step={1}
                   value={newH}
-                  onChange={(e) => setNewH(Number(e.target.value))}
-                  className="w-full min-h-[42px] px-3 text-sm pixel-input"
-                  data-testid="new-project-height-input"
+                  unit="px"
+                  ariaLabel={t('heightPx')}
+                  onChange={setNewH}
+                  testId="new-project-height-slider"
                 />
-              </label>
+              </div>
             </div>
 
             <CanvasSizePresetsPicker

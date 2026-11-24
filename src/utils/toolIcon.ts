@@ -16,7 +16,7 @@ export function resolveToolIconName(
     case 'eraser':
       return 'eraser'
     case 'fill':
-      return 'fill'
+      return settings.fillMode === 'gradient' ? 'gradient' : 'fill'
     case 'line':
       return settings.lineType === 'bezier' ? 'bezier' : 'line'
     case 'shape':

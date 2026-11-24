@@ -4,6 +4,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import type {
@@ -18,11 +19,15 @@ import {
   DEFAULT_APP_SETTINGS,
   db,
   deleteLibraryPalette,
+  evaluateOriginLowStorage,
   generateId,
+  getStorageStatus,
   hasCanvasPresetDimensions,
   initializeDatabase,
+  LOW_STORAGE_SNOOZE_INTERVAL_MS,
   normalizeAppSettings,
   shouldShowBackupReminder,
+  type OriginLowStorageStatus,
 } from '../db/database'
 import { MAX_CANVAS_SIZE, MIN_CANVAS_SIZE } from '../engine/pixelBuffer'
 import { I18nContext } from '../i18n/I18nContext'
@@ -43,6 +48,8 @@ export interface AppContextValue {
   projects: ProjectRecord[]
   toasts: ToastMessage[]
   backupReminderDue: boolean
+  originStorageStatus: OriginLowStorageStatus
+  lowStorageWarningDue: boolean
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>
   updateUiSize: (patch: Partial<UiSizeConfig>) => Promise<void>
   addCustomCanvasPreset: (
@@ -58,9 +65,15 @@ export interface AppContextValue {
   reorderCustomCanvasPresets: (orderedIds: string[]) => Promise<void>
   markEnvPackExported: (exportedAt?: number) => Promise<void>
   snoozeBackupReminder: (now?: number) => Promise<void>
+  snoozeLowStorageWarning: (now?: number) => Promise<void>
+  refreshOriginStorage: () => Promise<OriginLowStorageStatus>
   refreshProjects: () => Promise<void>
   refreshPalettes: () => Promise<void>
-  addLibraryPalette: (name: string, colors: string[]) => Promise<PaletteData>
+  addLibraryPalette: (
+    name: string,
+    colors: string[],
+    meta?: Partial<Pick<PaletteData, 'author' | 'sourceUrl' | 'lospecSlug' | 'licenseNote'>>
+  ) => Promise<PaletteData>
   updateLibraryPalette: (
     id: string,
     patch: Partial<Pick<PaletteData, 'name' | 'colors'>>
@@ -83,6 +96,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [projects, setProjects] = useState<ProjectRecord[]>([])
   const [toasts, setToasts] = useState<ToastMessage[]>([])
   const [backupCheckTick, setBackupCheckTick] = useState<number>(() => Date.now())
+  const [originStorageStatus, setOriginStorageStatus] = useState<OriginLowStorageStatus>(() =>
+    evaluateOriginLowStorage(null, null)
+  )
+  const mountedRef = useRef<boolean>(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   const [systemDark, setSystemDark] = useState<boolean>(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true
@@ -109,12 +132,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  // Re-evaluate backup reminder upon window focus or visibility return (Section 11-2)
+  const refreshOriginStorage = useCallback(async (): Promise<OriginLowStorageStatus> => {
+    const info = await getStorageStatus()
+    const status = evaluateOriginLowStorage(info.usageBytes, info.quotaBytes)
+    if (mountedRef.current) {
+      setOriginStorageStatus(status)
+    }
+    return status
+  }, [])
+
+  // Re-evaluate backup reminder and Origin storage upon window focus or visibility return (Sections 11-2 & 12)
   useEffect(() => {
     if (typeof window === 'undefined') return
     const checkNow = () => {
       if (document.visibilityState === 'visible') {
         setBackupCheckTick(Date.now())
+        void refreshOriginStorage()
       }
     }
     window.addEventListener('focus', checkNow)
@@ -123,7 +156,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener('focus', checkNow)
       document.removeEventListener('visibilitychange', checkNow)
     }
-  }, [])
+  }, [refreshOriginStorage])
 
   const isDark =
     settings.theme === 'dark' || (settings.theme === 'system' && systemDark)
@@ -154,29 +187,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const refreshPalettes = useCallback(async () => {
     const list = await db.palettes.orderBy('order').toArray()
+    if (!mountedRef.current) return
     setPalettes(list)
   }, [])
 
   const refreshProjects = useCallback(async () => {
     const list = await db.projects.orderBy('order').toArray()
+    if (!mountedRef.current) return
     setProjects(list)
     // Also sync settings if firstProjectCreatedAt was set by createNewProject
     const latestSettings = await db.settings.get('app-settings')
+    if (!mountedRef.current) return
     if (latestSettings) {
       setSettings(normalizeAppSettings(latestSettings))
     }
     setBackupCheckTick(Date.now())
-  }, [])
+    void refreshOriginStorage()
+  }, [refreshOriginStorage])
 
   const reloadWorkspaceState = useCallback(async () => {
     const init = await initializeDatabase(db)
+    if (!mountedRef.current) return
     setSettings(init.settings)
     setPalettes(init.palettes)
     const projs = await db.projects.orderBy('order').toArray()
+    if (!mountedRef.current) return
     setProjects(projs)
     setBackupCheckTick(Date.now())
+    void refreshOriginStorage()
     setReady(true)
-  }, [])
+  }, [refreshOriginStorage])
 
   useEffect(() => {
     void reloadWorkspaceState()
@@ -187,6 +227,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const id = generateId('toast')
       setToasts((prev) => [...prev.slice(-3), { id, text, type }])
       window.setTimeout(() => {
+        if (!mountedRef.current) return
         setToasts((prev) => prev.filter((item) => item.id !== id))
       }, 2800)
     },
@@ -198,10 +239,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const updateSettings = useCallback(async (patch: Partial<AppSettings>) => {
+    setSettings((prev) => normalizeAppSettings({ ...prev, ...patch, id: 'app-settings' }))
     const stored = await db.settings.get('app-settings')
     const base = normalizeAppSettings(stored)
     const next = normalizeAppSettings({ ...base, ...patch, id: 'app-settings' })
     await db.settings.put(next)
+    if (!mountedRef.current) return
     setSettings(next)
   }, [])
 
@@ -356,6 +399,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       id: 'app-settings',
     })
     await db.settings.put(next)
+    if (!mountedRef.current) return
+    setSettings(next)
+    setBackupCheckTick(Date.now())
+  }, [])
+
+  const snoozeLowStorageWarning = useCallback(async (now = Date.now()) => {
+    const stored = normalizeAppSettings(await db.settings.get('app-settings'))
+    const next = normalizeAppSettings({
+      ...stored,
+      lowStorageSnoozedUntil: now + LOW_STORAGE_SNOOZE_INTERVAL_MS,
+      id: 'app-settings',
+    })
+    await db.settings.put(next)
+    if (!mountedRef.current) return
     setSettings(next)
     setBackupCheckTick(Date.now())
   }, [])
@@ -365,8 +422,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return shouldShowBackupReminder(settings.backupMeta, backupCheckTick)
   }, [ready, projects.length, settings.backupMeta, backupCheckTick])
 
+  const lowStorageWarningDue = useMemo(() => {
+    if (!ready || originStorageStatus.level === 'ok') return false
+    if (
+      typeof settings.lowStorageSnoozedUntil === 'number' &&
+      backupCheckTick < settings.lowStorageSnoozedUntil
+    ) {
+      return false
+    }
+    return true
+  }, [ready, originStorageStatus.level, settings.lowStorageSnoozedUntil, backupCheckTick])
+
   const addLibraryPalette = useCallback(
-    async (name: string, colors: string[]): Promise<PaletteData> => {
+    async (
+      name: string,
+      colors: string[],
+      meta?: Partial<Pick<PaletteData, 'author' | 'sourceUrl' | 'lospecSlug' | 'licenseNote'>>
+    ): Promise<PaletteData> => {
       const now = Date.now()
       const current = await db.palettes.orderBy('order').toArray()
       const nextOrder =
@@ -378,6 +450,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         order: nextOrder,
         createdAt: now,
         updatedAt: now,
+        ...(meta?.author ? { author: meta.author } : {}),
+        ...(meta?.sourceUrl ? { sourceUrl: meta.sourceUrl } : {}),
+        ...(meta?.lospecSlug ? { lospecSlug: meta.lospecSlug } : {}),
+        ...(meta?.licenseNote ? { licenseNote: meta.licenseNote } : {}),
       }
       await db.palettes.put(record)
       await refreshPalettes()
@@ -469,6 +545,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       projects,
       toasts,
       backupReminderDue,
+      originStorageStatus,
+      lowStorageWarningDue,
       updateSettings,
       updateUiSize,
       addCustomCanvasPreset,
@@ -477,6 +555,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       reorderCustomCanvasPresets,
       markEnvPackExported,
       snoozeBackupReminder,
+      snoozeLowStorageWarning,
+      refreshOriginStorage,
       refreshProjects,
       refreshPalettes,
       addLibraryPalette,
@@ -498,6 +578,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       projects,
       toasts,
       backupReminderDue,
+      originStorageStatus,
+      lowStorageWarningDue,
       updateSettings,
       updateUiSize,
       addCustomCanvasPreset,
@@ -506,6 +588,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       reorderCustomCanvasPresets,
       markEnvPackExported,
       snoozeBackupReminder,
+      snoozeLowStorageWarning,
+      refreshOriginStorage,
       refreshProjects,
       refreshPalettes,
       addLibraryPalette,

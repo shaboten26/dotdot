@@ -165,8 +165,8 @@ describe('Selection Engine (Wand 4/8, Rect, Ellipse, Union, Invert, Move, Flip, 
 })
 
 describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Export (4000px Max / ~2000px Default)', () => {
-  it('supports up to 50 layers constant, blend modes, opacity, clipping, and non-destructive merge down', () => {
-    expect(MAX_LAYERS).toBe(50)
+  it('supports up to 100 layers constant, blend modes, opacity, clipping, and non-destructive merge down', () => {
+    expect(MAX_LAYERS).toBe(100)
 
     const baseData = createPixelBuffer(4, 4)
     setPixel(baseData, 4, 4, 1, 1, { r: 200, g: 100, b: 50, a: 255 })

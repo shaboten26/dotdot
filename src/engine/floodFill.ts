@@ -1,4 +1,10 @@
-import type { Connectivity, DitherPatternId, GradientSteps, RGBA } from '../types'
+import type {
+  Connectivity,
+  DitherPatternId,
+  GradientSteps,
+  GradientType,
+  RGBA,
+} from '../types'
 import { GRADIENT_PATTERN_STEPS, shouldDrawWithDither } from './dithering'
 import { isInBounds, pixelsMatchAt } from './pixelBuffer'
 
@@ -139,6 +145,8 @@ export interface GradientFillOptions {
   color: RGBA
   /** Optional connectivity (defaults to 4-way for gradient mode) */
   connectivity?: Connectivity
+  gradientType?: GradientType
+  fixedRatio?: boolean
   steps: GradientSteps
   selectionMask?: Uint8Array | null
 }
@@ -161,6 +169,11 @@ export function applyGradientFloodFill(
   buffer: Uint8ClampedArray,
   options: GradientFillOptions
 ): void {
+  if (options.gradientType === 'radial') {
+    applyRadialGradientFloodFill(buffer, options)
+    return
+  }
+
   const {
     width,
     height,
@@ -218,6 +231,106 @@ export function applyGradientFloodFill(
       }
 
       const patternId = patternSeq[stepIndex]
+      if (!shouldDrawWithDither(patternId, x, y)) continue
+
+      const bIdx = pIdx * 4
+      if (color.a === 0) {
+        buffer[bIdx] = 0
+        buffer[bIdx + 1] = 0
+        buffer[bIdx + 2] = 0
+        buffer[bIdx + 3] = 0
+      } else {
+        buffer[bIdx] = color.r
+        buffer[bIdx + 1] = color.g
+        buffer[bIdx + 2] = color.b
+        buffer[bIdx + 3] = color.a
+      }
+    }
+  }
+}
+
+/**
+ * Perform Pixel-Art Circular / Elliptical Dithered Gradient Fill (`gradientType === 'radial'`, Section 5):
+ * - Uses the EXACT same dither density progression (`GRADIENT_PATTERN_STEPS[steps]`) and `shouldDrawWithDither` as Linear Gradient!
+ * - NEVER interpolates or alters RGBA alpha into semi-transparent values:
+ *   - Drawn `#` pixels receive the exact selected `color` (`a = 255` for normal palette colors, or `RGBA(0,0,0,0)` when Transparent Color Slot is active).
+ *   - Skipped `.` dither pixels and pixels outside `normDist > 1` preserve their existing pixel color & alpha untouched!
+ * - Center `(startX, startY)` has highest density (pattern 1 = solid), stepping outward to sparser dither patterns toward perimeter `(endX, endY)`.
+ * - `fixedRatio = true` ("縦横比を1:1に固定" ON): true circle of radius `hypot(endX - startX, endY - startY)`.
+ * - `fixedRatio = false` (OFF): ellipse with independent horizontal/vertical radii `rx = |endX - startX|`, `ry = |endY - startY|`.
+ */
+export function applyRadialGradientFloodFill(
+  buffer: Uint8ClampedArray,
+  options: GradientFillOptions
+): void {
+  const {
+    width,
+    height,
+    startX,
+    startY,
+    endX,
+    endY,
+    color,
+    connectivity = 4,
+    fixedRatio = false,
+    steps,
+    selectionMask,
+  } = options
+
+  const region = computeConnectedRegion(
+    buffer,
+    width,
+    height,
+    startX,
+    startY,
+    connectivity,
+    selectionMask
+  )
+
+  const patternSeq = GRADIENT_PATTERN_STEPS[steps]
+  const numSteps = patternSeq.length
+
+  const dxEnd = endX - startX
+  const dyEnd = endY - startY
+  const circleRadius = Math.hypot(dxEnd, dyEnd)
+  const absRx = Math.abs(dxEnd)
+  const absRy = Math.abs(dyEnd)
+  const isZeroRadius = fixedRatio
+    ? circleRadius === 0
+    : absRx === 0 && absRy === 0
+
+  const rx = fixedRatio ? circleRadius : Math.max(0.5, absRx)
+  const ry = fixedRatio ? circleRadius : Math.max(0.5, absRy)
+
+  for (let y = 0; y < height; y++) {
+    const rowOffset = y * width
+    for (let x = 0; x < width; x++) {
+      const pIdx = rowOffset + x
+      if (region[pIdx] === 0) continue
+
+      let stepIndex = 0
+      if (isZeroRadius) {
+        if (x !== Math.trunc(startX) || y !== Math.trunc(startY)) continue
+        stepIndex = 0
+      } else {
+        const nx = (x - startX) / rx
+        const ny = (y - startY) / ry
+        const normDist = Math.hypot(nx, ny)
+        // Beyond outer perimeter: leave existing pixel untouched!
+        if (normDist > 1 + 1e-9) {
+          continue
+        }
+        if (normDist <= 0) {
+          stepIndex = 0
+        } else {
+          stepIndex = Math.min(
+            numSteps - 1,
+            Math.max(0, Math.round(normDist * (numSteps - 1)))
+          )
+        }
+      }
+
+      const patternId = patternSeq[stepIndex]!
       if (!shouldDrawWithDither(patternId, x, y)) continue
 
       const bIdx = pIdx * 4

@@ -26,6 +26,12 @@ import { PixelIcon } from '../components/common/PixelIcon'
 import { PixelCheckbox } from '../components/common/PixelCheckbox'
 import { PixelSlider } from '../components/common/PixelSlider'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
+import { LospecImportModal } from '../components/common/LospecImportModal'
+import {
+  LegalDocsModal,
+  type LegalDocTab,
+} from '../components/common/LegalDocsModal'
+import { useLongPressReorder } from '../utils/useLongPressReorder'
 import { VTButtonLink } from '../components/common/ViewTransitionNav'
 
 function formatBytes(bytes: number | null): string | null {
@@ -41,6 +47,7 @@ export function SettingsPage() {
     settings,
     palettes,
     projects,
+    originStorageStatus,
     updateSettings,
     updateUiSize,
     addLibraryPalette,
@@ -68,11 +75,25 @@ export function SettingsPage() {
   const [editingPalette, setEditingPalette] = useState<PaletteData | null>(null)
   const [editingColorIdx, setEditingColorIdx] = useState(0)
   const [paletteToDelete, setPaletteToDelete] = useState<PaletteData | null>(null)
-  const [dragPalId, setDragPalId] = useState<string | null>(null)
+  const paletteListRef = useRef<HTMLDivElement | null>(null)
+  const paletteIds = palettes.map((p) => p.id)
+  const { dragState: palDragState, getItemProps: getPalItemProps } =
+    useLongPressReorder({
+      ids: paletteIds,
+      enabled: palettes.length > 1,
+      axis: 'vertical',
+      scopeId: 'settings-palettes',
+      scrollContainerRef: paletteListRef,
+      onReorder: (nextIds) => {
+        void reorderLibraryPalettes(nextIds)
+      },
+    })
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [pendingPack, setPendingPack] = useState<ValidatedEnvPack | null>(null)
   const [confirmResetOpen, setConfirmResetOpen] = useState(false)
+  const [lospecLibOpen, setLospecLibOpen] = useState(false)
+  const [legalTab, setLegalTab] = useState<LegalDocTab | null>(null)
 
   const refreshStorage = useCallback(async () => {
     const info = await getStorageStatus()
@@ -510,7 +531,12 @@ export function SettingsPage() {
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() => void updateSettings({ historyLimit: 'unlimited' })}
+                  onClick={() =>
+                    void updateSettings({
+                      historyLimit: 'unlimited',
+                      historyLimitCustomized: true,
+                    })
+                  }
                   className={`min-h-[38px] px-3 text-xs font-bold ${
                     settings.historyLimit === 'unlimited'
                       ? 'pixel-btn pixel-btn-active'
@@ -524,7 +550,12 @@ export function SettingsPage() {
                   <button
                     key={num}
                     type="button"
-                    onClick={() => void updateSettings({ historyLimit: num })}
+                    onClick={() =>
+                      void updateSettings({
+                        historyLimit: num,
+                        historyLimitCustomized: true,
+                      })
+                    }
                     className={`min-h-[38px] px-3 text-xs font-bold ${
                       settings.historyLimit === num
                         ? 'pixel-btn pixel-btn-active'
@@ -547,7 +578,10 @@ export function SettingsPage() {
                     onChange={(e) => {
                       const val = Math.max(1, Math.min(2000, Number(e.target.value) || 1))
                       setCustomLimitInput(val)
-                      void updateSettings({ historyLimit: val })
+                      void updateSettings({
+                        historyLimit: val,
+                        historyLimitCustomized: true,
+                      })
                     }}
                     className="w-20 min-h-[36px] px-2 text-xs pixel-input"
                     data-testid="history-custom-input"
@@ -598,45 +632,53 @@ export function SettingsPage() {
                 title={`${t('sectionPaletteLibrary')} (${palettes.length})`}
               />
 
-              <button
-                type="button"
-                onClick={async () => {
-                  const created = await addLibraryPalette(
-                    `Palette ${palettes.length + 1}`,
-                    ['#181521', '#F4F1EA', '#8476C4', '#579B91', '#C47388', '#E0A96D']
-                  )
-                  setEditingPalette(created)
-                  setEditingColorIdx(0)
-                }}
-                className="pixel-btn pixel-btn-active min-h-[40px] px-3 text-xs font-bold flex items-center gap-1"
-                data-testid="settings-add-palette-btn"
-              >
-                <PixelIcon name="plus" size={14} />
-                <span>{t('newPalette')}</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setLospecLibOpen(true)}
+                  className="pixel-btn pixel-btn-teal min-h-[40px] px-3 text-xs font-bold flex items-center gap-1"
+                  data-testid="settings-lospec-import-btn"
+                >
+                  <PixelIcon name="download" size={14} />
+                  <span>{t('lospecImportBtn')}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const created = await addLibraryPalette(
+                      `Palette ${palettes.length + 1}`,
+                      ['#181521', '#F4F1EA', '#8476C4', '#579B91', '#C47388', '#E0A96D']
+                    )
+                    setEditingPalette(created)
+                    setEditingColorIdx(0)
+                  }}
+                  className="pixel-btn pixel-btn-active min-h-[40px] px-3 text-xs font-bold flex items-center gap-1"
+                  data-testid="settings-add-palette-btn"
+                >
+                  <PixelIcon name="plus" size={14} />
+                  <span>{t('newPalette')}</span>
+                </button>
+              </div>
             </div>
 
-            <div className="space-y-2">
+            <div ref={paletteListRef} className="space-y-2">
               {palettes.map((pal, idx) => {
                 const isLastRemaining = palettes.length <= 1
+                const isDragging = palDragState?.draggingId === pal.id
+                const isDropTarget =
+                  palDragState !== null &&
+                  palDragState.overId === pal.id &&
+                  palDragState.draggingId !== pal.id
                 return (
                   <div
                     key={pal.id}
-                    draggable
-                    onDragStart={() => setDragPalId(pal.id)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => {
-                      if (!dragPalId || dragPalId === pal.id) return
-                      const ids = palettes.map((p) => p.id)
-                      const from = ids.indexOf(dragPalId)
-                      const to = ids.indexOf(pal.id)
-                      if (from < 0 || to < 0) return
-                      ids.splice(from, 1)
-                      ids.splice(to, 0, dragPalId)
-                      setDragPalId(null)
-                      void reorderLibraryPalettes(ids)
-                    }}
-                    className="p-3 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] flex flex-wrap items-center justify-between gap-2"
+                    {...getPalItemProps(pal.id)}
+                    className={`p-3 bg-[var(--bg-elevated)] border-2 flex flex-wrap items-center justify-between gap-2 select-none ${
+                      isDropTarget
+                        ? 'border-[var(--accent-teal)] outline-2 outline-dashed outline-[var(--accent-teal)]'
+                        : 'border-[var(--border-pixel)]'
+                    } ${isDragging ? 'opacity-60' : ''}`}
                     data-testid={`lib-palette-${pal.id}`}
                   >
                     <div className="min-w-0 flex-1 space-y-1">
@@ -645,6 +687,11 @@ export function SettingsPage() {
                         <span className="font-normal text-[var(--text-secondary)]">
                           ({pal.colors.length})
                         </span>
+                        {pal.author && (
+                          <span className="ml-1.5 text-[10px] font-normal text-[var(--text-secondary)]">
+                            by {pal.author}
+                          </span>
+                        )}
                       </div>
                       <div className="flex flex-wrap gap-0.5">
                         {pal.colors.slice(0, 16).map((hex, cIdx) => (
@@ -754,6 +801,22 @@ export function SettingsPage() {
               </div>
             </div>
 
+            {originStorageStatus.level !== 'ok' && (
+              <div
+                className="p-2.5 bg-[var(--bg-elevated)] border-2 border-[var(--accent-amber)] text-xs space-y-1"
+                data-testid="settings-origin-low-storage-alert"
+              >
+                <div className="font-bold text-[var(--accent-amber)]">
+                  {originStorageStatus.level === 'critical'
+                    ? t('originLowStorageCriticalTitle')
+                    : t('originLowStorageTitle')}
+                </div>
+                <p className="text-[var(--text-secondary)] leading-relaxed">
+                  {t('originLowStorageDesc')}
+                </p>
+              </div>
+            )}
+
             <button
               type="button"
               onClick={() => void handleRequestPersist()}
@@ -841,13 +904,48 @@ export function SettingsPage() {
             <div className="text-xs space-y-1.5 text-[var(--text-secondary)]">
               <div className="flex justify-between">
                 <span>{t('appVersionLabel')}</span>
-                <span className="font-bold text-[var(--text-primary)]">2.1.0</span>
+                <span className="font-bold text-[var(--text-primary)]">2.2.0</span>
               </div>
               <div className="flex justify-between">
                 <span>{t('storageEngineLabel')}</span>
                 <span className="font-bold text-[var(--text-primary)]">
                   {t('storageEngineValue')}
                 </span>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2">
+              <div className="text-xs font-bold text-[var(--text-secondary)]">
+                {t('sectionLegal')}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setLegalTab('terms')}
+                  className="pixel-btn min-h-[38px] px-3 text-xs font-bold flex items-center gap-1.5"
+                  data-testid="open-terms-btn"
+                >
+                  <PixelIcon name="doc" size={14} />
+                  <span>{t('termsTitle')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLegalTab('privacy')}
+                  className="pixel-btn min-h-[38px] px-3 text-xs font-bold flex items-center gap-1.5"
+                  data-testid="open-privacy-btn"
+                >
+                  <PixelIcon name="shield" size={14} />
+                  <span>{t('privacyTitle')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLegalTab('license')}
+                  className="pixel-btn min-h-[38px] px-3 text-xs font-bold flex items-center gap-1.5"
+                  data-testid="open-license-btn"
+                >
+                  <PixelIcon name="doc" size={14} />
+                  <span>{t('licenseTitle')}</span>
+                </button>
               </div>
             </div>
 
@@ -891,10 +989,32 @@ export function SettingsPage() {
                 colors: next.colors,
               })
             }}
-            onSaveToLibrary={async (name, colors) => {
-              await addLibraryPalette(name, colors)
+            onSaveToLibrary={async (name, colors, meta) => {
+              await addLibraryPalette(name, colors, meta)
               showToast(t('toastSavedPalette'), 'success')
             }}
+          />
+        )}
+
+        <LospecImportModal
+          open={lospecLibOpen}
+          onClose={() => setLospecLibOpen(false)}
+          allowAppendReplace={false}
+          onConfirmImport={async (fetched) => {
+            await addLibraryPalette(fetched.name, fetched.colors, {
+              author: fetched.author || undefined,
+              sourceUrl: fetched.sourceUrl,
+              lospecSlug: fetched.slug,
+            })
+            showToast(t('toastLospecImported'), 'success')
+          }}
+        />
+
+        {legalTab !== null && (
+          <LegalDocsModal
+            open={true}
+            initialTab={legalTab}
+            onClose={() => setLegalTab(null)}
           />
         )}
 

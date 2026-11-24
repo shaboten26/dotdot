@@ -5,8 +5,11 @@ import {
   db,
   deleteProjectById,
   duplicateProjectById,
+  estimateSingleProjectStorageBytes,
+  formatByteSize,
   loadProjectFull,
   saveProjectFull,
+  type SingleProjectSizeEstimate,
 } from '../db/database'
 import { exportCompositePngBytes } from '../engine/compositor'
 import { useApp } from '../state/AppContext'
@@ -18,6 +21,8 @@ import {
   ExportPngModal,
   type ExportPngInitialIntent,
 } from '../components/editor/EditorModals'
+import { ExportGifModal } from '../components/editor/ExportGifModal'
+import type { TimelineState } from '../engine/animation'
 import {
   useViewTransitionNavigate,
   VTButtonLink,
@@ -43,10 +48,13 @@ export function ProjectDetailPage() {
 
   const [project, setProject] = useState<ProjectRecord | null>(null)
   const [layers, setLayers] = useState<LayerRuntime[]>([])
+  const [timeline, setTimeline] = useState<TimelineState | null>(null)
+  const [sizeEstimate, setSizeEstimate] = useState<SingleProjectSizeEstimate | null>(null)
   const [loading, setLoading] = useState(true)
   const [editingName, setEditingName] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
   const [exportOpen, setExportOpen] = useState(false)
+  const [exportGifOpen, setExportGifOpen] = useState(false)
   const [exportIntent, setExportIntent] =
     useState<ExportPngInitialIntent>('download')
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
@@ -56,13 +64,18 @@ export function ProjectDetailPage() {
     let cancelled = false
     setLoading(true)
     void (async () => {
-      const full = await loadProjectFull(id, db)
+      const [full, est] = await Promise.all([
+        loadProjectFull(id, db),
+        estimateSingleProjectStorageBytes(id, db),
+      ])
       if (cancelled) return
       if (full) {
         setProject(full.project)
         setLayers(full.layers)
+        setTimeline(full.timeline)
         setNameDraft(full.project.name)
       }
+      setSizeEstimate(est)
       setLoading(false)
     })()
     return () => {
@@ -237,7 +250,7 @@ export function ProjectDetailPage() {
               <span>{t('openInEditor')}</span>
             </button>
 
-            <div className="grid grid-cols-3 gap-2.5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               <button
                 type="button"
                 onClick={() => {
@@ -262,6 +275,16 @@ export function ProjectDetailPage() {
               >
                 <PixelIcon name="share" size={16} />
                 <span>{t('sharePngBtn')}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setExportGifOpen(true)}
+                className="min-h-[48px] px-2.5 pixel-btn pixel-btn-active text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
+                data-testid="detail-export-gif-btn"
+              >
+                <PixelIcon name="film" size={16} />
+                <span>{t('exportGif')}</span>
               </button>
 
               <button
@@ -322,6 +345,16 @@ export function ProjectDetailPage() {
               value={`${project.layers.length}`}
             />
             <MetaRow
+              label={t('frameCount')}
+              value={`${project.frames?.length ?? 1}`}
+              testId="detail-frame-count"
+            />
+            <MetaRow
+              label={t('artworkDataSizeLabel')}
+              value={formatByteSize(sizeEstimate?.totalBytes ?? null)}
+              testId="detail-project-size"
+            />
+            <MetaRow
               label={t('createdAt')}
               value={formatDateTime(project.createdAt)}
             />
@@ -367,6 +400,27 @@ export function ProjectDetailPage() {
           onShared={() => showToast(t('toastSharedPng'), 'success')}
         />
 
+        {timeline && (
+          <ExportGifModal
+            open={exportGifOpen}
+            projectName={project.name}
+            width={project.width}
+            height={project.height}
+            layerMetas={layers}
+            frames={timeline.frames}
+            cels={timeline.cels}
+            celBuffers={timeline.celBuffers}
+            fallbackSingleFrameLayers={layers}
+            defaultDirection={timeline.playbackDirection}
+            defaultLoop={timeline.loopPlayback}
+            checkerDark={settings.checkerboardDark}
+            onClose={() => setExportGifOpen(false)}
+            onDownloaded={() => showToast(t('toastExportedGif'), 'success')}
+            onShared={() => showToast(t('toastSharedGif'), 'success')}
+            onCancelled={() => showToast(t('toastGifCancelled'), 'info')}
+          />
+        )}
+
         <ConfirmDialog
           open={confirmDeleteOpen}
           title={t('delete')}
@@ -381,11 +435,21 @@ export function ProjectDetailPage() {
   )
 }
 
-function MetaRow({ label, value }: { label: string; value: string }) {
+function MetaRow({
+  label,
+  value,
+  testId,
+}: {
+  label: string
+  value: string
+  testId?: string
+}) {
   return (
     <div className="p-3.5 flex items-center justify-between gap-3">
       <span className="text-xs text-[var(--text-secondary)]">{label}</span>
-      <span className="text-xs font-bold">{value}</span>
+      <span className="text-xs font-bold" data-testid={testId}>
+        {value}
+      </span>
     </div>
   )
 }
