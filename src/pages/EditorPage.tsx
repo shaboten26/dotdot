@@ -499,8 +499,8 @@ export function EditorPage() {
           libraryPalettes={palettes}
           onSelectColor={editor.setSelectedColorIndex}
           onUpdatePalette={editor.updateProjectPalette}
-          onSaveToLibrary={async (name, colors) => {
-            await addLibraryPalette(name, colors)
+          onSaveToLibrary={async (name, colors, meta) => {
+            await addLibraryPalette(name, colors, meta)
             showToast(t('toastSavedPalette'), 'success')
           }}
         />

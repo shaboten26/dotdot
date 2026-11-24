@@ -26,6 +26,11 @@ import { PixelIcon } from '../components/common/PixelIcon'
 import { PixelCheckbox } from '../components/common/PixelCheckbox'
 import { PixelSlider } from '../components/common/PixelSlider'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
+import { LospecImportModal } from '../components/common/LospecImportModal'
+import {
+  LegalDocsModal,
+  type LegalDocTab,
+} from '../components/common/LegalDocsModal'
 import { useLongPressReorder } from '../utils/useLongPressReorder'
 import { VTButtonLink } from '../components/common/ViewTransitionNav'
 
@@ -87,6 +92,8 @@ export function SettingsPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [pendingPack, setPendingPack] = useState<ValidatedEnvPack | null>(null)
   const [confirmResetOpen, setConfirmResetOpen] = useState(false)
+  const [lospecLibOpen, setLospecLibOpen] = useState(false)
+  const [legalTab, setLegalTab] = useState<LegalDocTab | null>(null)
 
   const refreshStorage = useCallback(async () => {
     const info = await getStorageStatus()
@@ -625,22 +632,34 @@ export function SettingsPage() {
                 title={`${t('sectionPaletteLibrary')} (${palettes.length})`}
               />
 
-              <button
-                type="button"
-                onClick={async () => {
-                  const created = await addLibraryPalette(
-                    `Palette ${palettes.length + 1}`,
-                    ['#181521', '#F4F1EA', '#8476C4', '#579B91', '#C47388', '#E0A96D']
-                  )
-                  setEditingPalette(created)
-                  setEditingColorIdx(0)
-                }}
-                className="pixel-btn pixel-btn-active min-h-[40px] px-3 text-xs font-bold flex items-center gap-1"
-                data-testid="settings-add-palette-btn"
-              >
-                <PixelIcon name="plus" size={14} />
-                <span>{t('newPalette')}</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setLospecLibOpen(true)}
+                  className="pixel-btn pixel-btn-teal min-h-[40px] px-3 text-xs font-bold flex items-center gap-1"
+                  data-testid="settings-lospec-import-btn"
+                >
+                  <PixelIcon name="download" size={14} />
+                  <span>{t('lospecImportBtn')}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const created = await addLibraryPalette(
+                      `Palette ${palettes.length + 1}`,
+                      ['#181521', '#F4F1EA', '#8476C4', '#579B91', '#C47388', '#E0A96D']
+                    )
+                    setEditingPalette(created)
+                    setEditingColorIdx(0)
+                  }}
+                  className="pixel-btn pixel-btn-active min-h-[40px] px-3 text-xs font-bold flex items-center gap-1"
+                  data-testid="settings-add-palette-btn"
+                >
+                  <PixelIcon name="plus" size={14} />
+                  <span>{t('newPalette')}</span>
+                </button>
+              </div>
             </div>
 
             <div ref={paletteListRef} className="space-y-2">
@@ -668,6 +687,11 @@ export function SettingsPage() {
                         <span className="font-normal text-[var(--text-secondary)]">
                           ({pal.colors.length})
                         </span>
+                        {pal.author && (
+                          <span className="ml-1.5 text-[10px] font-normal text-[var(--text-secondary)]">
+                            by {pal.author}
+                          </span>
+                        )}
                       </div>
                       <div className="flex flex-wrap gap-0.5">
                         {pal.colors.slice(0, 16).map((hex, cIdx) => (
@@ -880,13 +904,48 @@ export function SettingsPage() {
             <div className="text-xs space-y-1.5 text-[var(--text-secondary)]">
               <div className="flex justify-between">
                 <span>{t('appVersionLabel')}</span>
-                <span className="font-bold text-[var(--text-primary)]">2.1.0</span>
+                <span className="font-bold text-[var(--text-primary)]">2.2.0</span>
               </div>
               <div className="flex justify-between">
                 <span>{t('storageEngineLabel')}</span>
                 <span className="font-bold text-[var(--text-primary)]">
                   {t('storageEngineValue')}
                 </span>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2">
+              <div className="text-xs font-bold text-[var(--text-secondary)]">
+                {t('sectionLegal')}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setLegalTab('terms')}
+                  className="pixel-btn min-h-[38px] px-3 text-xs font-bold flex items-center gap-1.5"
+                  data-testid="open-terms-btn"
+                >
+                  <PixelIcon name="doc" size={14} />
+                  <span>{t('termsTitle')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLegalTab('privacy')}
+                  className="pixel-btn min-h-[38px] px-3 text-xs font-bold flex items-center gap-1.5"
+                  data-testid="open-privacy-btn"
+                >
+                  <PixelIcon name="shield" size={14} />
+                  <span>{t('privacyTitle')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLegalTab('license')}
+                  className="pixel-btn min-h-[38px] px-3 text-xs font-bold flex items-center gap-1.5"
+                  data-testid="open-license-btn"
+                >
+                  <PixelIcon name="doc" size={14} />
+                  <span>{t('licenseTitle')}</span>
+                </button>
               </div>
             </div>
 
@@ -930,10 +989,32 @@ export function SettingsPage() {
                 colors: next.colors,
               })
             }}
-            onSaveToLibrary={async (name, colors) => {
-              await addLibraryPalette(name, colors)
+            onSaveToLibrary={async (name, colors, meta) => {
+              await addLibraryPalette(name, colors, meta)
               showToast(t('toastSavedPalette'), 'success')
             }}
+          />
+        )}
+
+        <LospecImportModal
+          open={lospecLibOpen}
+          onClose={() => setLospecLibOpen(false)}
+          allowAppendReplace={false}
+          onConfirmImport={async (fetched) => {
+            await addLibraryPalette(fetched.name, fetched.colors, {
+              author: fetched.author || undefined,
+              sourceUrl: fetched.sourceUrl,
+              lospecSlug: fetched.slug,
+            })
+            showToast(t('toastLospecImported'), 'success')
+          }}
+        />
+
+        {legalTab !== null && (
+          <LegalDocsModal
+            open={true}
+            initialTab={legalTab}
+            onClose={() => setLegalTab(null)}
           />
         )}
 

@@ -12,7 +12,12 @@ import {
   normalizeHex,
   rgbaToHex,
 } from '../../engine/color'
+import {
+  mergeLospecPaletteColors,
+  type LospecFetchedPalette,
+} from '../../db/lospec'
 import { Modal } from '../common/Modal'
+import { LospecImportModal } from '../common/LospecImportModal'
 import { PixelIcon } from '../common/PixelIcon'
 import { PixelSlider } from '../common/PixelSlider'
 import { PixelSelect } from '../common/PixelSelect'
@@ -29,7 +34,11 @@ interface PaletteSheetProps {
   libraryPalettes: PaletteData[]
   onSelectColor: (index: number) => void
   onUpdatePalette: (next: ProjectPalette, nextSelectedIdx?: number) => void
-  onSaveToLibrary: (name: string, colors: string[]) => Promise<void>
+  onSaveToLibrary: (
+    name: string,
+    colors: string[],
+    meta?: Partial<Pick<PaletteData, 'author' | 'sourceUrl' | 'lospecSlug' | 'licenseNote'>>
+  ) => Promise<void>
 }
 
 export function PaletteSheet({
@@ -76,6 +85,7 @@ export function PaletteSheet({
   const [hsv, setHsv] = useState(() => hexToHsv(currentHex))
   const [hexInput, setHexInput] = useState(currentHex)
   const [nameInput, setNameInput] = useState(palette.name)
+  const [lospecOpen, setLospecOpen] = useState(false)
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   /** Preserve selection across initial mouseup/pointerup after focusing the palette name input! */
   const selectAllOnMouseUpRef = useRef(false)
@@ -252,7 +262,39 @@ export function PaletteSheet({
               <PixelIcon name="copy" size={14} />
               {t('duplicatePalette')}
             </button>
+            <button
+              type="button"
+              onClick={() => setLospecOpen(true)}
+              className="pixel-btn pixel-btn-teal min-h-[40px] px-2.5 text-xs font-bold flex items-center gap-1"
+              data-testid="open-lospec-import-btn"
+            >
+              <PixelIcon name="download" size={14} />
+              {t('lospecImportBtn')}
+            </button>
           </div>
+
+          {(palette.author || palette.sourceUrl) && (
+            <div
+              className="text-[11px] text-[var(--text-secondary)] flex flex-wrap items-center gap-x-3 gap-y-0.5 px-1"
+              data-testid="palette-attribution-info"
+            >
+              {palette.author && (
+                <span>
+                  {t('lospecAuthorLabel')}: <strong className="text-[var(--text-primary)]">{palette.author}</strong>
+                </span>
+              )}
+              {palette.sourceUrl && (
+                <a
+                  href={palette.sourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:text-[var(--accent-teal)] truncate max-w-[240px]"
+                >
+                  {palette.sourceUrl}
+                </a>
+              )}
+            </div>
+          )}
 
           {libraryOptions.length > 0 && (
             <div className="flex items-center gap-2">
@@ -270,6 +312,8 @@ export function PaletteSheet({
                       name: lib.name,
                       colors: [...lib.colors],
                       sourcePaletteId: lib.id,
+                      author: lib.author,
+                      sourceUrl: lib.sourceUrl,
                     },
                     0
                   )
@@ -546,6 +590,41 @@ export function PaletteSheet({
           </div>
         )}
       </div>
+
+      <LospecImportModal
+        open={lospecOpen}
+        onClose={() => setLospecOpen(false)}
+        allowAppendReplace={true}
+        onConfirmImport={async (
+          fetched: LospecFetchedPalette,
+          mode,
+          alsoSaveToLib
+        ) => {
+          const merged = mergeLospecPaletteColors(
+            palette.colors,
+            fetched.colors,
+            mode
+          )
+          const nextName = mode === 'replace' ? fetched.name : palette.name
+          onUpdatePalette(
+            {
+              name: nextName,
+              colors: merged.colors,
+              author: mode === 'replace' ? fetched.author || undefined : palette.author,
+              sourceUrl:
+                mode === 'replace' ? fetched.sourceUrl : palette.sourceUrl,
+            },
+            mode === 'replace' ? 0 : Math.min(palette.colors.length, merged.colors.length - 1)
+          )
+          if (alsoSaveToLib) {
+            await onSaveToLibrary(fetched.name, fetched.colors, {
+              author: fetched.author || undefined,
+              sourceUrl: fetched.sourceUrl,
+              lospecSlug: fetched.slug,
+            })
+          }
+        }}
+      />
     </Modal>
   )
 }
