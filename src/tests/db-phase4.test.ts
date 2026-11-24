@@ -5,8 +5,11 @@ import {
   DEFAULT_BACKUP_META,
   deleteLibraryPalette,
   DotDotDatabase,
+  estimateSingleProjectStorageBytes,
+  evaluateOriginLowStorage,
   initializeDatabase,
   loadProjectFull,
+  normalizeAppSettings,
   saveProjectFull,
   UI_SIZE_PRESETS,
 } from '../db/database'
@@ -17,6 +20,11 @@ import {
 } from '../db/envPack'
 import { createPixelBuffer, getPixel, setPixel } from '../engine/pixelBuffer'
 import { createPixelPatch, HistoryManager } from '../engine/history'
+import {
+  insertNewFrame,
+  linkCellToSourceCell,
+  setCellToEmpty,
+} from '../engine/animation'
 
 const RED = { r: 255, g: 30, b: 60, a: 255 }
 const CYAN = { r: 0, g: 220, b: 255, a: 255 }
@@ -28,6 +36,7 @@ describe('IndexedDB (Dexie), Palettes, Startup Invariants & Environment Pack ZIP
 
     expect(init.palettes.length).toBe(6)
     expect(init.settings.language).toBe('ja')
+    expect(init.settings.historyLimit).toBe('unlimited')
     expect(init.settings.eyedropperDoubleTap).toBe(true)
     expect(await testDb.projects.count()).toBe(0)
     expect(init.settings.activeProjectId).toBeNull()
@@ -198,5 +207,112 @@ describe('IndexedDB (Dexie), Palettes, Startup Invariants & Environment Pack ZIP
 
     expect(await safeDb.projects.count()).toBe(beforeCount)
     await safeDb.delete()
+  })
+
+  it('migrates untouched legacy historyLimit=100 to unlimited while preserving explicit user customizations', () => {
+    const legacyUntouched = normalizeAppSettings({ historyLimit: 100 })
+    expect(legacyUntouched.historyLimit).toBe('unlimited')
+
+    const explicit100 = normalizeAppSettings({
+      historyLimit: 100,
+      historyLimitCustomized: true,
+    })
+    expect(explicit100.historyLimit).toBe(100)
+    expect(explicit100.historyLimitCustomized).toBe(true)
+
+    const explicit50 = normalizeAppSettings({ historyLimit: 50 })
+    expect(explicit50.historyLimit).toBe(50)
+    expect(explicit50.historyLimitCustomized).toBe(true)
+  })
+
+  it('estimates strictly single-project storage bytes (Empty cel = 0B, Linked cel counted once, isolated from other projects)', async () => {
+    const testDb = new DotDotDatabase(`test-db-est-${Date.now()}`)
+    await initializeDatabase(testDb)
+
+    const small = await createNewProject(
+      {
+        name: 'Small 8x8',
+        width: 8,
+        height: 8,
+        palette: { name: 'P', colors: ['#000000', '#FFFFFF'] },
+      },
+      testDb
+    )
+    const huge = await createNewProject(
+      {
+        name: 'Huge 128x128',
+        width: 128,
+        height: 128,
+        palette: { name: 'P', colors: ['#000000', '#FFFFFF'] },
+      },
+      testDb
+    )
+
+    const smallEstBefore = await estimateSingleProjectStorageBytes(small.project.id, testDb)
+    const hugeEst = await estimateSingleProjectStorageBytes(huge.project.id, testDb)
+    expect(smallEstBefore).not.toBeNull()
+    expect(hugeEst).not.toBeNull()
+    // Small 8x8 single-project estimate must NEVER include the 128x128 project!
+    expect(smallEstBefore!.pixelDataBytes).toBe(8 * 8 * 4 + 48)
+    expect(hugeEst!.pixelDataBytes).toBe(128 * 128 * 4 + 48)
+
+    // Add 2 frames to `small`: Frame 2 linked to Frame 1 (counted ONCE), Frame 3 empty (0B)!
+    const layerId = small.layers[0].id
+    let tl = insertNewFrame(small.timeline, small.layers, 'duplicate-linked')
+    const frame2Id = tl.activeFrameId
+    const linkedRes = linkCellToSourceCell(
+      tl.cels,
+      tl.celBuffers,
+      layerId,
+      tl.frames[0].id,
+      frame2Id
+    )
+    tl = { ...tl, cels: linkedRes.cels, celBuffers: linkedRes.celBuffers }
+    tl = insertNewFrame(tl, small.layers, 'empty')
+    const frame3Id = tl.activeFrameId
+    const emptyRes = setCellToEmpty(tl.cels, tl.celBuffers, layerId, frame3Id)
+    tl = { ...tl, cels: emptyRes.cels, celBuffers: emptyRes.celBuffers }
+
+    await saveProjectFull(
+      {
+        project: small.project,
+        layers: small.layers,
+        timeline: tl,
+      },
+      testDb
+    )
+
+    const smallEstAfter = await estimateSingleProjectStorageBytes(small.project.id, testDb)
+    // Even with 3 frames (Frame 1 + linked Frame 2 + empty Frame 3), unique celBuffer is STILL 1!
+    expect(smallEstAfter!.pixelDataBytes).toBe(8 * 8 * 4 + 48)
+
+    // Verify EnvPack round-trip preserves multi-frame linked & empty cels cleanly
+    const zipBytes = await exportEnvironmentPackZip(testDb)
+    const validated = inspectAndValidateEnvPack(zipBytes)
+    const destDb = new DotDotDatabase(`test-db-est-dst-${Date.now()}`)
+    await initializeDatabase(destDb)
+    await applyValidatedEnvPack(validated, destDb)
+
+    const reloaded = await loadProjectFull(small.project.id, destDb)
+    expect(reloaded!.timeline.frames.length).toBe(3)
+    expect(reloaded!.timeline.cels[`${layerId}:${frame3Id}`]?.kind).toBe('empty')
+    const f1Ref = reloaded!.timeline.cels[`${layerId}:${reloaded!.timeline.frames[0].id}`]
+    const f2Ref = reloaded!.timeline.cels[`${layerId}:${frame2Id}`]
+    expect(f1Ref?.kind).toBe('cel')
+    expect(f2Ref?.kind).toBe('cel')
+    if (f1Ref?.kind === 'cel' && f2Ref?.kind === 'cel') {
+      expect(f1Ref.celId).toBe(f2Ref.celId)
+    }
+
+    await testDb.delete()
+    await destDb.delete()
+  })
+
+  it('evaluates Origin storage low-space warning & critical thresholds accurately', () => {
+    expect(evaluateOriginLowStorage(null, null).level).toBe('ok')
+    expect(evaluateOriginLowStorage(100 * 1024 * 1024, 1024 * 1024 * 1024).level).toBe('ok')
+    expect(evaluateOriginLowStorage(880 * 1024 * 1024, 1000 * 1024 * 1024).level).toBe('warning')
+    expect(evaluateOriginLowStorage(960 * 1024 * 1024, 1000 * 1024 * 1024).level).toBe('critical')
+    expect(evaluateOriginLowStorage(980 * 1024 * 1024, 1000 * 1024 * 1024).level).toBe('critical')
   })
 })

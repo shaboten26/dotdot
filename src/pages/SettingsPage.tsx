@@ -42,6 +42,7 @@ export function SettingsPage() {
     settings,
     palettes,
     projects,
+    originStorageStatus,
     updateSettings,
     updateUiSize,
     addLibraryPalette,
@@ -523,7 +524,12 @@ export function SettingsPage() {
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() => void updateSettings({ historyLimit: 'unlimited' })}
+                  onClick={() =>
+                    void updateSettings({
+                      historyLimit: 'unlimited',
+                      historyLimitCustomized: true,
+                    })
+                  }
                   className={`min-h-[38px] px-3 text-xs font-bold ${
                     settings.historyLimit === 'unlimited'
                       ? 'pixel-btn pixel-btn-active'
@@ -537,7 +543,12 @@ export function SettingsPage() {
                   <button
                     key={num}
                     type="button"
-                    onClick={() => void updateSettings({ historyLimit: num })}
+                    onClick={() =>
+                      void updateSettings({
+                        historyLimit: num,
+                        historyLimitCustomized: true,
+                      })
+                    }
                     className={`min-h-[38px] px-3 text-xs font-bold ${
                       settings.historyLimit === num
                         ? 'pixel-btn pixel-btn-active'
@@ -560,7 +571,10 @@ export function SettingsPage() {
                     onChange={(e) => {
                       const val = Math.max(1, Math.min(2000, Number(e.target.value) || 1))
                       setCustomLimitInput(val)
-                      void updateSettings({ historyLimit: val })
+                      void updateSettings({
+                        historyLimit: val,
+                        historyLimitCustomized: true,
+                      })
                     }}
                     className="w-20 min-h-[36px] px-2 text-xs pixel-input"
                     data-testid="history-custom-input"
@@ -762,6 +776,22 @@ export function SettingsPage() {
                 </div>
               </div>
             </div>
+
+            {originStorageStatus.level !== 'ok' && (
+              <div
+                className="p-2.5 bg-[var(--bg-elevated)] border-2 border-[var(--accent-amber)] text-xs space-y-1"
+                data-testid="settings-origin-low-storage-alert"
+              >
+                <div className="font-bold text-[var(--accent-amber)]">
+                  {originStorageStatus.level === 'critical'
+                    ? t('originLowStorageCriticalTitle')
+                    : t('originLowStorageTitle')}
+                </div>
+                <p className="text-[var(--text-secondary)] leading-relaxed">
+                  {t('originLowStorageDesc')}
+                </p>
+              </div>
+            )}
 
             <button
               type="button"

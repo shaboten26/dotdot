@@ -2,6 +2,10 @@ import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 import type {
   AppSettings,
   CanvasSnapshot,
+  CelBufferRecord,
+  CelBufferRuntime,
+  CelMap,
+  FrameMeta,
   LayerMeta,
   LayerOffsetTransition,
   LayerPixelRecord,
@@ -11,10 +15,12 @@ import type {
   ProjectRecord,
   SerializedHistoryEntry,
   SerializedPixelPatch,
+  TimelineSnapshot,
 } from '../types'
 import { DEFAULT_APP_SETTINGS, DotDotDatabase, db, normalizeAppSettings } from './database'
 import { exportCompositePngBytes, MAX_LAYERS } from '../engine/compositor'
 import { normalizeLayerGeometry } from '../engine/pixelBuffer'
+import { projectFrameLayers } from '../engine/animation'
 
 export const ENV_PACK_FORMAT = 'dotdot-environment-pack'
 export const ENV_PACK_VERSION = 1
@@ -30,12 +36,22 @@ export interface EnvPackManifest {
     projects: number
     palettes: number
     totalLayers: number
+    totalCels?: number
     totalHistoryEntries: number
   }
 }
 
+interface EncodedCelGeometryMeta {
+  celId: string
+  offsetX: number
+  offsetY: number
+  dataWidth: number
+  dataHeight: number
+}
+
 interface EncodedPixelPatchJson {
   layerId: string
+  celId?: string
   indicesB64: string
   beforeB64: string
   afterB64: string
@@ -53,6 +69,20 @@ interface EncodedPixelPatchJson {
   }
 }
 
+interface EncodedTimelineSnapshotJson {
+  frames: FrameMeta[]
+  cels: CelMap
+  activeFrameId: string
+  celBuffers: Array<{
+    id: string
+    offsetX: number
+    offsetY: number
+    dataWidth: number
+    dataHeight: number
+    dataB64: string
+  }>
+}
+
 interface EncodedSnapshotJson {
   width: number
   height: number
@@ -61,6 +91,7 @@ interface EncodedSnapshotJson {
     meta: LayerMeta
     dataB64: string
   }>
+  timeline?: EncodedTimelineSnapshotJson
 }
 
 interface EncodedHistoryEntryJson {
@@ -68,6 +99,11 @@ interface EncodedHistoryEntryJson {
   label: string
   timestamp: number
   kind: 'pixel-diff' | 'structure' | 'selection' | 'palette' | 'layer-offset'
+  frameId?: string
+  celAllocation?: {
+    cellKey: string
+    allocatedCelId: string
+  }
   pixelPatches?: EncodedPixelPatchJson[]
   layerOffsetChange?: LayerOffsetTransition
   layerOffsetChanges?: LayerOffsetTransition[]
@@ -134,6 +170,50 @@ function bytesToUint32(bytes: Uint8Array): Uint32Array {
   return out
 }
 
+function encodeTimelineSnapshot(
+  tl?: TimelineSnapshot
+): EncodedTimelineSnapshotJson | undefined {
+  if (!tl) return undefined
+  return {
+    frames: tl.frames.map((f) => ({ id: f.id, durationMs: f.durationMs })),
+    cels: { ...tl.cels },
+    activeFrameId: tl.activeFrameId,
+    celBuffers: tl.celBuffers.map((cb) => ({
+      id: cb.id,
+      offsetX: cb.offsetX,
+      offsetY: cb.offsetY,
+      dataWidth: cb.dataWidth,
+      dataHeight: cb.dataHeight,
+      dataB64: bytesToBase64(cb.data),
+    })),
+  }
+}
+
+function decodeTimelineSnapshot(
+  enc?: EncodedTimelineSnapshotJson
+): TimelineSnapshot | undefined {
+  if (!enc) return undefined
+  return {
+    frames: enc.frames.map((f) => ({ id: f.id, durationMs: f.durationMs })),
+    cels: { ...enc.cels },
+    activeFrameId: enc.activeFrameId,
+    celBuffers: enc.celBuffers.map((cb) => {
+      const data = base64ToBytes(cb.dataB64)
+      if (data.byteLength !== cb.dataWidth * cb.dataHeight * 4) {
+        throw new Error('Corrupted timeline snapshot celBuffer dimensions in history')
+      }
+      return {
+        id: cb.id,
+        offsetX: cb.offsetX,
+        offsetY: cb.offsetY,
+        dataWidth: cb.dataWidth,
+        dataHeight: cb.dataHeight,
+        data,
+      }
+    }),
+  }
+}
+
 function encodeSnapshot(snap?: CanvasSnapshot): EncodedSnapshotJson | undefined {
   if (!snap) return undefined
   return {
@@ -144,6 +224,7 @@ function encodeSnapshot(snap?: CanvasSnapshot): EncodedSnapshotJson | undefined 
       meta: l.meta,
       dataB64: bytesToBase64(l.data),
     })),
+    timeline: encodeTimelineSnapshot(snap.timeline),
   }
 }
 
@@ -171,6 +252,7 @@ function decodeSnapshot(enc?: EncodedSnapshotJson): CanvasSnapshot | undefined {
         data,
       }
     }),
+    timeline: decodeTimelineSnapshot(enc.timeline),
   }
 }
 
@@ -180,8 +262,11 @@ function encodeHistoryStack(stack: SerializedHistoryEntry[]): Uint8Array {
     label: e.label,
     timestamp: e.timestamp,
     kind: e.kind,
+    frameId: e.frameId,
+    celAllocation: e.celAllocation,
     pixelPatches: e.pixelPatches?.map((p) => ({
       layerId: p.layerId,
+      celId: p.celId,
       indicesB64: bytesToBase64(uint32ToBytes(p.indices)),
       beforeB64: bytesToBase64(p.before),
       afterB64: bytesToBase64(p.after),
@@ -250,6 +335,7 @@ function decodeHistoryStack(raw: Uint8Array): SerializedHistoryEntry[] {
       }
       return {
         layerId: p.layerId,
+        celId: p.celId,
         indices,
         before,
         after,
@@ -263,9 +349,11 @@ function decodeHistoryStack(raw: Uint8Array): SerializedHistoryEntry[] {
       label: e.label,
       timestamp: e.timestamp,
       kind: e.kind,
+      frameId: e.frameId,
+      celAllocation: e.celAllocation,
       pixelPatches,
       layerOffsetChange: e.layerOffsetChange,
-    layerOffsetChanges: e.layerOffsetChanges,
+      layerOffsetChanges: e.layerOffsetChanges,
       beforeStructure: decodeSnapshot(e.beforeStructure),
       afterStructure: decodeSnapshot(e.afterStructure),
       beforeSelection:
@@ -311,7 +399,7 @@ function decodeHistoryStack(raw: Uint8Array): SerializedHistoryEntry[] {
 }
 
 /**
- * Export entire dotdot state (projects, layers including off-canvas pixels, palettes, settings + customCanvasPresets, order, metadata, undo/redo history)
+ * Export entire dotdot state (projects, layers including off-canvas pixels, timeline cels, palettes + Lospec attribution, settings + customCanvasPresets, order, metadata, undo/redo history)
  * into a structured ZIP archive (`environment-pack.zip`).
  */
 export async function exportEnvironmentPackZip(
@@ -323,11 +411,19 @@ export async function exportEnvironmentPackZip(
   const palettes = await targetDb.palettes.orderBy('order').toArray()
   const projects = await targetDb.projects.orderBy('order').toArray()
   const allPixels = await targetDb.layerPixels.toArray()
+  const allCels = await targetDb.celBuffers.toArray()
   const allHistories = await targetDb.histories.toArray()
 
   const pixelByKey = new Map<string, LayerPixelRecord>()
   for (const row of allPixels) {
     pixelByKey.set(row.key, row)
+  }
+
+  const celsByProject = new Map<string, CelBufferRecord[]>()
+  for (const row of allCels) {
+    const arr = celsByProject.get(row.projectId) ?? []
+    arr.push(row)
+    celsByProject.set(row.projectId, arr)
   }
 
   const historyByProject = new Map<string, ProjectHistoryRecord>()
@@ -337,6 +433,7 @@ export async function exportEnvironmentPackZip(
 
   const zipEntries: Zippable = {}
   let totalLayers = 0
+  let totalCels = 0
   let totalHistoryEntries = 0
 
   palettes.forEach((pal, idx) => {
@@ -387,6 +484,25 @@ export async function exportEnvironmentPackZip(
       zipEntries[`${dirName}/layers/${layerMeta.id}.bin`] = raw
     }
 
+    const projCels = celsByProject.get(proj.id) ?? []
+    if (projCels.length > 0) {
+      const celManifest: EncodedCelGeometryMeta[] = []
+      for (const celRow of projCels) {
+        totalCels++
+        celManifest.push({
+          celId: celRow.celId,
+          offsetX: celRow.offsetX,
+          offsetY: celRow.offsetY,
+          dataWidth: celRow.dataWidth,
+          dataHeight: celRow.dataHeight,
+        })
+        zipEntries[`${dirName}/cels/${celRow.celId}.bin`] = celRow.data
+      }
+      zipEntries[`${dirName}/cels/manifest.json`] = strToU8(
+        JSON.stringify(celManifest, null, 2)
+      )
+    }
+
     const hist = historyByProject.get(proj.id) ?? {
       projectId: proj.id,
       undoStack: [],
@@ -401,7 +517,7 @@ export async function exportEnvironmentPackZip(
   const manifest: EnvPackManifest = {
     format: ENV_PACK_FORMAT,
     formatVersion: ENV_PACK_VERSION,
-    appVersion: '2.1.0',
+    appVersion: '2.2.0',
     exportedAt: Date.now(),
     projectOrder: projects.map((p) => p.id),
     paletteOrder: palettes.map((p) => p.id),
@@ -409,6 +525,7 @@ export async function exportEnvironmentPackZip(
       projects: projects.length,
       palettes: palettes.length,
       totalLayers,
+      totalCels,
       totalHistoryEntries,
     },
   }
@@ -436,6 +553,7 @@ export interface ValidatedEnvPack {
   palettes: PaletteData[]
   projects: ProjectRecord[]
   layerPixels: LayerPixelRecord[]
+  celBuffers: CelBufferRecord[]
   histories: ProjectHistoryRecord[]
 }
 
@@ -513,6 +631,7 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
 
   const projects: ProjectRecord[] = []
   const layerPixels: LayerPixelRecord[] = []
+  const celBuffers: CelBufferRecord[] = []
   const histories: ProjectHistoryRecord[] = []
 
   for (const projPath of projectJsonPaths) {
@@ -593,8 +712,79 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
       })
     }
 
+    // Optional timeline `cels/manifest.json` + `cels/<celId>.bin`
+    const celManifestPath = `${baseDir}/cels/manifest.json`
+    const celManifestRaw = files[celManifestPath]
+    const runtimeCelBuffers: Record<string, CelBufferRuntime> = {}
+    if (celManifestRaw) {
+      const celMetaList = JSON.parse(
+        strFromU8(celManifestRaw)
+      ) as EncodedCelGeometryMeta[]
+      if (!Array.isArray(celMetaList)) {
+        throw new Error(`INVALID_CEL_MANIFEST: Invalid cel manifest at ${celManifestPath}`)
+      }
+      for (const celMeta of celMetaList) {
+        const celBinPath = `${baseDir}/cels/${celMeta.celId}.bin`
+        const celBin = files[celBinPath]
+        if (!celBin) {
+          throw new Error(`MISSING_CEL_BIN: Missing cel binary ${celBinPath}`)
+        }
+        const geo = normalizeLayerGeometry(
+          {
+            offsetX: celMeta.offsetX,
+            offsetY: celMeta.offsetY,
+            dataWidth: celMeta.dataWidth,
+            dataHeight: celMeta.dataHeight,
+            data: new Uint8ClampedArray(0),
+          },
+          proj.width,
+          proj.height
+        )
+        const expectedBytes = geo.dataWidth * geo.dataHeight * 4
+        if (celBin.byteLength !== expectedBytes) {
+          throw new Error(
+            `CORRUPT_CEL_BIN: Expected ${expectedBytes} bytes, got ${celBin.byteLength} in ${celBinPath}`
+          )
+        }
+        const copy = new Uint8Array(celBin)
+        celBuffers.push({
+          key: `${proj.id}:${celMeta.celId}`,
+          projectId: proj.id,
+          celId: celMeta.celId,
+          offsetX: geo.offsetX,
+          offsetY: geo.offsetY,
+          dataWidth: geo.dataWidth,
+          dataHeight: geo.dataHeight,
+          data: copy,
+        })
+        runtimeCelBuffers[celMeta.celId] = {
+          id: celMeta.celId,
+          offsetX: geo.offsetX,
+          offsetY: geo.offsetY,
+          dataWidth: geo.dataWidth,
+          dataHeight: geo.dataHeight,
+          data: new Uint8ClampedArray(copy),
+        }
+      }
+    }
+
+    const thumbLayers =
+      Array.isArray(proj.frames) &&
+      proj.frames.length >= 1 &&
+      proj.cels &&
+      Object.keys(runtimeCelBuffers).length > 0
+        ? projectFrameLayers(
+            normalizedMetaList,
+            proj.cels,
+            runtimeCelBuffers,
+            proj.frames[0]!.id,
+            proj.width,
+            proj.height
+          )
+        : runtimeLayersForThumb
+
     const { png: thumbnailPng } = exportCompositePngBytes(
-      runtimeLayersForThumb,
+      thumbLayers,
       proj.width,
       proj.height,
       1
@@ -628,6 +818,7 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
     palettes,
     projects,
     layerPixels,
+    celBuffers,
     histories,
   }
 }
@@ -643,6 +834,7 @@ export async function applyValidatedEnvPack(
       targetDb.palettes,
       targetDb.projects,
       targetDb.layerPixels,
+      targetDb.celBuffers,
       targetDb.histories,
     ],
     async () => {
@@ -650,6 +842,7 @@ export async function applyValidatedEnvPack(
       await targetDb.palettes.clear()
       await targetDb.projects.clear()
       await targetDb.layerPixels.clear()
+      await targetDb.celBuffers.clear()
       await targetDb.histories.clear()
 
       await targetDb.settings.put(pack.settings)
@@ -659,6 +852,9 @@ export async function applyValidatedEnvPack(
       }
       if (pack.layerPixels.length > 0) {
         await targetDb.layerPixels.bulkPut(pack.layerPixels)
+      }
+      if (pack.celBuffers.length > 0) {
+        await targetDb.celBuffers.bulkPut(pack.celBuffers)
       }
       if (pack.histories.length > 0) {
         await targetDb.histories.bulkPut(pack.histories)

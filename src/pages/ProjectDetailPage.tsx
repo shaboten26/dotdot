@@ -5,8 +5,11 @@ import {
   db,
   deleteProjectById,
   duplicateProjectById,
+  estimateSingleProjectStorageBytes,
+  formatByteSize,
   loadProjectFull,
   saveProjectFull,
+  type SingleProjectSizeEstimate,
 } from '../db/database'
 import { exportCompositePngBytes } from '../engine/compositor'
 import { useApp } from '../state/AppContext'
@@ -43,6 +46,7 @@ export function ProjectDetailPage() {
 
   const [project, setProject] = useState<ProjectRecord | null>(null)
   const [layers, setLayers] = useState<LayerRuntime[]>([])
+  const [sizeEstimate, setSizeEstimate] = useState<SingleProjectSizeEstimate | null>(null)
   const [loading, setLoading] = useState(true)
   const [editingName, setEditingName] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
@@ -56,13 +60,17 @@ export function ProjectDetailPage() {
     let cancelled = false
     setLoading(true)
     void (async () => {
-      const full = await loadProjectFull(id, db)
+      const [full, est] = await Promise.all([
+        loadProjectFull(id, db),
+        estimateSingleProjectStorageBytes(id, db),
+      ])
       if (cancelled) return
       if (full) {
         setProject(full.project)
         setLayers(full.layers)
         setNameDraft(full.project.name)
       }
+      setSizeEstimate(est)
       setLoading(false)
     })()
     return () => {
@@ -322,6 +330,16 @@ export function ProjectDetailPage() {
               value={`${project.layers.length}`}
             />
             <MetaRow
+              label={t('frameCount')}
+              value={`${project.frames?.length ?? 1}`}
+              testId="detail-frame-count"
+            />
+            <MetaRow
+              label={t('artworkDataSizeLabel')}
+              value={formatByteSize(sizeEstimate?.totalBytes ?? null)}
+              testId="detail-project-size"
+            />
+            <MetaRow
               label={t('createdAt')}
               value={formatDateTime(project.createdAt)}
             />
@@ -381,11 +399,21 @@ export function ProjectDetailPage() {
   )
 }
 
-function MetaRow({ label, value }: { label: string; value: string }) {
+function MetaRow({
+  label,
+  value,
+  testId,
+}: {
+  label: string
+  value: string
+  testId?: string
+}) {
   return (
     <div className="p-3.5 flex items-center justify-between gap-3">
       <span className="text-xs text-[var(--text-secondary)]">{label}</span>
-      <span className="text-xs font-bold">{value}</span>
+      <span className="text-xs font-bold" data-testid={testId}>
+        {value}
+      </span>
     </div>
   )
 }
