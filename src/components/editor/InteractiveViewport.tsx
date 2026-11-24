@@ -6,6 +6,7 @@ import type {
   Point,
   ToolId,
   ToolSettings,
+  WorldSelectionMask,
 } from '../../types'
 import type { MultiStepPhase } from '../../state/useEditorController'
 import { getBrushOffsets } from '../../engine/brush'
@@ -53,6 +54,7 @@ interface InteractiveViewportProps {
   moveSession: ActiveMoveSession | null
   hasSelection: boolean
   selectionMask: Uint8Array | null
+  worldSelection?: WorldSelectionMask | null
   showGrid: boolean
   checkerboardDark: boolean
   activeHexColor: string
@@ -154,6 +156,7 @@ export function InteractiveViewport({
   moveSession,
   hasSelection,
   selectionMask,
+  worldSelection = null,
   showGrid,
   checkerboardDark,
   activeHexColor,
@@ -492,8 +495,53 @@ export function InteractiveViewport({
     ctx.fillRect(devLeft - borderPx, devTop, borderPx, devH)
     ctx.fillRect(devLeft + devW, devTop, borderPx, devH)
 
-    // 4. Animated Marching Ants Selection Boundary
-    if (selectionMask && selectionMask.length === width * height) {
+    // 4. Animated Marching Ants Selection Boundary (renders in full world space so off-canvas selections remain visible in viewport!)
+    if (worldSelection && worldSelection.width > 0 && worldSelection.height > 0) {
+      ctx.save()
+      ctx.beginPath()
+      const { originX, originY, width: sw, height: sh, mask: sm } = worldSelection
+      for (let ly = 0; ly < sh; ly++) {
+        const wy = originY + ly
+        const py0 = rowDevY(wy)
+        const py1 = rowDevY(wy + 1)
+        if (py1 < -4 || py0 > devViewportH + 4) continue
+        for (let lx = 0; lx < sw; lx++) {
+          if (sm[ly * sw + lx] === 0) continue
+          const wx = originX + lx
+          const px0 = colDevX(wx)
+          const px1 = colDevX(wx + 1)
+          if (px1 < -4 || px0 > devViewportW + 4) continue
+
+          if (ly === 0 || sm[(ly - 1) * sw + lx] === 0) {
+            ctx.moveTo(px0, py0)
+            ctx.lineTo(px1, py0)
+          }
+          if (ly === sh - 1 || sm[(ly + 1) * sw + lx] === 0) {
+            ctx.moveTo(px0, py1)
+            ctx.lineTo(px1, py1)
+          }
+          if (lx === 0 || sm[ly * sw + (lx - 1)] === 0) {
+            ctx.moveTo(px0, py0)
+            ctx.lineTo(px0, py1)
+          }
+          if (lx === sw - 1 || sm[ly * sw + (lx + 1)] === 0) {
+            ctx.moveTo(px1, py0)
+            ctx.lineTo(px1, py1)
+          }
+        }
+      }
+      const dashLen = Math.max(4, Math.round(4 * dpr))
+      ctx.lineWidth = Math.max(2, Math.round(2 * dpr))
+      ctx.strokeStyle = '#181521'
+      ctx.setLineDash([])
+      ctx.stroke()
+
+      ctx.strokeStyle = '#f8f6f2'
+      ctx.setLineDash([dashLen, dashLen])
+      ctx.lineDashOffset = -Math.round((antsOffset / 8) * dashLen * 2)
+      ctx.stroke()
+      ctx.restore()
+    } else if (selectionMask && selectionMask.length === width * height) {
       ctx.save()
       ctx.beginPath()
       for (let y = 0; y < height; y++) {

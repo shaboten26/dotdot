@@ -262,6 +262,20 @@ export interface FloatingShapeState {
   rotationDeg: number
 }
 
+/**
+ * World-space selection mask (`[originX..originX+width-1, originY..originY+height-1]`).
+ * Allows selections and selected pixels to move partially or completely outside `[0..canvasW-1, 0..canvasH-1]`
+ * without losing selection state or pixel data, and recover cleanly when dragged back inside or undone!
+ */
+export interface WorldSelectionMask {
+  originX: number
+  originY: number
+  width: number
+  height: number
+  /** Local binary mask of length `width * height` (`1` = selected, `0` = unselected) */
+  mask: Uint8Array
+}
+
 export interface ActiveMoveSession {
   mode: 'selection' | 'layer' | 'multi-layer'
   layerId: string
@@ -270,6 +284,7 @@ export interface ActiveMoveSession {
   dx: number
   dy: number
   initialMask: Uint8Array | null
+  initialWorldSelection?: WorldSelectionMask | null
   clearedLayer: LayerRuntime | null
   extractedBuffer: Uint8ClampedArray | null
   extractedWidth: number
@@ -396,6 +411,8 @@ export interface HistoryEntry {
   afterStructure?: CanvasSnapshot
   beforeSelection?: Uint8Array | null
   afterSelection?: Uint8Array | null
+  beforeWorldSelection?: WorldSelectionMask | null
+  afterWorldSelection?: WorldSelectionMask | null
   beforePalette?: ProjectPalette
   afterPalette?: ProjectPalette
 }
@@ -444,6 +461,8 @@ export interface SerializedHistoryEntry {
   afterStructure?: CanvasSnapshot
   beforeSelection?: Uint8Array | null
   afterSelection?: Uint8Array | null
+  beforeWorldSelection?: WorldSelectionMask | null
+  afterWorldSelection?: WorldSelectionMask | null
   beforePalette?: ProjectPalette
   afterPalette?: ProjectPalette
 }

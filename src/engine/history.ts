@@ -1,12 +1,23 @@
 import type {
   CanvasSnapshot,
+  CelBufferRuntime,
+  CelMap,
+  FrameMeta,
   HistoryEntry,
   LayerRuntime,
   PixelPatch,
   ProjectPalette,
   SerializedHistoryEntry,
+  TimelineSnapshot,
+  WorldSelectionMask,
 } from '../types'
 import { createPixelBuffer, normalizeLayerGeometry } from './pixelBuffer'
+import { projectFrameLayers, pruneUnreferencedCelBuffers } from './animation'
+import {
+  canvasMaskToWorldSelection,
+  cloneWorldSelectionMask,
+  projectWorldSelectionToCanvasMask,
+} from './selection'
 
 /**
  * Compute a compact sparse PixelPatch recording ONLY the pixels that changed between `beforeLayer` and `afterLayer`,
@@ -20,7 +31,8 @@ export function createLayerPixelPatch(
   afterLayer: Pick<
     LayerRuntime,
     'id' | 'offsetX' | 'offsetY' | 'dataWidth' | 'dataHeight' | 'data'
-  >
+  >,
+  celId?: string
 ): PixelPatch | null {
   const bOx = beforeLayer.offsetX ?? 0
   const bOy = beforeLayer.offsetY ?? 0
@@ -39,6 +51,7 @@ export function createLayerPixelPatch(
     if (!base) return null
     return {
       ...base,
+      ...(celId ? { celId } : {}),
       beforeGeometry: { offsetX: bOx, offsetY: bOy, dataWidth: bW, dataHeight: bH },
       afterGeometry: { offsetX: aOx, offsetY: aOy, dataWidth: aW, dataHeight: aH },
     }
@@ -76,6 +89,7 @@ export function createLayerPixelPatch(
 
   return {
     layerId: beforeLayer.id,
+    ...(celId ? { celId } : {}),
     indices: diff ? diff.indices : new Uint32Array(0),
     before: diff ? diff.before : new Uint8Array(0),
     after: diff ? diff.after : new Uint8Array(0),
@@ -167,13 +181,17 @@ export function applyPixelPatch(
 }
 
 /**
- * Apply a PixelPatch (with optional geometry transition) to a LayerRuntime.
+ * Apply a PixelPatch (with optional geometry transition) to a LayerRuntime or CelBufferRuntime-shaped object.
  */
-export function applyPatchToLayerRuntime(
-  layer: LayerRuntime,
-  patch: PixelPatch,
-  direction: 'undo' | 'redo'
-): LayerRuntime {
+export function applyPatchToGeometryBuffer<
+  T extends {
+    offsetX: number
+    offsetY: number
+    dataWidth: number
+    dataHeight: number
+    data: Uint8ClampedArray
+  },
+>(target: T, patch: PixelPatch, direction: 'undo' | 'redo'): T {
   const bGeo = patch.beforeGeometry
   const aGeo = patch.afterGeometry
 
@@ -186,8 +204,8 @@ export function applyPatchToLayerRuntime(
       bGeo.dataHeight === aGeo.dataHeight)
   ) {
     return {
-      ...layer,
-      data: applyPixelPatch(layer.data, patch, direction),
+      ...target,
+      data: applyPixelPatch(target.data, patch, direction),
     }
   }
 
@@ -202,15 +220,15 @@ export function applyPatchToLayerRuntime(
   const dstGeo = direction === 'undo' ? bGeo : aGeo
 
   const unionBuf = createPixelBuffer(uW, uH)
-  for (let ly = 0; ly < layer.dataHeight; ly++) {
-    const ny = (layer.offsetY ?? srcGeo.offsetY) + ly - uMinY
-    const nx = (layer.offsetX ?? srcGeo.offsetX) - uMinX
+  for (let ly = 0; ly < target.dataHeight; ly++) {
+    const ny = (target.offsetY ?? srcGeo.offsetY) + ly - uMinY
+    const nx = (target.offsetX ?? srcGeo.offsetX) - uMinX
     if (ny < 0 || ny >= uH) continue
-    const sOff = ly * layer.dataWidth * 4
+    const sOff = ly * target.dataWidth * 4
     const dOff = (ny * uW + nx) * 4
-    const copyLen = Math.min(layer.dataWidth, uW - nx) * 4
+    const copyLen = Math.min(target.dataWidth, uW - nx) * 4
     if (nx >= 0 && copyLen > 0) {
-      unionBuf.set(layer.data.subarray(sOff, sOff + copyLen), dOff)
+      unionBuf.set(target.data.subarray(sOff, sOff + copyLen), dOff)
     }
   }
 
@@ -226,7 +244,7 @@ export function applyPatchToLayerRuntime(
   }
 
   return {
-    ...layer,
+    ...target,
     offsetX: dstGeo.offsetX,
     offsetY: dstGeo.offsetY,
     dataWidth: dstGeo.dataWidth,
@@ -235,11 +253,102 @@ export function applyPatchToLayerRuntime(
   }
 }
 
+export function applyPatchToLayerRuntime(
+  layer: LayerRuntime,
+  patch: PixelPatch,
+  direction: 'undo' | 'redo'
+): LayerRuntime {
+  return applyPatchToGeometryBuffer(layer, patch, direction)
+}
+
+export function captureTimelineSnapshot(
+  frames: readonly FrameMeta[],
+  cels: CelMap,
+  activeFrameId: string,
+  celBuffers: Readonly<Record<string, CelBufferRuntime>>
+): TimelineSnapshot {
+  return {
+    frames: frames.map((f) => ({ ...f })),
+    cels: Object.fromEntries(
+      Object.entries(cels).map(([k, v]) => [k, v.kind === 'cel' ? { ...v } : { kind: 'empty' }])
+    ),
+    activeFrameId,
+    celBuffers: Object.values(celBuffers).map((cb) => ({
+      id: cb.id,
+      offsetX: cb.offsetX,
+      offsetY: cb.offsetY,
+      dataWidth: cb.dataWidth,
+      dataHeight: cb.dataHeight,
+      data: new Uint8Array(cb.data),
+    })),
+  }
+}
+
+export function restoreTimelineSnapshot(
+  snap: TimelineSnapshot,
+  canvasWidth: number,
+  canvasHeight: number
+): {
+  frames: FrameMeta[]
+  cels: CelMap
+  activeFrameId: string
+  celBuffers: Record<string, CelBufferRuntime>
+} {
+  const celBuffers: Record<string, CelBufferRuntime> = {}
+  for (const cb of snap.celBuffers) {
+    const raw = new Uint8ClampedArray(cb.data)
+    const geo = normalizeLayerGeometry(
+      {
+        offsetX: cb.offsetX,
+        offsetY: cb.offsetY,
+        dataWidth: cb.dataWidth,
+        dataHeight: cb.dataHeight,
+        data: raw,
+      },
+      canvasWidth,
+      canvasHeight
+    )
+    const expectedLen = geo.dataWidth * geo.dataHeight * 4
+    let data: Uint8ClampedArray
+    if (raw.byteLength === expectedLen) {
+      data = raw
+    } else {
+      data = createPixelBuffer(geo.dataWidth, geo.dataHeight)
+      data.set(raw.subarray(0, Math.min(raw.length, expectedLen)))
+    }
+    celBuffers[cb.id] = {
+      id: cb.id,
+      offsetX: geo.offsetX,
+      offsetY: geo.offsetY,
+      dataWidth: geo.dataWidth,
+      dataHeight: geo.dataHeight,
+      data,
+    }
+  }
+  return {
+    frames: snap.frames.map((f) => ({ ...f })),
+    cels: Object.fromEntries(
+      Object.entries(snap.cels).map(([k, v]) => [
+        k,
+        v.kind === 'cel' ? { ...v } : { kind: 'empty' },
+      ])
+    ),
+    activeFrameId: snap.activeFrameId,
+    celBuffers,
+  }
+}
+
 export function captureCanvasSnapshot(
   width: number,
   height: number,
   layers: readonly LayerRuntime[],
-  activeLayerId: string
+  activeLayerId: string,
+  timeline?: {
+    frames: readonly FrameMeta[]
+    cels: CelMap
+    activeFrameId: string
+    celBuffers: Readonly<Record<string, CelBufferRuntime>>
+  }
 ): CanvasSnapshot {
   return {
     width,
@@ -250,6 +359,7 @@ export function captureCanvasSnapshot(
         id: l.id,
         name: l.name,
         visible: l.visible,
+        locked: Boolean(l.locked),
         opacity: l.opacity,
         blendMode: l.blendMode,
         clipping: l.clipping,
@@ -260,6 +370,14 @@ export function captureCanvasSnapshot(
       },
       data: new Uint8Array(l.data),
     })),
+    timeline: timeline
+      ? captureTimelineSnapshot(
+          timeline.frames,
+          timeline.cels,
+          timeline.activeFrameId,
+          timeline.celBuffers
+        )
+      : undefined,
   }
 }
 
@@ -268,30 +386,67 @@ export function restoreCanvasSnapshot(snapshot: CanvasSnapshot): {
   height: number
   layers: LayerRuntime[]
   activeLayerId: string
+  timeline?: {
+    frames: FrameMeta[]
+    cels: CelMap
+    activeFrameId: string
+    celBuffers: Record<string, CelBufferRuntime>
+  }
 } {
+  const restoredTimeline = snapshot.timeline
+    ? restoreTimelineSnapshot(snapshot.timeline, snapshot.width, snapshot.height)
+    : undefined
+
+  const baseLayers: LayerRuntime[] = snapshot.layers.map((item) => {
+    const data = new Uint8ClampedArray(item.data)
+    const geo = normalizeLayerGeometry(
+      {
+        offsetX: item.meta.offsetX,
+        offsetY: item.meta.offsetY,
+        dataWidth: item.meta.dataWidth,
+        dataHeight: item.meta.dataHeight,
+        data,
+      },
+      snapshot.width,
+      snapshot.height
+    )
+    return {
+      ...item.meta,
+      locked: Boolean(item.meta.locked),
+      ...geo,
+      data,
+    }
+  })
+
+  const projectedLayers = restoredTimeline
+    ? projectFrameLayers(
+        baseLayers.map((l) => ({
+          id: l.id,
+          name: l.name,
+          visible: l.visible,
+          locked: Boolean(l.locked),
+          opacity: l.opacity,
+          blendMode: l.blendMode,
+          clipping: l.clipping,
+          offsetX: l.offsetX,
+          offsetY: l.offsetY,
+          dataWidth: l.dataWidth,
+          dataHeight: l.dataHeight,
+        })),
+        restoredTimeline.cels,
+        restoredTimeline.celBuffers,
+        restoredTimeline.activeFrameId,
+        snapshot.width,
+        snapshot.height
+      )
+    : baseLayers
+
   return {
     width: snapshot.width,
     height: snapshot.height,
     activeLayerId: snapshot.activeLayerId,
-    layers: snapshot.layers.map((item) => {
-      const data = new Uint8ClampedArray(item.data)
-      const geo = normalizeLayerGeometry(
-        {
-          offsetX: item.meta.offsetX,
-          offsetY: item.meta.offsetY,
-          dataWidth: item.meta.dataWidth,
-          dataHeight: item.meta.dataHeight,
-          data,
-        },
-        snapshot.width,
-        snapshot.height
-      )
-      return {
-        ...item.meta,
-        ...geo,
-        data,
-      }
-    }),
+    layers: projectedLayers,
+    timeline: restoredTimeline,
   }
 }
 
@@ -301,7 +456,12 @@ export interface EditorRuntimeStateForHistory {
   layers: LayerRuntime[]
   activeLayerId: string
   selectionMask: Uint8Array | null
+  worldSelection?: WorldSelectionMask | null
   palette: ProjectPalette
+  frames?: FrameMeta[]
+  cels?: CelMap
+  celBuffers?: Record<string, CelBufferRuntime>
+  activeFrameId?: string
 }
 
 export function applyHistoryEntry(
@@ -314,7 +474,12 @@ export function applyHistoryEntry(
   let nextHeight = state.height
   let nextActiveLayerId = state.activeLayerId
   let nextSelection = state.selectionMask
+  let nextWorldSelection = state.worldSelection
   let nextPalette = state.palette
+  let nextFrames = state.frames
+  let nextCels = state.cels
+  let nextCelBuffers = state.celBuffers
+  let nextActiveFrameId = state.activeFrameId
 
   if (entry.kind === 'structure') {
     const snap = direction === 'undo' ? entry.beforeStructure : entry.afterStructure
@@ -324,31 +489,127 @@ export function applyHistoryEntry(
       nextHeight = restored.height
       nextLayers = restored.layers
       nextActiveLayerId = restored.activeLayerId
+      if (restored.timeline) {
+        nextFrames = restored.timeline.frames
+        nextCels = restored.timeline.cels
+        nextCelBuffers = restored.timeline.celBuffers
+        nextActiveFrameId = restored.timeline.activeFrameId
+      }
     }
-  } else if (entry.kind === 'layer-offset' && (entry.layerOffsetChanges || entry.layerOffsetChange)) {
+  } else if (
+    entry.kind === 'layer-offset' &&
+    (entry.layerOffsetChanges || entry.layerOffsetChange)
+  ) {
     const changes =
       entry.layerOffsetChanges ??
       (entry.layerOffsetChange ? [entry.layerOffsetChange] : [])
-    const map = new Map(changes.map((c) => [c.layerId, c]))
-    nextLayers = state.layers.map((layer) => {
-      const ch = map.get(layer.id)
-      if (!ch) return layer
-      const targetOx = direction === 'undo' ? ch.beforeOffsetX : ch.afterOffsetX
-      const targetOy = direction === 'undo' ? ch.beforeOffsetY : ch.afterOffsetY
-      return { ...layer, offsetX: targetOx, offsetY: targetOy }
-    })
-  } else if (entry.kind === 'pixel-diff' && entry.pixelPatches) {
-    nextLayers = state.layers.map((layer) => {
-      const matchingPatches = entry.pixelPatches!.filter((p) => p.layerId === layer.id)
-      if (matchingPatches.length === 0) return layer
-      let updatedLayer = layer
-      const ordered =
-        direction === 'undo' ? [...matchingPatches].reverse() : matchingPatches
-      for (const patch of ordered) {
-        updatedLayer = applyPatchToLayerRuntime(updatedLayer, patch, direction)
+    const mapByLayer = new Map(changes.map((c) => [c.layerId, c]))
+
+    if (nextCelBuffers && nextCels) {
+      const updatedBuffers = { ...nextCelBuffers }
+      for (const ch of changes) {
+        if (ch.celId && updatedBuffers[ch.celId]) {
+          const targetOx = direction === 'undo' ? ch.beforeOffsetX : ch.afterOffsetX
+          const targetOy = direction === 'undo' ? ch.beforeOffsetY : ch.afterOffsetY
+          updatedBuffers[ch.celId] = {
+            ...updatedBuffers[ch.celId]!,
+            offsetX: targetOx,
+            offsetY: targetOy,
+          }
+        }
       }
-      return updatedLayer
-    })
+      nextCelBuffers = updatedBuffers
+      if (entry.frameId && nextFrames?.some((f) => f.id === entry.frameId)) {
+        nextActiveFrameId = entry.frameId
+      }
+      if (nextActiveFrameId) {
+        nextLayers = projectFrameLayers(
+          state.layers,
+          nextCels,
+          nextCelBuffers,
+          nextActiveFrameId,
+          nextWidth,
+          nextHeight
+        )
+      }
+    } else {
+      nextLayers = state.layers.map((layer) => {
+        const ch = mapByLayer.get(layer.id)
+        if (!ch) return layer
+        const targetOx = direction === 'undo' ? ch.beforeOffsetX : ch.afterOffsetX
+        const targetOy = direction === 'undo' ? ch.beforeOffsetY : ch.afterOffsetY
+        return { ...layer, offsetX: targetOx, offsetY: targetOy }
+      })
+    }
+  } else if (entry.kind === 'pixel-diff' && entry.pixelPatches) {
+    const hasCelMode = Boolean(
+      nextCelBuffers && nextCels && entry.pixelPatches.some((p) => Boolean(p.celId))
+    )
+
+    if (hasCelMode && nextCelBuffers && nextCels) {
+      let updatedCels: CelMap = { ...nextCels }
+      let updatedBuffers: Record<string, CelBufferRuntime> = { ...nextCelBuffers }
+
+      if (entry.celAllocation && direction === 'redo') {
+        const { cellKey, allocatedCelId } = entry.celAllocation
+        updatedCels[cellKey] = { kind: 'cel', celId: allocatedCelId }
+        if (!updatedBuffers[allocatedCelId]) {
+          updatedBuffers[allocatedCelId] = {
+            id: allocatedCelId,
+            offsetX: 0,
+            offsetY: 0,
+            dataWidth: nextWidth,
+            dataHeight: nextHeight,
+            data: createPixelBuffer(nextWidth, nextHeight),
+          }
+        }
+      }
+
+      const ordered =
+        direction === 'undo' ? [...entry.pixelPatches].reverse() : entry.pixelPatches
+      for (const patch of ordered) {
+        if (patch.celId && updatedBuffers[patch.celId]) {
+          updatedBuffers[patch.celId] = applyPatchToGeometryBuffer(
+            updatedBuffers[patch.celId]!,
+            patch,
+            direction
+          )
+        }
+      }
+
+      if (entry.celAllocation && direction === 'undo') {
+        updatedCels[entry.celAllocation.cellKey] = { kind: 'empty' }
+        updatedBuffers = pruneUnreferencedCelBuffers(updatedCels, updatedBuffers)
+      }
+
+      nextCels = updatedCels
+      nextCelBuffers = updatedBuffers
+      if (entry.frameId && nextFrames?.some((f) => f.id === entry.frameId)) {
+        nextActiveFrameId = entry.frameId
+      }
+      if (nextActiveFrameId) {
+        nextLayers = projectFrameLayers(
+          state.layers,
+          nextCels,
+          nextCelBuffers,
+          nextActiveFrameId,
+          nextWidth,
+          nextHeight
+        )
+      }
+    } else {
+      nextLayers = state.layers.map((layer) => {
+        const matchingPatches = entry.pixelPatches!.filter((p) => p.layerId === layer.id)
+        if (matchingPatches.length === 0) return layer
+        let updatedLayer = layer
+        const ordered =
+          direction === 'undo' ? [...matchingPatches].reverse() : matchingPatches
+        for (const patch of ordered) {
+          updatedLayer = applyPatchToLayerRuntime(updatedLayer, patch, direction)
+        }
+        return updatedLayer
+      })
+    }
   } else if (entry.kind === 'palette') {
     const pal = direction === 'undo' ? entry.beforePalette : entry.afterPalette
     if (pal) {
@@ -359,9 +620,29 @@ export function applyHistoryEntry(
     }
   }
 
-  if (entry.beforeSelection !== undefined || entry.afterSelection !== undefined) {
+  if (
+    entry.beforeWorldSelection !== undefined ||
+    entry.afterWorldSelection !== undefined
+  ) {
+    const ws =
+      direction === 'undo' ? entry.beforeWorldSelection : entry.afterWorldSelection
+    nextWorldSelection = cloneWorldSelectionMask(ws)
+    nextSelection = projectWorldSelectionToCanvasMask(
+      nextWorldSelection,
+      nextWidth,
+      nextHeight
+    )
+  } else if (
+    entry.beforeSelection !== undefined ||
+    entry.afterSelection !== undefined
+  ) {
     const sel = direction === 'undo' ? entry.beforeSelection : entry.afterSelection
     nextSelection = sel ? new Uint8Array(sel) : null
+    nextWorldSelection = canvasMaskToWorldSelection(
+      nextSelection,
+      nextWidth,
+      nextHeight
+    )
   }
 
   return {
@@ -370,19 +651,26 @@ export function applyHistoryEntry(
     layers: nextLayers,
     activeLayerId: nextActiveLayerId,
     selectionMask: nextSelection,
+    ...(nextWorldSelection !== undefined
+      ? { worldSelection: nextWorldSelection }
+      : {}),
     palette: nextPalette,
+    ...(nextFrames !== undefined ? { frames: nextFrames } : {}),
+    ...(nextCels !== undefined ? { cels: nextCels } : {}),
+    ...(nextCelBuffers !== undefined ? { celBuffers: nextCelBuffers } : {}),
+    ...(nextActiveFrameId !== undefined ? { activeFrameId: nextActiveFrameId } : {}),
   }
 }
 
 /**
- * Stateful HistoryManager per project with configurable historyLimit ('unlimited' or integer >= 1).
+ * Stateful HistoryManager per project with configurable historyLimit ('unlimited' default or integer >= 1).
  */
 export class HistoryManager {
   private undoStack: HistoryEntry[] = []
   private redoStack: HistoryEntry[] = []
   private limit: number | 'unlimited'
 
-  constructor(limit: number | 'unlimited' = 100) {
+  constructor(limit: number | 'unlimited' = 'unlimited') {
     this.limit = limit
   }
 
@@ -446,13 +734,45 @@ export class HistoryManager {
   }
 
   serialize(): { undoStack: SerializedHistoryEntry[]; redoStack: SerializedHistoryEntry[] } {
+    const cloneSnapshot = (s?: CanvasSnapshot): CanvasSnapshot | undefined => {
+      if (!s) return undefined
+      return {
+        width: s.width,
+        height: s.height,
+        activeLayerId: s.activeLayerId,
+        layers: s.layers.map((l) => ({
+          meta: { ...l.meta },
+          data: new Uint8Array(l.data),
+        })),
+        timeline: s.timeline
+          ? {
+              frames: s.timeline.frames.map((f) => ({ ...f })),
+              cels: Object.fromEntries(
+                Object.entries(s.timeline.cels).map(([k, v]) => [
+                  k,
+                  v.kind === 'cel' ? { ...v } : { kind: 'empty' },
+                ])
+              ),
+              activeFrameId: s.timeline.activeFrameId,
+              celBuffers: s.timeline.celBuffers.map((cb) => ({
+                ...cb,
+                data: new Uint8Array(cb.data),
+              })),
+            }
+          : undefined,
+      }
+    }
+
     const cloneEntry = (e: HistoryEntry): SerializedHistoryEntry => ({
       id: e.id,
       label: e.label,
       timestamp: e.timestamp,
       kind: e.kind,
+      frameId: e.frameId,
+      celAllocation: e.celAllocation ? { ...e.celAllocation } : undefined,
       pixelPatches: e.pixelPatches?.map((p) => ({
         layerId: p.layerId,
+        celId: p.celId,
         indices: new Uint32Array(p.indices),
         before: new Uint8Array(p.before),
         after: new Uint8Array(p.after),
@@ -463,10 +783,18 @@ export class HistoryManager {
       layerOffsetChanges: e.layerOffsetChanges
         ? e.layerOffsetChanges.map((c) => ({ ...c }))
         : undefined,
-      beforeStructure: e.beforeStructure,
-      afterStructure: e.afterStructure,
+      beforeStructure: cloneSnapshot(e.beforeStructure),
+      afterStructure: cloneSnapshot(e.afterStructure),
       beforeSelection: e.beforeSelection ? new Uint8Array(e.beforeSelection) : e.beforeSelection,
       afterSelection: e.afterSelection ? new Uint8Array(e.afterSelection) : e.afterSelection,
+      beforeWorldSelection:
+        e.beforeWorldSelection === undefined
+          ? undefined
+          : cloneWorldSelectionMask(e.beforeWorldSelection),
+      afterWorldSelection:
+        e.afterWorldSelection === undefined
+          ? undefined
+          : cloneWorldSelectionMask(e.afterWorldSelection),
       beforePalette: e.beforePalette
         ? { ...e.beforePalette, colors: [...e.beforePalette.colors] }
         : undefined,
@@ -490,8 +818,11 @@ export class HistoryManager {
       label: e.label,
       timestamp: e.timestamp,
       kind: e.kind,
+      frameId: e.frameId,
+      celAllocation: e.celAllocation ? { ...e.celAllocation } : undefined,
       pixelPatches: e.pixelPatches?.map((p) => ({
         layerId: p.layerId,
+        celId: p.celId,
         indices: new Uint32Array(p.indices),
         before: new Uint8Array(p.before),
         after: new Uint8Array(p.after),
@@ -516,6 +847,14 @@ export class HistoryManager {
           : e.afterSelection
             ? new Uint8Array(e.afterSelection)
             : null,
+      beforeWorldSelection:
+        e.beforeWorldSelection === undefined
+          ? undefined
+          : cloneWorldSelectionMask(e.beforeWorldSelection),
+      afterWorldSelection:
+        e.afterWorldSelection === undefined
+          ? undefined
+          : cloneWorldSelectionMask(e.afterWorldSelection),
       beforePalette: e.beforePalette
         ? { ...e.beforePalette, colors: [...e.beforePalette.colors] }
         : undefined,

@@ -75,6 +75,20 @@ interface EncodedHistoryEntryJson {
   afterStructure?: EncodedSnapshotJson
   beforeSelectionB64?: string | null
   afterSelectionB64?: string | null
+  beforeWorldSelection?: {
+    originX: number
+    originY: number
+    width: number
+    height: number
+    maskB64: string
+  } | null
+  afterWorldSelection?: {
+    originX: number
+    originY: number
+    width: number
+    height: number
+    maskB64: string
+  } | null
   beforePalette?: ProjectRecord['palette']
   afterPalette?: ProjectRecord['palette']
 }
@@ -190,6 +204,30 @@ function encodeHistoryStack(stack: SerializedHistoryEntry[]): Uint8Array {
         : e.afterSelection === null
           ? null
           : bytesToBase64(e.afterSelection),
+    beforeWorldSelection:
+      e.beforeWorldSelection === undefined
+        ? undefined
+        : e.beforeWorldSelection === null
+          ? null
+          : {
+              originX: e.beforeWorldSelection.originX,
+              originY: e.beforeWorldSelection.originY,
+              width: e.beforeWorldSelection.width,
+              height: e.beforeWorldSelection.height,
+              maskB64: bytesToBase64(e.beforeWorldSelection.mask),
+            },
+    afterWorldSelection:
+      e.afterWorldSelection === undefined
+        ? undefined
+        : e.afterWorldSelection === null
+          ? null
+          : {
+              originX: e.afterWorldSelection.originX,
+              originY: e.afterWorldSelection.originY,
+              width: e.afterWorldSelection.width,
+              height: e.afterWorldSelection.height,
+              maskB64: bytesToBase64(e.afterWorldSelection.mask),
+            },
     beforePalette: e.beforePalette,
     afterPalette: e.afterPalette,
   }))
@@ -242,6 +280,30 @@ function decodeHistoryStack(raw: Uint8Array): SerializedHistoryEntry[] {
           : e.afterSelectionB64 === null
             ? null
             : base64ToBytes(e.afterSelectionB64),
+      beforeWorldSelection:
+        e.beforeWorldSelection === undefined
+          ? undefined
+          : e.beforeWorldSelection === null
+            ? null
+            : {
+                originX: e.beforeWorldSelection.originX,
+                originY: e.beforeWorldSelection.originY,
+                width: e.beforeWorldSelection.width,
+                height: e.beforeWorldSelection.height,
+                mask: base64ToBytes(e.beforeWorldSelection.maskB64),
+              },
+      afterWorldSelection:
+        e.afterWorldSelection === undefined
+          ? undefined
+          : e.afterWorldSelection === null
+            ? null
+            : {
+                originX: e.afterWorldSelection.originX,
+                originY: e.afterWorldSelection.originY,
+                width: e.afterWorldSelection.width,
+                height: e.afterWorldSelection.height,
+                mask: base64ToBytes(e.afterWorldSelection.maskB64),
+              },
       beforePalette: e.beforePalette,
       afterPalette: e.afterPalette,
     }

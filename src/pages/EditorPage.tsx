@@ -359,6 +359,7 @@ export function EditorPage() {
             moveSession={editor.moveSession}
             hasSelection={editor.hasSelection}
             selectionMask={editor.selectionMask}
+            worldSelection={editor.worldSelection}
             showGrid={settings.showGrid}
             checkerboardDark={settings.checkerboardDark}
             activeHexColor={editor.activeHexColor}

@@ -1,7 +1,388 @@
-import type { ClipboardBuffer, Connectivity, OutlineMode, Point, RGBA } from '../types'
+import type {
+  ClipboardBuffer,
+  Connectivity,
+  LayerRuntime,
+  OutlineMode,
+  Point,
+  RGBA,
+  WorldSelectionMask,
+} from '../types'
 import { computeConnectedRegion } from './floodFill'
-import { createPixelBuffer, isInBounds } from './pixelBuffer'
+import {
+  createPixelBuffer,
+  isInBounds,
+  stampBufferIntoLayerWorld,
+} from './pixelBuffer'
 import { buildFilledEllipseMask, computeShapeBounds } from './rasterize'
+
+export function cloneWorldSelectionMask(
+  ws: WorldSelectionMask | null | undefined
+): WorldSelectionMask | null {
+  if (!ws) return null
+  return {
+    originX: ws.originX,
+    originY: ws.originY,
+    width: ws.width,
+    height: ws.height,
+    mask: new Uint8Array(ws.mask),
+  }
+}
+
+export function hasAnySelectedWorldPixel(
+  ws: WorldSelectionMask | null | undefined
+): boolean {
+  if (!ws || ws.width <= 0 || ws.height <= 0) return false
+  for (let i = 0; i < ws.mask.length; i++) {
+    if (ws.mask[i] !== 0) return true
+  }
+  return false
+}
+
+/**
+ * Convert a canvas-space `Uint8Array(canvasW * canvasH)` mask into a trimmed `WorldSelectionMask`.
+ */
+export function canvasMaskToWorldSelection(
+  mask: Uint8Array | null,
+  canvasWidth: number,
+  canvasHeight: number
+): WorldSelectionMask | null {
+  if (!mask || mask.length !== canvasWidth * canvasHeight) return null
+  const bounds = getSelectionBounds(mask, canvasWidth, canvasHeight)
+  if (!bounds) return null
+
+  const trimmed = new Uint8Array(bounds.width * bounds.height)
+  for (let y = bounds.minY; y <= bounds.maxY; y++) {
+    for (let x = bounds.minX; x <= bounds.maxX; x++) {
+      if (mask[y * canvasWidth + x] !== 0) {
+        trimmed[(y - bounds.minY) * bounds.width + (x - bounds.minX)] = 1
+      }
+    }
+  }
+  return {
+    originX: bounds.minX,
+    originY: bounds.minY,
+    width: bounds.width,
+    height: bounds.height,
+    mask: trimmed,
+  }
+}
+
+/**
+ * Project a `WorldSelectionMask` onto the visible `[0..canvasW-1, 0..canvasH-1]` canvas mask.
+ * Returns `null` if zero selected pixels currently overlap the canvas (note: `hasSelection` remains true via `WorldSelectionMask`!).
+ */
+export function projectWorldSelectionToCanvasMask(
+  ws: WorldSelectionMask | null | undefined,
+  canvasWidth: number,
+  canvasHeight: number
+): Uint8Array | null {
+  if (!ws || !hasAnySelectedWorldPixel(ws)) return null
+  const out = createSelectionMask(canvasWidth, canvasHeight)
+  const startLx = Math.max(0, -ws.originX)
+  const endLx = Math.min(ws.width, canvasWidth - ws.originX)
+  const startLy = Math.max(0, -ws.originY)
+  const endLy = Math.min(ws.height, canvasHeight - ws.originY)
+  if (startLx >= endLx || startLy >= endLy) return null
+
+  let anyVisible = false
+  for (let ly = startLy; ly < endLy; ly++) {
+    const cy = ws.originY + ly
+    for (let lx = startLx; lx < endLx; lx++) {
+      if (ws.mask[ly * ws.width + lx] !== 0) {
+        out[cy * canvasWidth + (ws.originX + lx)] = 1
+        anyVisible = true
+      }
+    }
+  }
+  return anyVisible ? out : null
+}
+
+/**
+ * Shift a `WorldSelectionMask` by `(dx, dy)` in world coordinates WITHOUT clipping or losing off-canvas cells!
+ */
+export function shiftWorldSelectionMask(
+  ws: WorldSelectionMask,
+  dx: number,
+  dy: number
+): WorldSelectionMask {
+  return {
+    originX: ws.originX + Math.trunc(dx),
+    originY: ws.originY + Math.trunc(dy),
+    width: ws.width,
+    height: ws.height,
+    mask: new Uint8Array(ws.mask),
+  }
+}
+
+/**
+ * Union two `WorldSelectionMask`s in world space without clipping to canvas bounds!
+ */
+export function mergeWorldSelectionMasks(
+  existing: WorldSelectionMask | null | undefined,
+  addition: WorldSelectionMask | null | undefined
+): WorldSelectionMask | null {
+  const hasA = hasAnySelectedWorldPixel(existing)
+  const hasB = hasAnySelectedWorldPixel(addition)
+  if (!hasA && !hasB) return null
+  if (!hasA) return cloneWorldSelectionMask(addition)
+  if (!hasB) return cloneWorldSelectionMask(existing)
+
+  const a = existing!
+  const b = addition!
+  const minX = Math.min(a.originX, b.originX)
+  const minY = Math.min(a.originY, b.originY)
+  const maxX = Math.max(a.originX + a.width, b.originX + b.width)
+  const maxY = Math.max(a.originY + a.height, b.originY + b.height)
+  const uW = Math.max(1, maxX - minX)
+  const uH = Math.max(1, maxY - minY)
+  const unionMask = new Uint8Array(uW * uH)
+
+  for (let ly = 0; ly < a.height; ly++) {
+    const uy = a.originY + ly - minY
+    for (let lx = 0; lx < a.width; lx++) {
+      if (a.mask[ly * a.width + lx] !== 0) {
+        unionMask[uy * uW + (a.originX + lx - minX)] = 1
+      }
+    }
+  }
+  for (let ly = 0; ly < b.height; ly++) {
+    const uy = b.originY + ly - minY
+    for (let lx = 0; lx < b.width; lx++) {
+      if (b.mask[ly * b.width + lx] !== 0) {
+        unionMask[uy * uW + (b.originX + lx - minX)] = 1
+      }
+    }
+  }
+
+  return {
+    originX: minX,
+    originY: minY,
+    width: uW,
+    height: uH,
+    mask: unionMask,
+  }
+}
+
+/**
+ * Create a rectangular `WorldSelectionMask` from arbitrary world points `start` & `end` (even outside canvas!).
+ */
+export function selectWorldRectangleMask(
+  start: Point,
+  end: Point
+): WorldSelectionMask {
+  const bounds = computeShapeBounds(start, end, false)
+  const w = Math.max(1, Math.min(2048, bounds.width))
+  const h = Math.max(1, Math.min(2048, bounds.height))
+  const mask = new Uint8Array(w * h)
+  mask.fill(1)
+  return {
+    originX: bounds.minX,
+    originY: bounds.minY,
+    width: w,
+    height: h,
+    mask,
+  }
+}
+
+/**
+ * Create an elliptical `WorldSelectionMask` from arbitrary world points `start` & `end` (even outside canvas!).
+ */
+export function selectWorldEllipseMask(
+  start: Point,
+  end: Point
+): WorldSelectionMask {
+  const bounds = computeShapeBounds(start, end, false)
+  const w = Math.max(1, Math.min(2048, bounds.width))
+  const h = Math.max(1, Math.min(2048, bounds.height))
+  const localEllipse = buildFilledEllipseMask(w, h)
+  return {
+    originX: bounds.minX,
+    originY: bounds.minY,
+    width: w,
+    height: h,
+    mask: localEllipse,
+  }
+}
+
+/**
+ * Read a pixel from `layer` at arbitrary world coordinate `(wx, wy)` (including off-canvas backing pixels!).
+ */
+function getLayerWorldPixel(layer: LayerRuntime, wx: number, wy: number): RGBA {
+  const lx = wx - layer.offsetX
+  const ly = wy - layer.offsetY
+  if (lx < 0 || ly < 0 || lx >= layer.dataWidth || ly >= layer.dataHeight) {
+    return { r: 0, g: 0, b: 0, a: 0 }
+  }
+  const idx = (ly * layer.dataWidth + lx) * 4
+  return {
+    r: layer.data[idx]!,
+    g: layer.data[idx + 1]!,
+    b: layer.data[idx + 2]!,
+    a: layer.data[idx + 3]!,
+  }
+}
+
+/**
+ * Extract selected pixels from `layer` in world space (`ws`) and return:
+ * - `extractedBuffer`: `RGBA` buffer of size `ws.width * ws.height`
+ * - `clearedLayer`: `LayerRuntime` with those selected pixels cleared to `RGBA(0,0,0,0)` (preserving all other off-canvas pixels!)
+ */
+export function extractWorldSelectionFromLayer(
+  layer: LayerRuntime,
+  ws: WorldSelectionMask
+): {
+  extractedBuffer: Uint8ClampedArray
+  clearedLayer: LayerRuntime
+} {
+  const extractedBuffer = createPixelBuffer(ws.width, ws.height)
+  const clearedData = new Uint8ClampedArray(layer.data)
+
+  for (let sy = 0; sy < ws.height; sy++) {
+    const wy = ws.originY + sy
+    const ly = wy - layer.offsetY
+    for (let sx = 0; sx < ws.width; sx++) {
+      if (ws.mask[sy * ws.width + sx] === 0) continue
+      const wx = ws.originX + sx
+      const lx = wx - layer.offsetX
+      if (lx >= 0 && ly >= 0 && lx < layer.dataWidth && ly < layer.dataHeight) {
+        const sOff = (ly * layer.dataWidth + lx) * 4
+        const dOff = (sy * ws.width + sx) * 4
+        extractedBuffer[dOff] = layer.data[sOff]!
+        extractedBuffer[dOff + 1] = layer.data[sOff + 1]!
+        extractedBuffer[dOff + 2] = layer.data[sOff + 2]!
+        extractedBuffer[dOff + 3] = layer.data[sOff + 3]!
+
+        clearedData[sOff] = 0
+        clearedData[sOff + 1] = 0
+        clearedData[sOff + 2] = 0
+        clearedData[sOff + 3] = 0
+      }
+    }
+  }
+
+  return {
+    extractedBuffer,
+    clearedLayer: {
+      ...layer,
+      data: clearedData,
+    },
+  }
+}
+
+/**
+ * Non-destructively move selected world pixels & world selection mask by `(dx, dy)` in world space!
+ * Off-canvas pixels are preserved inside `nextLayer.data` with expanded geometry, and `nextWorldSelection` retains exact world coordinates.
+ */
+export function moveWorldSelectionOnLayer(
+  layer: LayerRuntime,
+  ws: WorldSelectionMask,
+  dx: number,
+  dy: number
+): {
+  nextLayer: LayerRuntime
+  nextWorldSelection: WorldSelectionMask
+} {
+  const shiftX = Math.trunc(dx)
+  const shiftY = Math.trunc(dy)
+  const { extractedBuffer, clearedLayer } = extractWorldSelectionFromLayer(layer, ws)
+  const nextWorldSelection = shiftWorldSelectionMask(ws, shiftX, shiftY)
+  const nextLayer = stampBufferIntoLayerWorld(
+    clearedLayer,
+    extractedBuffer,
+    ws.width,
+    ws.height,
+    nextWorldSelection.originX,
+    nextWorldSelection.originY
+  )
+  return { nextLayer, nextWorldSelection }
+}
+
+/**
+ * Copy world-selected pixels from `layer` into a `ClipboardBuffer` (including pixels currently outside canvas!).
+ */
+export function copyWorldSelectionFromLayer(
+  layer: LayerRuntime,
+  ws: WorldSelectionMask
+): ClipboardBuffer | null {
+  if (!hasAnySelectedWorldPixel(ws)) return null
+  const data = createPixelBuffer(ws.width, ws.height)
+  for (let sy = 0; sy < ws.height; sy++) {
+    const wy = ws.originY + sy
+    for (let sx = 0; sx < ws.width; sx++) {
+      if (ws.mask[sy * ws.width + sx] === 0) continue
+      const px = getLayerWorldPixel(layer, ws.originX + sx, wy)
+      const dOff = (sy * ws.width + sx) * 4
+      data[dOff] = px.r
+      data[dOff + 1] = px.g
+      data[dOff + 2] = px.b
+      data[dOff + 3] = px.a
+    }
+  }
+  return {
+    width: ws.width,
+    height: ws.height,
+    offsetX: ws.originX,
+    offsetY: ws.originY,
+    data,
+  }
+}
+
+/**
+ * Cut world-selected pixels from `layer` (works seamlessly even if partially or completely off-canvas).
+ */
+export function cutWorldSelectionFromLayer(
+  layer: LayerRuntime,
+  ws: WorldSelectionMask
+): { clipboard: ClipboardBuffer | null; nextLayer: LayerRuntime } {
+  const clipboard = copyWorldSelectionFromLayer(layer, ws)
+  const { clearedLayer } = extractWorldSelectionFromLayer(layer, ws)
+  return { clipboard, nextLayer: clearedLayer }
+}
+
+/**
+ * Flip world-selected pixels horizontally or vertically within `ws` bounds in world space!
+ */
+export function flipWorldSelectionOnLayer(
+  layer: LayerRuntime,
+  ws: WorldSelectionMask,
+  direction: 'horizontal' | 'vertical'
+): { nextLayer: LayerRuntime; nextWorldSelection: WorldSelectionMask } {
+  const { extractedBuffer, clearedLayer } = extractWorldSelectionFromLayer(layer, ws)
+  const flippedBuf = createPixelBuffer(ws.width, ws.height)
+  const flippedMask = new Uint8Array(ws.width * ws.height)
+
+  for (let sy = 0; sy < ws.height; sy++) {
+    for (let sx = 0; sx < ws.width; sx++) {
+      const sIdx = sy * ws.width + sx
+      if (ws.mask[sIdx] === 0) continue
+      const dx = direction === 'horizontal' ? ws.width - 1 - sx : sx
+      const dy = direction === 'vertical' ? ws.height - 1 - sy : sy
+      const dIdx = dy * ws.width + dx
+      flippedMask[dIdx] = 1
+      flippedBuf[dIdx * 4] = extractedBuffer[sIdx * 4]!
+      flippedBuf[dIdx * 4 + 1] = extractedBuffer[sIdx * 4 + 1]!
+      flippedBuf[dIdx * 4 + 2] = extractedBuffer[sIdx * 4 + 2]!
+      flippedBuf[dIdx * 4 + 3] = extractedBuffer[sIdx * 4 + 3]!
+    }
+  }
+
+  const nextWorldSelection: WorldSelectionMask = {
+    originX: ws.originX,
+    originY: ws.originY,
+    width: ws.width,
+    height: ws.height,
+    mask: flippedMask,
+  }
+  const nextLayer = stampBufferIntoLayerWorld(
+    clearedLayer,
+    flippedBuf,
+    ws.width,
+    ws.height,
+    ws.originX,
+    ws.originY
+  )
+  return { nextLayer, nextWorldSelection }
+}
 
 export function createSelectionMask(width: number, height: number): Uint8Array {
   return new Uint8Array(width * height)

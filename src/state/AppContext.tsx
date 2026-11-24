@@ -4,6 +4,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import type {
@@ -83,6 +84,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [projects, setProjects] = useState<ProjectRecord[]>([])
   const [toasts, setToasts] = useState<ToastMessage[]>([])
   const [backupCheckTick, setBackupCheckTick] = useState<number>(() => Date.now())
+  const mountedRef = useRef<boolean>(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   const [systemDark, setSystemDark] = useState<boolean>(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true
@@ -154,14 +162,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const refreshPalettes = useCallback(async () => {
     const list = await db.palettes.orderBy('order').toArray()
+    if (!mountedRef.current) return
     setPalettes(list)
   }, [])
 
   const refreshProjects = useCallback(async () => {
     const list = await db.projects.orderBy('order').toArray()
+    if (!mountedRef.current) return
     setProjects(list)
     // Also sync settings if firstProjectCreatedAt was set by createNewProject
     const latestSettings = await db.settings.get('app-settings')
+    if (!mountedRef.current) return
     if (latestSettings) {
       setSettings(normalizeAppSettings(latestSettings))
     }
@@ -170,9 +181,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const reloadWorkspaceState = useCallback(async () => {
     const init = await initializeDatabase(db)
+    if (!mountedRef.current) return
     setSettings(init.settings)
     setPalettes(init.palettes)
     const projs = await db.projects.orderBy('order').toArray()
+    if (!mountedRef.current) return
     setProjects(projs)
     setBackupCheckTick(Date.now())
     setReady(true)
@@ -187,6 +200,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const id = generateId('toast')
       setToasts((prev) => [...prev.slice(-3), { id, text, type }])
       window.setTimeout(() => {
+        if (!mountedRef.current) return
         setToasts((prev) => prev.filter((item) => item.id !== id))
       }, 2800)
     },
@@ -203,6 +217,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const base = normalizeAppSettings(stored)
     const next = normalizeAppSettings({ ...base, ...patch, id: 'app-settings' })
     await db.settings.put(next)
+    if (!mountedRef.current) return
     setSettings(next)
   }, [])
 

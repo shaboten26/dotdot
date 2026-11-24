@@ -406,7 +406,7 @@ export function LayerPanelContent({
                     )}
                   </div>
 
-                  {/* 2 & 3. Layer Name (Double-click on PC / Double-tap on Touch starts inline rename!) + Auxiliary Metadata */}
+                  {/* 2 & 3. Layer Name (Double-click on PC / Double-tap on Touch starts inline rename — NEVER starts drag!) + Auxiliary Metadata */}
                   <div className="flex-1 min-w-0 space-y-0.5">
                     {renamingId === layer.id ? (
                       <input
@@ -416,6 +416,9 @@ export function LayerPanelContent({
                         data-no-reorder="true"
                         value={renameDraft}
                         onFocus={(e) => e.currentTarget.select()}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onPointerMove={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
                         onClick={(e) => e.stopPropagation()}
                         onDoubleClick={(e) => e.stopPropagation()}
                         onChange={(e) => setRenameDraft(e.target.value)}
@@ -430,7 +433,7 @@ export function LayerPanelContent({
                             setRenamingId(null)
                           }
                         }}
-                        className="w-full min-h-[32px] px-2 text-xs font-bold pixel-input"
+                        className="w-full min-h-[32px] px-2 text-xs font-bold pixel-input select-text"
                         data-testid={`layer-rename-input-${layer.id}`}
                       />
                     ) : (
@@ -450,22 +453,21 @@ export function LayerPanelContent({
                           />
                         )}
                         <span
+                          data-no-reorder="true"
                           onDoubleClick={(e) => {
                             e.stopPropagation()
-                            if (shouldSuppressClick()) return
                             beginInlineRename(layer.id, layer.name)
                           }}
                           onPointerUp={(e) => {
                             if (e.pointerType !== 'touch' && e.pointerType !== 'pen') {
                               return
                             }
-                            if (shouldSuppressClick()) return
                             const now = performance.now()
                             const prev = lastNameTapRef.current
                             if (
                               prev &&
                               prev.layerId === layer.id &&
-                              now - prev.time <= 320
+                              now - prev.time <= 350
                             ) {
                               e.stopPropagation()
                               lastNameTapRef.current = null
@@ -477,7 +479,7 @@ export function LayerPanelContent({
                               }
                             }
                           }}
-                          className="text-xs font-bold truncate py-0.5"
+                          className="text-xs font-bold truncate py-0.5 cursor-text"
                           title={t('rename')}
                           data-testid={`layer-name-label-${layer.id}`}
                         >

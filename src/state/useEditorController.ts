@@ -14,6 +14,7 @@ import {
   type RGBA,
   type ToolId,
   type ToolSettings,
+  type WorldSelectionMask,
 } from '../types'
 import {
   db,
@@ -47,20 +48,23 @@ import {
 import { compositeFloatingShapeOntoLayer } from '../engine/transform'
 import {
   applySelectionOutline,
+  canvasMaskToWorldSelection,
   cloneSelectionMask,
-  copySelection,
-  createSelectionMask,
-  cutSelection,
-  flipSelectionContent,
-  getSelectionBounds,
+  cloneWorldSelectionMask,
+  copyWorldSelectionFromLayer,
+  cutWorldSelectionFromLayer,
+  extractWorldSelectionFromLayer,
+  flipWorldSelectionOnLayer,
   hasAnySelectedPixel,
+  hasAnySelectedWorldPixel,
   invertSelectionMask,
-  mergeSelectionMasks,
-  moveSelectionContent,
-  pasteClipboard,
-  selectEllipseMask,
-  selectRectangleMask,
+  mergeWorldSelectionMasks,
+  moveWorldSelectionOnLayer,
+  projectWorldSelectionToCanvasMask,
   selectSameColor,
+  selectWorldEllipseMask,
+  selectWorldRectangleMask,
+  shiftWorldSelectionMask,
 } from '../engine/selection'
 import {
   compositeLayers,
@@ -194,6 +198,7 @@ export function useEditorController(options: UseEditorOptions) {
   const [floatingShape, setFloatingShape] = useState<FloatingShapeState | null>(null)
   const [moveSession, setMoveSession] = useState<ActiveMoveSession | null>(null)
   const [selectionMask, setSelectionMask] = useState<Uint8Array | null>(null)
+  const [worldSelection, setWorldSelection] = useState<WorldSelectionMask | null>(null)
   const [clipboard, setClipboard] = useState<ClipboardBuffer | null>(null)
 
   const [undoCount, setUndoCount] = useState(0)
@@ -288,6 +293,7 @@ export function useEditorController(options: UseEditorOptions) {
       setFloatingShape(null)
       setMoveSession(null)
       setSelectionMask(null)
+      setWorldSelection(null)
       strokeRef.current = null
       setLiveStrokeBuffer(null)
 
@@ -432,31 +438,60 @@ export function useEditorController(options: UseEditorOptions) {
     [onQuotaTrimmed, onSaveError, onSaved]
   )
 
-  const effectiveSelectionMask = useMemo(
-    () => (hasAnySelectedPixel(selectionMask) ? selectionMask : null),
-    [selectionMask]
-  )
+  const effectiveWorldSelection = useMemo((): WorldSelectionMask | null => {
+    if (hasAnySelectedWorldPixel(worldSelection)) {
+      return worldSelection
+    }
+    if (project && hasAnySelectedPixel(selectionMask)) {
+      return canvasMaskToWorldSelection(selectionMask, project.width, project.height)
+    }
+    return null
+  }, [worldSelection, selectionMask, project])
+
+  const effectiveSelectionMask = useMemo(() => {
+    if (!project) {
+      return hasAnySelectedPixel(selectionMask) ? selectionMask : null
+    }
+    if (effectiveWorldSelection) {
+      return projectWorldSelectionToCanvasMask(
+        effectiveWorldSelection,
+        project.width,
+        project.height
+      )
+    }
+    return hasAnySelectedPixel(selectionMask) ? selectionMask : null
+  }, [project, effectiveWorldSelection, selectionMask])
+
+  /**
+   * World-space selection mask including any live Selection Move `(dx, dy)` offset,
+   * so marching ants render cleanly in world coordinates (both inside and outside canvas!).
+   */
+  const displayWorldSelection = useMemo((): WorldSelectionMask | null => {
+    if (
+      moveSession &&
+      moveSession.mode === 'selection' &&
+      moveSession.initialWorldSelection
+    ) {
+      return shiftWorldSelectionMask(
+        moveSession.initialWorldSelection,
+        moveSession.dx,
+        moveSession.dy
+      )
+    }
+    return effectiveWorldSelection
+  }, [moveSession, effectiveWorldSelection])
 
   const displaySelectionMask = useMemo((): Uint8Array | null => {
     if (!project) return effectiveSelectionMask
-    if (moveSession && moveSession.mode === 'selection' && moveSession.initialMask) {
-      const w = project.width
-      const h = project.height
-      const shifted = createSelectionMask(w, h)
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          if (moveSession.initialMask[y * w + x] === 0) continue
-          const nx = x + moveSession.dx
-          const ny = y + moveSession.dy
-          if (isInBounds(nx, ny, w, h)) {
-            shifted[ny * w + nx] = 1
-          }
-        }
-      }
-      return shifted
+    if (displayWorldSelection) {
+      return projectWorldSelectionToCanvasMask(
+        displayWorldSelection,
+        project.width,
+        project.height
+      )
     }
     return effectiveSelectionMask
-  }, [project, effectiveSelectionMask, moveSession])
+  }, [project, effectiveSelectionMask, displayWorldSelection])
 
   const commitUpdatedLayer = useCallback(
     (
@@ -466,11 +501,34 @@ export function useEditorController(options: UseEditorOptions) {
       selectionTransition?: {
         before: Uint8Array | null
         after: Uint8Array | null
+        beforeWorld?: WorldSelectionMask | null
+        afterWorld?: WorldSelectionMask | null
       }
     ) => {
       if (!project) return
       const patch = createLayerPixelPatch(beforeLayer, afterLayer)
       if (!patch && !selectionTransition) return
+
+      const resolvedBeforeWorld =
+        selectionTransition?.beforeWorld !== undefined
+          ? selectionTransition.beforeWorld
+          : selectionTransition?.before !== undefined
+            ? canvasMaskToWorldSelection(
+                selectionTransition.before,
+                project.width,
+                project.height
+              )
+            : undefined
+      const resolvedAfterWorld =
+        selectionTransition?.afterWorld !== undefined
+          ? selectionTransition.afterWorld
+          : selectionTransition?.after !== undefined
+            ? canvasMaskToWorldSelection(
+                selectionTransition.after,
+                project.width,
+                project.height
+              )
+            : undefined
 
       historyRef.current.push({
         id: generateId('hist'),
@@ -480,13 +538,33 @@ export function useEditorController(options: UseEditorOptions) {
         pixelPatches: patch ? [patch] : undefined,
         beforeSelection: selectionTransition?.before,
         afterSelection: selectionTransition?.after,
+        beforeWorldSelection: cloneWorldSelectionMask(resolvedBeforeWorld),
+        afterWorldSelection: cloneWorldSelectionMask(resolvedAfterWorld),
       })
       syncHistoryCounts()
 
       const nextLayers = layers.map((l) => (l.id === beforeLayer.id ? afterLayer : l))
       setLayers(nextLayers)
       if (selectionTransition) {
-        setSelectionMask(selectionTransition.after)
+        if (resolvedAfterWorld !== undefined) {
+          setWorldSelection(cloneWorldSelectionMask(resolvedAfterWorld))
+          setSelectionMask(
+            projectWorldSelectionToCanvasMask(
+              resolvedAfterWorld,
+              project.width,
+              project.height
+            )
+          )
+        } else {
+          setSelectionMask(selectionTransition.after)
+          setWorldSelection(
+            canvasMaskToWorldSelection(
+              selectionTransition.after,
+              project.width,
+              project.height
+            )
+          )
+        }
       }
       persistCommittedState(
         project,
@@ -515,6 +593,8 @@ export function useEditorController(options: UseEditorOptions) {
       selectionTransition?: {
         before: Uint8Array | null
         after: Uint8Array | null
+        beforeWorld?: WorldSelectionMask | null
+        afterWorld?: WorldSelectionMask | null
       }
     ) => {
       if (!project) return
@@ -563,41 +643,16 @@ export function useEditorController(options: UseEditorOptions) {
   }, [])
 
   /**
-   * Start interactive Selection Move mode (Section 7)
+   * Start interactive Selection Move mode (Section 7 + Off-Canvas World Preservation)
+   * Works seamlessly even when the selection is already partially or completely outside `[0..width-1, 0..height-1]`!
    */
   const startSelectionMove = useCallback((): boolean => {
-    if (!project || !activeLayer || !activeLayerCanvasView || !effectiveSelectionMask) {
+    if (!project || !activeLayer || !effectiveWorldSelection) {
       return false
     }
-    const bounds = getSelectionBounds(effectiveSelectionMask, project.width, project.height)
-    if (!bounds) return false
-
-    const extracted = createPixelBuffer(bounds.width, bounds.height)
-    const clearedView = new Uint8ClampedArray(activeLayerCanvasView)
-
-    for (let y = bounds.minY; y <= bounds.maxY; y++) {
-      for (let x = bounds.minX; x <= bounds.maxX; x++) {
-        const idx = y * project.width + x
-        if (effectiveSelectionMask[idx] === 0) continue
-        const sb = idx * 4
-        const dbOff = ((y - bounds.minY) * bounds.width + (x - bounds.minX)) * 4
-        extracted[dbOff] = activeLayerCanvasView[sb]
-        extracted[dbOff + 1] = activeLayerCanvasView[sb + 1]
-        extracted[dbOff + 2] = activeLayerCanvasView[sb + 2]
-        extracted[dbOff + 3] = activeLayerCanvasView[sb + 3]
-
-        clearedView[sb] = 0
-        clearedView[sb + 1] = 0
-        clearedView[sb + 2] = 0
-        clearedView[sb + 3] = 0
-      }
-    }
-
-    const clearedLayer = writeLayerCanvasView(
+    const { extractedBuffer, clearedLayer } = extractWorldSelectionFromLayer(
       activeLayer,
-      clearedView,
-      project.width,
-      project.height
+      effectiveWorldSelection
     )
 
     setStepPhase({ kind: 'idle' })
@@ -614,19 +669,26 @@ export function useEditorController(options: UseEditorOptions) {
       },
       dx: 0,
       dy: 0,
-      initialMask: cloneSelectionMask(effectiveSelectionMask),
+      initialMask: cloneSelectionMask(
+        projectWorldSelectionToCanvasMask(
+          effectiveWorldSelection,
+          project.width,
+          project.height
+        )
+      ),
+      initialWorldSelection: cloneWorldSelectionMask(effectiveWorldSelection),
       clearedLayer,
-      extractedBuffer: extracted,
-      extractedWidth: bounds.width,
-      extractedHeight: bounds.height,
-      extractedOriginX: bounds.minX,
-      extractedOriginY: bounds.minY,
+      extractedBuffer,
+      extractedWidth: effectiveWorldSelection.width,
+      extractedHeight: effectiveWorldSelection.height,
+      extractedOriginX: effectiveWorldSelection.originX,
+      extractedOriginY: effectiveWorldSelection.originY,
       initialLayerOffsetX: activeLayer.offsetX,
       initialLayerOffsetY: activeLayer.offsetY,
     })
     playUiTick('step', soundEnabled)
     return true
-  }, [project, activeLayer, activeLayerCanvasView, effectiveSelectionMask, soundEnabled])
+  }, [project, activeLayer, effectiveWorldSelection, soundEnabled])
 
   /**
    * Start interactive Single-Layer Move on canvas
@@ -806,7 +868,7 @@ export function useEditorController(options: UseEditorOptions) {
       moveSession.mode === 'selection' &&
       moveSession.clearedLayer &&
       moveSession.extractedBuffer &&
-      moveSession.initialMask
+      moveSession.initialWorldSelection
     ) {
       const afterLayer = stampBufferIntoLayerWorld(
         moveSession.clearedLayer,
@@ -819,25 +881,21 @@ export function useEditorController(options: UseEditorOptions) {
 
       const w = project.width
       const h = project.height
-      const nextMask = createSelectionMask(w, h)
-      let anyVisible = false
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          if (moveSession.initialMask[y * w + x] === 0) continue
-          const nx = x + moveSession.dx
-          const ny = y + moveSession.dy
-          if (isInBounds(nx, ny, w, h)) {
-            nextMask[ny * w + nx] = 1
-            anyVisible = true
-          }
-        }
-      }
+      // Preserve FULL world-space selection even if moved partially or completely outside `[0..w-1, 0..h-1]`!
+      const afterWorld = shiftWorldSelectionMask(
+        moveSession.initialWorldSelection,
+        moveSession.dx,
+        moveSession.dy
+      )
+      const afterCanvasMask = projectWorldSelectionToCanvasMask(afterWorld, w, h)
 
       setMoveSession(null)
       playUiTick('draw', soundEnabled)
       commitUpdatedLayer(target, afterLayer, 'Move Selection', {
         before: moveSession.initialMask,
-        after: anyVisible ? nextMask : null,
+        after: afterCanvasMask,
+        beforeWorld: moveSession.initialWorldSelection,
+        afterWorld,
       })
     }
   }, [
@@ -1580,6 +1638,7 @@ export function useEditorController(options: UseEditorOptions) {
 
       if (tool === 'select') {
         const beforeSel = cloneSelectionMask(selectionMask)
+        const beforeWorld = cloneWorldSelectionMask(effectiveWorldSelection)
         if (toolSettings.selectType === 'wand') {
           const clampedPt = clampCanvasPoint(pt, w, h)
           const wandMask = selectSameColor(
@@ -1590,7 +1649,9 @@ export function useEditorController(options: UseEditorOptions) {
             clampedPt.y,
             toolSettings.selectConnectivity
           )
-          const nextSel = mergeSelectionMasks(selectionMask, wandMask)
+          const wandWorld = canvasMaskToWorldSelection(wandMask, w, h)
+          const nextWorld = mergeWorldSelectionMasks(effectiveWorldSelection, wandWorld)
+          const nextSel = projectWorldSelectionToCanvasMask(nextWorld, w, h)
           historyRef.current.push({
             id: generateId('hist'),
             label: 'Magic Wand Select',
@@ -1598,8 +1659,11 @@ export function useEditorController(options: UseEditorOptions) {
             kind: 'selection',
             beforeSelection: beforeSel,
             afterSelection: cloneSelectionMask(nextSel),
+            beforeWorldSelection: beforeWorld,
+            afterWorldSelection: cloneWorldSelectionMask(nextWorld),
           })
           syncHistoryCounts()
+          setWorldSelection(nextWorld)
           setSelectionMask(nextSel)
           playUiTick('draw', soundEnabled)
         } else {
@@ -1607,11 +1671,16 @@ export function useEditorController(options: UseEditorOptions) {
             setStepPhase({ kind: 'select-end', start: pt })
             playUiTick('step', soundEnabled)
           } else {
-            const part =
+            // Preserve true world-space rectangle/ellipse coordinates even if partially or wholly outside canvas!
+            const partWorld =
               toolSettings.selectType === 'ellipse'
-                ? selectEllipseMask(w, h, stepPhase.start, pt)
-                : selectRectangleMask(w, h, stepPhase.start, pt)
-            const nextSel = mergeSelectionMasks(selectionMask, part)
+                ? selectWorldEllipseMask(stepPhase.start, pt)
+                : selectWorldRectangleMask(stepPhase.start, pt)
+            const nextWorld = mergeWorldSelectionMasks(
+              effectiveWorldSelection,
+              partWorld
+            )
+            const nextSel = projectWorldSelectionToCanvasMask(nextWorld, w, h)
             setStepPhase({ kind: 'idle' })
             historyRef.current.push({
               id: generateId('hist'),
@@ -1620,8 +1689,11 @@ export function useEditorController(options: UseEditorOptions) {
               kind: 'selection',
               beforeSelection: beforeSel,
               afterSelection: cloneSelectionMask(nextSel),
+              beforeWorldSelection: beforeWorld,
+              afterWorldSelection: cloneWorldSelectionMask(nextWorld),
             })
             syncHistoryCounts()
+            setWorldSelection(nextWorld)
             setSelectionMask(nextSel)
             playUiTick('draw', soundEnabled)
           }
@@ -1697,21 +1769,33 @@ export function useEditorController(options: UseEditorOptions) {
         updateActiveMoveOffset(dx, dy)
         return
       }
-      if (!project || !activeLayer || !activeLayerCanvasView || !effectiveSelectionMask) {
+      if (!project || !activeLayer || !effectiveWorldSelection) {
         return
       }
-      const beforeMask = cloneSelectionMask(effectiveSelectionMask)
-      const { nextBuffer, nextMask } = moveSelectionContent(
-        activeLayerCanvasView,
-        effectiveSelectionMask,
-        project.width,
-        project.height,
+      const beforeWorld = cloneWorldSelectionMask(effectiveWorldSelection)
+      const beforeMask = cloneSelectionMask(
+        projectWorldSelectionToCanvasMask(
+          effectiveWorldSelection,
+          project.width,
+          project.height
+        )
+      )
+      const { nextLayer, nextWorldSelection } = moveWorldSelectionOnLayer(
+        activeLayer,
+        effectiveWorldSelection,
         dx,
         dy
       )
-      commitLayerCanvasViewChange(activeLayer.id, nextBuffer, 'Move Selection', {
+      const afterMask = projectWorldSelectionToCanvasMask(
+        nextWorldSelection,
+        project.width,
+        project.height
+      )
+      commitUpdatedLayer(activeLayer, nextLayer, 'Move Selection', {
         before: beforeMask,
-        after: nextMask,
+        after: afterMask,
+        beforeWorld,
+        afterWorld: nextWorldSelection,
       })
     },
     [
@@ -1719,9 +1803,8 @@ export function useEditorController(options: UseEditorOptions) {
       updateActiveMoveOffset,
       project,
       activeLayer,
-      activeLayerCanvasView,
-      effectiveSelectionMask,
-      commitLayerCanvasViewChange,
+      effectiveWorldSelection,
+      commitUpdatedLayer,
     ]
   )
 
@@ -1762,52 +1845,74 @@ export function useEditorController(options: UseEditorOptions) {
   ])
 
   const copySelectedPixels = useCallback((): boolean => {
-    if (!project || !activeLayerCanvasView || !effectiveSelectionMask) return false
-    const clip = copySelection(
-      activeLayerCanvasView,
-      effectiveSelectionMask,
-      project.width,
-      project.height
-    )
+    if (!project || !activeLayer || !effectiveWorldSelection) return false
+    const clip = copyWorldSelectionFromLayer(activeLayer, effectiveWorldSelection)
     if (!clip) return false
     setClipboard(clip)
     return true
-  }, [project, activeLayerCanvasView, effectiveSelectionMask])
+  }, [project, activeLayer, effectiveWorldSelection])
 
   const cutSelectedPixels = useCallback((): boolean => {
-    if (!project || !activeLayer || !activeLayerCanvasView || !effectiveSelectionMask) {
+    if (!project || !activeLayer || !effectiveWorldSelection) {
       return false
     }
-    const { clipboard: clip, nextBuffer } = cutSelection(
-      activeLayerCanvasView,
-      effectiveSelectionMask,
-      project.width,
-      project.height
+    const { clipboard: clip, nextLayer } = cutWorldSelectionFromLayer(
+      activeLayer,
+      effectiveWorldSelection
     )
     if (!clip) return false
     setClipboard(clip)
-    commitLayerCanvasViewChange(activeLayer.id, nextBuffer, 'Cut Selection')
+    commitUpdatedLayer(activeLayer, nextLayer, 'Cut Selection')
     return true
-  }, [
-    project,
-    activeLayer,
-    activeLayerCanvasView,
-    effectiveSelectionMask,
-    commitLayerCanvasViewChange,
-  ])
+  }, [project, activeLayer, effectiveWorldSelection, commitUpdatedLayer])
 
   const pasteClipboardPixels = useCallback((): boolean => {
     if (!project || !activeLayer || !activeLayerCanvasView || !clipboard) return false
     const beforeMask = cloneSelectionMask(selectionMask)
-    const { nextBuffer, nextMask } = pasteClipboard(
-      activeLayerCanvasView,
-      clipboard,
+    const beforeWorld = cloneWorldSelectionMask(effectiveWorldSelection)
+
+    // Stamp clipboard into world layer at (clipboard.offsetX, clipboard.offsetY) so even off-canvas clipboard coordinates preserve pixels!
+    const afterLayer = stampBufferIntoLayerWorld(
+      activeLayer,
+      clipboard.data,
+      clipboard.width,
+      clipboard.height,
+      clipboard.offsetX,
+      clipboard.offsetY
+    )
+    const pastedMask = new Uint8Array(clipboard.width * clipboard.height)
+    let anyNonTransparent = false
+    for (let i = 0; i < clipboard.width * clipboard.height; i++) {
+      if (clipboard.data[i * 4 + 3]! > 0) {
+        pastedMask[i] = 1
+        anyNonTransparent = true
+      }
+    }
+    const afterWorld: WorldSelectionMask | null = anyNonTransparent
+      ? {
+          originX: clipboard.offsetX,
+          originY: clipboard.offsetY,
+          width: clipboard.width,
+          height: clipboard.height,
+          mask: pastedMask,
+        }
+      : {
+          originX: clipboard.offsetX,
+          originY: clipboard.offsetY,
+          width: clipboard.width,
+          height: clipboard.height,
+          mask: new Uint8Array(clipboard.width * clipboard.height).fill(1),
+        }
+    const afterCanvasMask = projectWorldSelectionToCanvasMask(
+      afterWorld,
       project.width,
       project.height
     )
-    commitLayerCanvasViewChange(activeLayer.id, nextBuffer, 'Paste', {
+    commitUpdatedLayer(activeLayer, afterLayer, 'Paste', {
       before: beforeMask,
-      after: nextMask,
+      after: afterCanvasMask,
+      beforeWorld,
+      afterWorld,
     })
     return true
   }, [
@@ -1816,40 +1921,53 @@ export function useEditorController(options: UseEditorOptions) {
     activeLayerCanvasView,
     clipboard,
     selectionMask,
-    commitLayerCanvasViewChange,
+    effectiveWorldSelection,
+    commitUpdatedLayer,
   ])
 
   const flipSelectedPixels = useCallback(
     (direction: 'horizontal' | 'vertical') => {
-      if (!project || !activeLayer || !activeLayerCanvasView || !effectiveSelectionMask) {
+      if (!project || !activeLayer || !effectiveWorldSelection) {
         return
       }
-      const beforeMask = cloneSelectionMask(effectiveSelectionMask)
-      const { nextBuffer, nextMask } = flipSelectionContent(
-        activeLayerCanvasView,
-        effectiveSelectionMask,
-        project.width,
-        project.height,
+      const beforeMask = cloneSelectionMask(selectionMask)
+      const beforeWorld = cloneWorldSelectionMask(effectiveWorldSelection)
+      const { nextLayer, nextWorldSelection } = flipWorldSelectionOnLayer(
+        activeLayer,
+        effectiveWorldSelection,
         direction
       )
-      commitLayerCanvasViewChange(activeLayer.id, nextBuffer, 'Flip Selection', {
+      const afterMask = projectWorldSelectionToCanvasMask(
+        nextWorldSelection,
+        project.width,
+        project.height
+      )
+      commitUpdatedLayer(activeLayer, nextLayer, 'Flip Selection', {
         before: beforeMask,
-        after: nextMask,
+        after: afterMask,
+        beforeWorld,
+        afterWorld: nextWorldSelection,
       })
     },
     [
       project,
       activeLayer,
-      activeLayerCanvasView,
-      effectiveSelectionMask,
-      commitLayerCanvasViewChange,
+      selectionMask,
+      effectiveWorldSelection,
+      commitUpdatedLayer,
     ]
   )
 
   const invertCurrentSelection = useCallback(() => {
     if (!project) return
     const before = cloneSelectionMask(selectionMask)
-    const after = invertSelectionMask(selectionMask, project.width, project.height)
+    const beforeWorld = cloneWorldSelectionMask(effectiveWorldSelection)
+    const after = invertSelectionMask(
+      effectiveSelectionMask,
+      project.width,
+      project.height
+    )
+    const afterWorld = canvasMaskToWorldSelection(after, project.width, project.height)
     historyRef.current.push({
       id: generateId('hist'),
       label: 'Invert Selection',
@@ -1857,21 +1975,35 @@ export function useEditorController(options: UseEditorOptions) {
       kind: 'selection',
       beforeSelection: before,
       afterSelection: cloneSelectionMask(after),
+      beforeWorldSelection: beforeWorld,
+      afterWorldSelection: cloneWorldSelectionMask(afterWorld),
     })
     syncHistoryCounts()
     setSelectionMask(after)
-  }, [project, selectionMask, syncHistoryCounts])
+    setWorldSelection(afterWorld)
+  }, [
+    project,
+    selectionMask,
+    effectiveWorldSelection,
+    effectiveSelectionMask,
+    syncHistoryCounts,
+  ])
 
   const clearCurrentSelection = useCallback(() => {
     if (moveSession?.mode === 'selection') {
       setMoveSession(null)
     }
-    if (!hasAnySelectedPixel(selectionMask)) {
+    if (
+      !hasAnySelectedPixel(selectionMask) &&
+      !hasAnySelectedWorldPixel(effectiveWorldSelection)
+    ) {
       setSelectionMask(null)
+      setWorldSelection(null)
       setStepPhase({ kind: 'idle' })
       return
     }
     const before = cloneSelectionMask(selectionMask)
+    const beforeWorld = cloneWorldSelectionMask(effectiveWorldSelection)
     historyRef.current.push({
       id: generateId('hist'),
       label: 'Deselect',
@@ -1879,11 +2011,14 @@ export function useEditorController(options: UseEditorOptions) {
       kind: 'selection',
       beforeSelection: before,
       afterSelection: null,
+      beforeWorldSelection: beforeWorld,
+      afterWorldSelection: null,
     })
     syncHistoryCounts()
     setSelectionMask(null)
+    setWorldSelection(null)
     setStepPhase({ kind: 'idle' })
-  }, [moveSession, selectionMask, syncHistoryCounts])
+  }, [moveSession, selectionMask, effectiveWorldSelection, syncHistoryCounts])
 
   const executeStructuralChange = useCallback(
     (
@@ -1909,6 +2044,7 @@ export function useEditorController(options: UseEditorOptions) {
         activeLayerId
       )
       const beforeSel = cloneSelectionMask(selectionMask)
+      const beforeWorld = cloneWorldSelectionMask(effectiveWorldSelection)
 
       const mutated = mutator(layers, activeLayerId, project.width, project.height)
       if (!mutated) return false
@@ -1920,6 +2056,7 @@ export function useEditorController(options: UseEditorOptions) {
         mutated.activeLayerId
       )
       const afterSel = mutated.clearSelection ? null : beforeSel
+      const afterWorld = mutated.clearSelection ? null : beforeWorld
 
       historyRef.current.push({
         id: generateId('hist'),
@@ -1930,6 +2067,8 @@ export function useEditorController(options: UseEditorOptions) {
         afterStructure: afterSnap,
         beforeSelection: beforeSel,
         afterSelection: afterSel,
+        beforeWorldSelection: beforeWorld,
+        afterWorldSelection: afterWorld,
       })
       syncHistoryCounts()
 
@@ -1944,6 +2083,7 @@ export function useEditorController(options: UseEditorOptions) {
       setActiveLayerId(mutated.activeLayerId)
       if (mutated.clearSelection) {
         setSelectionMask(null)
+        setWorldSelection(null)
       }
       setCursor((prev) => clampCanvasPoint(prev, mutated.width, mutated.height))
 
@@ -2448,6 +2588,7 @@ export function useEditorController(options: UseEditorOptions) {
       layers,
       activeLayerId,
       selectionMask,
+      worldSelection: effectiveWorldSelection,
       palette,
     })
     if (!prev) return
@@ -2469,6 +2610,11 @@ export function useEditorController(options: UseEditorOptions) {
     setLayers(prev.layers)
     setActiveLayerId(prev.activeLayerId)
     setSelectionMask(prev.selectionMask)
+    setWorldSelection(
+      prev.worldSelection !== undefined
+        ? prev.worldSelection
+        : canvasMaskToWorldSelection(prev.selectionMask, prev.width, prev.height)
+    )
     setPalette(prev.palette)
     setSelectedColorIndex(safeIdx)
     persistCommittedState(
@@ -2486,6 +2632,7 @@ export function useEditorController(options: UseEditorOptions) {
     layers,
     activeLayerId,
     selectionMask,
+    effectiveWorldSelection,
     palette,
     soundEnabled,
     syncHistoryCounts,
@@ -2501,6 +2648,7 @@ export function useEditorController(options: UseEditorOptions) {
       layers,
       activeLayerId,
       selectionMask,
+      worldSelection: effectiveWorldSelection,
       palette,
     })
     if (!next) return
@@ -2522,6 +2670,11 @@ export function useEditorController(options: UseEditorOptions) {
     setLayers(next.layers)
     setActiveLayerId(next.activeLayerId)
     setSelectionMask(next.selectionMask)
+    setWorldSelection(
+      next.worldSelection !== undefined
+        ? next.worldSelection
+        : canvasMaskToWorldSelection(next.selectionMask, next.width, next.height)
+    )
     setPalette(next.palette)
     setSelectedColorIndex(safeIdx)
     persistCommittedState(
@@ -2536,6 +2689,7 @@ export function useEditorController(options: UseEditorOptions) {
     layers,
     activeLayerId,
     selectionMask,
+    effectiveWorldSelection,
     palette,
     soundEnabled,
     syncHistoryCounts,
@@ -2581,7 +2735,8 @@ export function useEditorController(options: UseEditorOptions) {
     commitActiveMove,
     cancelActiveMove,
     selectionMask: displaySelectionMask,
-    hasSelection: effectiveSelectionMask !== null,
+    worldSelection: displayWorldSelection,
+    hasSelection: effectiveWorldSelection !== null || effectiveSelectionMask !== null,
     clipboard,
     isContinuousDrawing,
     compositedBuffer,

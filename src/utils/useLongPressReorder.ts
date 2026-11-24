@@ -3,9 +3,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 export interface UseLongPressReorderOptions {
   ids: readonly string[]
   enabled?: boolean
-  /** Hold threshold in ms for touch on scrollable body (drag handles start immediately) */
+  /** Hold threshold in ms for touch on scrollable body (drag handles start after dragThresholdPx move) */
   longPressMs?: number
-  /** Movement threshold in px for mouse / immediate-touch drag activation */
+  /** Movement threshold in px before a drag begins (prevents single/double clicks or taps from starting a drag!) */
   dragThresholdPx?: number
   /** If true, touch starts dragging as soon as pointer moves along primary axis (for non-scrolling / orthogonal strips) */
   immediateTouchDrag?: boolean
@@ -254,9 +254,9 @@ export function useLongPressReorder({
           }
 
           if (fromHandle) {
-            // Dedicated handle: enter drag immediately with zero delay
+            // Dedicated handle: do NOT enter drag on pointerdown alone — wait until pointer moves >= dragThresholdPx
+            // so accidental stationary clicks/taps never trigger drag mode!
             e.stopPropagation()
-            activateDrag(id, e.pointerId, e.currentTarget)
             return
           }
 
@@ -279,9 +279,15 @@ export function useLongPressReorder({
           const dy = e.clientY - p.startY
           const dist = Math.hypot(dx, dy)
 
-          if (p.pointerType === 'mouse' || p.pointerType === 'pen' || immediateTouchDrag) {
+          if (
+            p.fromHandle ||
+            p.pointerType === 'mouse' ||
+            p.pointerType === 'pen' ||
+            immediateTouchDrag
+          ) {
             if (dist >= dragThresholdPx) {
               if (
+                !p.fromHandle &&
                 immediateTouchDrag &&
                 p.pointerType === 'touch' &&
                 axis !== 'both'

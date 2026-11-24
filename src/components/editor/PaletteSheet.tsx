@@ -76,6 +76,11 @@ export function PaletteSheet({
   const [hsv, setHsv] = useState(() => hexToHsv(currentHex))
   const [hexInput, setHexInput] = useState(currentHex)
   const [nameInput, setNameInput] = useState(palette.name)
+  const nameInputRef = useRef<HTMLInputElement | null>(null)
+  /** Preserve selection across initial mouseup/pointerup after focusing the palette name input! */
+  const selectAllOnMouseUpRef = useRef(false)
+  /** Suppress onBlur commit when user explicitly cancels via Escape */
+  const skipNextBlurCommitRef = useRef(false)
 
   useEffect(() => {
     setHsv(hexToHsv(currentHex))
@@ -165,16 +170,63 @@ export function PaletteSheet({
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-1.5">
             <input
+              ref={nameInputRef}
               type="text"
               value={nameInput}
+              onPointerDown={() => {
+                if (document.activeElement !== nameInputRef.current) {
+                  selectAllOnMouseUpRef.current = true
+                }
+              }}
+              onFocus={(e) => {
+                e.currentTarget.select()
+              }}
+              onMouseUp={(e) => {
+                if (selectAllOnMouseUpRef.current) {
+                  selectAllOnMouseUpRef.current = false
+                  e.preventDefault()
+                  e.currentTarget.select()
+                }
+              }}
               onChange={(e) => setNameInput(e.target.value)}
               onBlur={() => {
-                if (nameInput.trim() && nameInput.trim() !== palette.name) {
-                  onUpdatePalette({ ...palette, name: nameInput.trim() })
+                selectAllOnMouseUpRef.current = false
+                if (skipNextBlurCommitRef.current) {
+                  skipNextBlurCommitRef.current = false
+                  return
+                }
+                const trimmed = nameInput.trim()
+                if (trimmed && trimmed !== palette.name) {
+                  onUpdatePalette({ ...palette, name: trimmed })
+                } else {
+                  setNameInput(palette.name)
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  const trimmed = nameInput.trim()
+                  if (trimmed) {
+                    if (trimmed !== palette.name) {
+                      onUpdatePalette({ ...palette, name: trimmed })
+                    }
+                    skipNextBlurCommitRef.current = true
+                    e.currentTarget.blur()
+                  } else {
+                    setNameInput(palette.name)
+                  }
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  selectAllOnMouseUpRef.current = false
+                  skipNextBlurCommitRef.current = true
+                  setNameInput(palette.name)
+                  e.currentTarget.blur()
                 }
               }}
               placeholder={t('paletteName')}
-              className="flex-1 min-w-[130px] min-h-[40px] px-2.5 text-xs font-bold pixel-input"
+              className="flex-1 min-w-[130px] min-h-[40px] px-2.5 text-xs font-bold pixel-input select-text"
+              data-testid="palette-name-input"
             />
             <button
               type="button"

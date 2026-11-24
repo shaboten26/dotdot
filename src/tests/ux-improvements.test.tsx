@@ -9,7 +9,13 @@ import { createPixelBuffer, getPixel, setPixel } from '../engine/pixelBuffer'
 import { applyFloodFill, applyGradientFloodFill } from '../engine/floodFill'
 import { CanvasResizeModal } from '../components/editor/EditorModals'
 import { MultiRowToolGrid, ToolDetailPopover } from '../components/editor/ToolPanels'
+import { PaletteSheet } from '../components/editor/PaletteSheet'
 import { resolveToolIconName } from '../utils/toolIcon'
+import {
+  moveWorldSelectionOnLayer,
+  projectWorldSelectionToCanvasMask,
+  selectWorldRectangleMask,
+} from '../engine/selection'
 import { App } from '../App'
 import { db } from '../db/database'
 import type { LayerRuntime, ToolSettings } from '../types'
@@ -889,5 +895,411 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
     } finally {
       nowSpy.mockRestore()
     }
+  })
+
+  it('Additional Fix 1: renaming a layer via double-click / touch double-tap NEVER starts drag reorder, disables drag while editing, and restores drag reorder after Enter/Escape', () => {
+    const layers: LayerRuntime[] = [
+      {
+        id: 'l-bottom',
+        name: '下レイヤー',
+        visible: true,
+        opacity: 100,
+        blendMode: 'normal',
+        clipping: false,
+        offsetX: 0,
+        offsetY: 0,
+        dataWidth: 8,
+        dataHeight: 8,
+        data: createPixelBuffer(8, 8),
+      },
+      {
+        id: 'l-top',
+        name: '上レイヤー',
+        visible: true,
+        opacity: 100,
+        blendMode: 'normal',
+        clipping: false,
+        offsetX: 0,
+        offsetY: 0,
+        dataWidth: 8,
+        dataHeight: 8,
+        data: createPixelBuffer(8, 8),
+      },
+    ]
+
+    const onUpdateLayer = vi.fn()
+    const onReorderLayers = vi.fn()
+
+    render(
+      <AppProvider>
+        <LayerPanelContent
+          canvasWidth={8}
+          canvasHeight={8}
+          layers={layers}
+          activeLayerId="l-top"
+          selectedLayerIds={[]}
+          onSelectLayer={vi.fn()}
+          onToggleLayerSelected={vi.fn()}
+          onClearLayerSelection={vi.fn()}
+          onStartMultiLayerMoveOnCanvas={vi.fn()}
+          onDuplicateSelectedLayers={vi.fn()}
+          onMergeSelectedLayers={vi.fn()}
+          onDeleteSelectedLayers={vi.fn()}
+          onAddLayer={vi.fn()}
+          onDuplicateLayer={vi.fn()}
+          onDeleteLayer={vi.fn()}
+          onMergeDown={vi.fn()}
+          onUpdateLayer={onUpdateLayer}
+          onReorderLayers={onReorderLayers}
+          onClearLayer={vi.fn()}
+          onCopyLayer={vi.fn()}
+          onFlipLayer={vi.fn()}
+          onStartLayerMoveOnCanvas={vi.fn()}
+        />
+      </AppProvider>
+    )
+
+    const topLabel = screen.getByTestId('layer-name-label-l-top')
+    const bottomRow = screen.getByTestId('layer-row-l-bottom')
+    const origElementFromPoint = document.elementFromPoint
+    document.elementFromPoint = vi.fn(() => bottomRow)
+
+    try {
+      // 1st click + slight pointer jitter on the layer name label MUST NOT start a drag!
+      fireEvent.pointerDown(topLabel, {
+        pointerId: 101,
+        pointerType: 'mouse',
+        button: 0,
+        clientX: 60,
+        clientY: 20,
+      })
+      fireEvent.pointerMove(topLabel, {
+        pointerId: 101,
+        pointerType: 'mouse',
+        clientX: 60,
+        clientY: 55,
+      })
+      fireEvent.pointerUp(topLabel, {
+        pointerId: 101,
+        pointerType: 'mouse',
+        clientX: 60,
+        clientY: 55,
+      })
+      expect(onReorderLayers).not.toHaveBeenCalled()
+
+      // Double-click opens rename input with full text selected
+      fireEvent.doubleClick(topLabel)
+      const input = screen.getByTestId('layer-rename-input-l-top') as HTMLInputElement
+      expect(document.activeElement).toBe(input)
+      expect(input.selectionStart).toBe(0)
+      expect(input.selectionEnd).toBe('上レイヤー'.length)
+
+      // Selecting text inside the input (pointerdown + pointermove + pointerup) MUST NOT drag the row!
+      fireEvent.pointerDown(input, {
+        pointerId: 102,
+        pointerType: 'mouse',
+        button: 0,
+        clientX: 40,
+        clientY: 20,
+      })
+      fireEvent.pointerMove(input, {
+        pointerId: 102,
+        pointerType: 'mouse',
+        clientX: 90,
+        clientY: 60,
+      })
+      fireEvent.pointerUp(input, {
+        pointerId: 102,
+        pointerType: 'mouse',
+        clientX: 90,
+        clientY: 60,
+      })
+      expect(onReorderLayers).not.toHaveBeenCalled()
+
+      // Commit rename with Enter
+      fireEvent.change(input, { target: { value: '主線レイヤー' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      expect(onUpdateLayer).toHaveBeenCalledWith('l-top', { name: '主線レイヤー' })
+
+      // After rename completes, normal drag reorder via the dedicated drag handle works cleanly!
+      const dragHandle = screen.getByTestId('layer-drag-handle-l-top')
+      fireEvent.pointerDown(dragHandle, {
+        pointerId: 103,
+        pointerType: 'mouse',
+        button: 0,
+        clientX: 12,
+        clientY: 20,
+      })
+      // Stationary click on drag handle alone does NOT reorder
+      fireEvent.pointerUp(window, {
+        pointerId: 103,
+        pointerType: 'mouse',
+        clientX: 12,
+        clientY: 20,
+      })
+      expect(onReorderLayers).not.toHaveBeenCalled()
+
+      // Moving >= 5px from drag handle reorders cleanly
+      fireEvent.pointerDown(dragHandle, {
+        pointerId: 104,
+        pointerType: 'mouse',
+        button: 0,
+        clientX: 12,
+        clientY: 20,
+      })
+      fireEvent.pointerMove(dragHandle, {
+        pointerId: 104,
+        pointerType: 'mouse',
+        clientX: 12,
+        clientY: 55,
+      })
+      fireEvent.pointerUp(window, {
+        pointerId: 104,
+        pointerType: 'mouse',
+        clientX: 12,
+        clientY: 55,
+      })
+      expect(onReorderLayers).toHaveBeenCalledWith(['l-top', 'l-bottom'])
+    } finally {
+      document.elementFromPoint = origElementFromPoint
+    }
+  })
+
+  it('Additional Fix 2: preserves selection state & pixel data when moved partially or completely outside canvas, continues drag outside viewport, and supports full Undo/Redo', async () => {
+    // Part A: Pure engine verification of non-destructive world-space selection & pixel preservation
+    const baseData = createPixelBuffer(8, 8)
+    const MARK = { r: 235, g: 80, b: 110, a: 255 }
+    setPixel(baseData, 8, 8, 1, 1, MARK)
+    setPixel(baseData, 8, 8, 2, 1, MARK)
+    const baseLayer: LayerRuntime = {
+      id: 'layer-sel',
+      name: 'Layer 1',
+      visible: true,
+      opacity: 100,
+      blendMode: 'normal',
+      clipping: false,
+      offsetX: 0,
+      offsetY: 0,
+      dataWidth: 8,
+      dataHeight: 8,
+      data: baseData,
+    }
+
+    const ws0 = selectWorldRectangleMask({ x: 1, y: 1 }, { x: 2, y: 1 })
+    // Move completely outside canvas to x = -5..-4 (100% off-canvas!)
+    const movedOut = moveWorldSelectionOnLayer(baseLayer, ws0, -6, 0)
+    expect(movedOut.nextWorldSelection.originX).toBe(-5)
+    // Visible canvas projection is null while off-canvas, yet world selection & backing pixels remain 100% intact!
+    expect(
+      projectWorldSelectionToCanvasMask(movedOut.nextWorldSelection, 8, 8)
+    ).toBeNull()
+
+    // Move back inside canvas (+8, +2) -> lands at (3, 3) and (4, 3) with original MARK pixels intact!
+    const movedBack = moveWorldSelectionOnLayer(
+      movedOut.nextLayer,
+      movedOut.nextWorldSelection,
+      8,
+      2
+    )
+    const projBack = projectWorldSelectionToCanvasMask(
+      movedBack.nextWorldSelection,
+      8,
+      8
+    )
+    expect(projBack).not.toBeNull()
+    expect(projBack![3 * 8 + 3]).toBe(1)
+    expect(projBack![3 * 8 + 4]).toBe(1)
+
+    // Part B: Full UI E2E verification (PC pointer leaving canvas + moving selection completely off-canvas + Undo/Redo)
+    await db.projects.clear()
+    await db.layerPixels.clear()
+    await db.histories.clear()
+    await db.settings.clear()
+
+    window.history.pushState({}, '', '/')
+    render(<App />)
+
+    fireEvent.click(await screen.findByTestId('empty-create-artwork-btn'))
+    fireEvent.change(screen.getByTestId('new-project-width-input'), {
+      target: { value: '8' },
+    })
+    fireEvent.change(screen.getByTestId('new-project-height-input'), {
+      target: { value: '8' },
+    })
+    fireEvent.click(screen.getByTestId('confirm-create-artwork-btn'))
+
+    const drawBtn = await screen.findByTestId('draw-button')
+    const vp = screen.getByTestId('canvas-viewport')
+    vi.spyOn(vp, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 320,
+      bottom: 320,
+      width: 320,
+      height: 320,
+      toJSON: () => ({}),
+    })
+
+    // Paint a pixel at center (4, 4)
+    fireEvent.click(screen.getByTestId('quick-color-2'))
+    fireEvent.pointerDown(drawBtn, { pointerId: 1 })
+    fireEvent.pointerUp(drawBtn, { pointerId: 1 })
+
+    // Select a rectangle covering (4, 4) -> out-of-canvas endpoint (-2, -2) via Select tool
+    fireEvent.click(screen.getByTestId('tool-select'))
+    // Step 1 at (4, 4)
+    fireEvent.pointerDown(drawBtn, { pointerId: 2 })
+    fireEvent.pointerUp(drawBtn, { pointerId: 2 })
+    // Move mouse pointer outside canvas to negative coordinates (-40, -40) and complete selection!
+    fireEvent.pointerMove(vp, {
+      pointerId: 3,
+      pointerType: 'mouse',
+      clientX: -40,
+      clientY: -40,
+    })
+    fireEvent.pointerDown(drawBtn, { pointerId: 4 })
+    fireEvent.pointerUp(drawBtn, { pointerId: 4 })
+
+    // Open Select detail panel -> verify selection is active (`start-selection-move-btn` enabled) even after pointer leaves viewport!
+    fireEvent.click(screen.getByTestId('tool-select'))
+    const startMoveBtn = (await screen.findByTestId(
+      'start-selection-move-btn'
+    )) as HTMLButtonElement
+    expect(startMoveBtn.disabled).toBe(false)
+
+    // Start Selection Move, drag pointer far outside canvas (-300px left = completely off-canvas!), and commit!
+    fireEvent.click(startMoveBtn)
+    fireEvent.pointerDown(vp, {
+      pointerId: 10,
+      pointerType: 'mouse',
+      button: 0,
+      clientX: 160,
+      clientY: 160,
+    })
+    fireEvent.pointerMove(vp, {
+      pointerId: 10,
+      pointerType: 'mouse',
+      clientX: -340, // far outside canvas & viewport!
+      clientY: 160,
+    })
+    fireEvent.pointerUp(vp, {
+      pointerId: 10,
+      pointerType: 'mouse',
+      clientX: -340,
+      clientY: 160,
+    })
+    // Commit active move via Draw button (or commit button)
+    fireEvent.pointerDown(drawBtn, { pointerId: 11 })
+    fireEvent.pointerUp(drawBtn, { pointerId: 11 })
+
+    // CRITICAL CHECK: Selection is now 100% outside `[0..7, 0..7]`, yet `hasSelection` MUST STILL BE TRUE!
+    fireEvent.click(screen.getByTestId('tool-select'))
+    const startMoveAgain = (await screen.findByTestId(
+      'start-selection-move-btn'
+    )) as HTMLButtonElement
+    expect(startMoveAgain.disabled).toBe(false)
+
+    // Drag selection back inside (+500px right) and commit -> pixels & selection return intact!
+    fireEvent.click(startMoveAgain)
+    fireEvent.pointerDown(vp, {
+      pointerId: 12,
+      pointerType: 'touch',
+      clientX: 20,
+      clientY: 160,
+    })
+    fireEvent.pointerMove(vp, {
+      pointerId: 12,
+      pointerType: 'touch',
+      clientX: 520,
+      clientY: 160,
+    })
+    fireEvent.pointerUp(vp, {
+      pointerId: 12,
+      pointerType: 'touch',
+      clientX: 520,
+      clientY: 160,
+    })
+    fireEvent.pointerDown(drawBtn, { pointerId: 13 })
+    fireEvent.pointerUp(drawBtn, { pointerId: 13 })
+
+    // Undo twice + Redo twice works without losing selection state!
+    fireEvent.click(screen.getByTestId('undo-btn'))
+    fireEvent.click(screen.getByTestId('undo-btn'))
+    fireEvent.click(screen.getByTestId('redo-btn'))
+    fireEvent.click(screen.getByTestId('redo-btn'))
+
+    fireEvent.click(screen.getByTestId('tool-select'))
+    const clearBtn = (await screen.findByText('選択解除')).closest(
+      'button'
+    ) as HTMLButtonElement
+    expect(clearBtn.disabled).toBe(false)
+    fireEvent.click(clearBtn)
+    expect(clearBtn.disabled).toBe(true)
+  })
+
+  it('Additional Fix 3: focusing Palette Name input auto-selects existing text, preserves full selection across mouseup, commits on Enter/blur, cancels on Escape, and rejects empty names', () => {
+    const onUpdatePalette = vi.fn()
+    render(
+      <AppProvider>
+        <PaletteSheet
+          open={true}
+          onClose={vi.fn()}
+          palette={{
+            name: 'Retro DMG 04',
+            colors: ['#0F380F', '#306230', '#8BAC0F', '#9BBC0F'],
+          }}
+          selectedIndex={0}
+          libraryPalettes={[]}
+          onSelectColor={vi.fn()}
+          onUpdatePalette={onUpdatePalette}
+          onSaveToLibrary={vi.fn()}
+        />
+      </AppProvider>
+    )
+
+    const input = screen.getByTestId('palette-name-input') as HTMLInputElement
+    expect(input.value).toBe('Retro DMG 04')
+
+    // Simulate pointerdown -> focus -> mouseup (which in browsers normally collapses selection unless guarded!)
+    fireEvent.pointerDown(input, { pointerType: 'mouse', button: 0 })
+    input.focus()
+    fireEvent.focus(input)
+    // Simulate browser collapsing caret to index 3 before mouseup arrives
+    input.setSelectionRange(3, 3)
+    fireEvent.mouseUp(input)
+    // Full existing palette name MUST be selected!
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe('Retro DMG 04'.length)
+
+    // Subsequent click while ALREADY focused allows normal partial cursor editing without re-selecting all!
+    input.setSelectionRange(5, 5)
+    fireEvent.pointerDown(input, { pointerType: 'mouse', button: 0 })
+    fireEvent.mouseUp(input)
+    expect(input.selectionStart).toBe(5)
+    expect(input.selectionEnd).toBe(5)
+
+    // Escape cancels draft and restores original name without calling onUpdatePalette
+    fireEvent.change(input, { target: { value: 'Temporary Draft' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(onUpdatePalette).not.toHaveBeenCalled()
+    expect(input.value).toBe('Retro DMG 04')
+
+    // Empty / whitespace-only name is rejected and reverts to existing palette name
+    input.focus()
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: '    ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onUpdatePalette).not.toHaveBeenCalled()
+    expect(input.value).toBe('Retro DMG 04')
+
+    // Valid new name commits cleanly on Enter and persists via onUpdatePalette
+    fireEvent.change(input, { target: { value: 'Autumn Dusk 16' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onUpdatePalette).toHaveBeenCalledWith({
+      name: 'Autumn Dusk 16',
+      colors: ['#0F380F', '#306230', '#8BAC0F', '#9BBC0F'],
+    })
   })
 })
