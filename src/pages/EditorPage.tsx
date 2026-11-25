@@ -344,18 +344,20 @@ export function EditorPage() {
                     <span>{t('exportPng')}</span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setHeaderMenuOpen(false)
-                      setExportGifOpen(true)
-                    }}
-                    className="w-full min-h-[42px] px-3 pixel-btn pixel-btn-active flex items-center gap-2 text-xs font-bold text-left"
-                    data-testid="editor-export-gif-btn"
-                  >
-                    <PixelIcon name="film" size={16} />
-                    <span>{t('exportGif')}</span>
-                  </button>
+                  {editor.timeline.frames.length >= 2 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHeaderMenuOpen(false)
+                        setExportGifOpen(true)
+                      }}
+                      className="w-full min-h-[42px] px-3 pixel-btn pixel-btn-active flex items-center gap-2 text-xs font-bold text-left"
+                      data-testid="editor-export-gif-btn"
+                    >
+                      <PixelIcon name="film" size={16} />
+                      <span>{t('exportGif')}</span>
+                    </button>
+                  )}
 
                   <button
                     type="button"
