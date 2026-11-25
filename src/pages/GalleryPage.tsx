@@ -1,4 +1,5 @@
 import { ViewTransition, useMemo, useRef, useState } from 'react'
+import { motion } from 'motion/react'
 import type { AppSettings, ProjectRecord } from '../types'
 import { createNewProject, db } from '../db/database'
 import { exportEnvironmentPackZip } from '../db/envPack'
@@ -36,6 +37,7 @@ export function GalleryPage() {
     projects,
     palettes,
     settings,
+    reducedMotion,
     backupReminderDue,
     originStorageStatus,
     lowStorageWarningDue,
@@ -393,26 +395,55 @@ export function GalleryPage() {
                     dragState.draggingId !== proj.id
 
                   return (
-                    <div
+                    <motion.div
                       key={proj.id}
-                      {...getItemProps(proj.id)}
-                      onClick={() => {
-                        if (shouldSuppressClick()) return
-                        if (!reorderMode) {
-                          void updateSettings({ activeProjectId: proj.id })
-                          // Section 10: Always navigate to Project Viewing Screen (`/project/:id`) first!
-                          vtNavigate(`/project/${proj.id}`)
-                        }
-                      }}
-                      className={`group relative flex flex-col pixel-card overflow-hidden cursor-pointer select-none ${
-                        isDropTarget
-                          ? 'outline-2 outline-dashed outline-[var(--accent-teal)]'
-                          : isActive
-                            ? 'outline-2 outline-offset-2 outline-[var(--accent-primary)]'
-                            : ''
-                      } ${isDraggingThis ? 'opacity-65' : ''}`}
-                      data-testid={`gallery-tile-${proj.id}`}
+                      layout={!reducedMotion && dragState === null}
+                      initial={
+                        reducedMotion
+                          ? false
+                          : { opacity: 0, y: 10, scale: 0.98 }
+                      }
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      whileHover={
+                        reducedMotion || dragState !== null
+                          ? undefined
+                          : { y: -2 }
+                      }
+                      whileTap={
+                        reducedMotion || dragState !== null
+                          ? undefined
+                          : { scale: 0.98 }
+                      }
+                      transition={
+                        reducedMotion
+                          ? { duration: 0 }
+                          : {
+                              type: 'spring',
+                              stiffness: 460,
+                              damping: 32,
+                              mass: 0.8,
+                            }
+                      }
                     >
+                      <div
+                        {...getItemProps(proj.id)}
+                        onClick={() => {
+                          if (shouldSuppressClick()) return
+                          if (!reorderMode) {
+                            void updateSettings({ activeProjectId: proj.id })
+                            // Section 10: Always navigate to Project Viewing Screen (`/project/:id`) first!
+                            vtNavigate(`/project/${proj.id}`)
+                          }
+                        }}
+                        className={`group relative flex flex-col pixel-card overflow-hidden cursor-pointer select-none ${
+                          isDropTarget
+                            ? 'outline-2 outline-dashed outline-[var(--accent-teal)]'
+                            : isActive
+                              ? 'outline-2 outline-offset-2 outline-[var(--accent-primary)]'
+                              : ''
+                        } ${isDraggingThis ? 'opacity-65' : ''}`}
+                        data-testid={`gallery-tile-${proj.id}`}
+                      >
                       <div className="aspect-square w-full overflow-hidden">
                         <ViewTransition name={`artwork-${proj.id}`}>
                           <PixelThumbnail
@@ -458,7 +489,8 @@ export function GalleryPage() {
                           </button>
                         </div>
                       )}
-                    </div>
+                      </div>
+                    </motion.div>
                   )
                 })}
               </div>

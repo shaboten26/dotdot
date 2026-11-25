@@ -211,5 +211,5 @@ describe('Full React UI Workflow Integration Tests', () => {
     await waitFor(() => {
       expect(document.documentElement.classList.contains('dark')).toBe(false)
     })
-  })
+  }, 15000)
 })

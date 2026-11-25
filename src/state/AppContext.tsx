@@ -10,6 +10,7 @@ import React, {
 import type {
   AppSettings,
   CanvasSizePreset,
+  ClipboardBuffer,
   PaletteData,
   ProjectRecord,
   UiSizeConfig,
@@ -46,6 +47,8 @@ export interface AppContextValue {
   reducedMotion: boolean
   palettes: PaletteData[]
   projects: ProjectRecord[]
+  sharedClipboard: ClipboardBuffer | null
+  setSharedClipboard: (clip: ClipboardBuffer | null) => void
   toasts: ToastMessage[]
   backupReminderDue: boolean
   originStorageStatus: OriginLowStorageStatus
@@ -94,6 +97,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS)
   const [palettes, setPalettes] = useState<PaletteData[]>([])
   const [projects, setProjects] = useState<ProjectRecord[]>([])
+  const [sharedClipboardState, setSharedClipboardState] =
+    useState<ClipboardBuffer | null>(null)
+  const setSharedClipboard = useCallback((clip: ClipboardBuffer | null) => {
+    if (!clip) {
+      setSharedClipboardState(null)
+      return
+    }
+    setSharedClipboardState({
+      width: clip.width,
+      height: clip.height,
+      offsetX: clip.offsetX,
+      offsetY: clip.offsetY,
+      data: new Uint8ClampedArray(clip.data),
+    })
+  }, [])
   const [toasts, setToasts] = useState<ToastMessage[]>([])
   const [backupCheckTick, setBackupCheckTick] = useState<number>(() => Date.now())
   const [originStorageStatus, setOriginStorageStatus] = useState<OriginLowStorageStatus>(() =>
@@ -544,6 +562,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       reducedMotion,
       palettes,
       projects,
+      sharedClipboard: sharedClipboardState,
+      setSharedClipboard,
       toasts,
       backupReminderDue,
       originStorageStatus,
@@ -577,6 +597,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       reducedMotion,
       palettes,
       projects,
+      sharedClipboardState,
+      setSharedClipboard,
       toasts,
       backupReminderDue,
       originStorageStatus,

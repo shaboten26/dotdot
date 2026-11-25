@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { motion } from 'motion/react'
 import {
   TRANSPARENT_COLOR_INDEX,
   type PaletteData,
@@ -23,6 +24,7 @@ import { PixelSlider } from '../common/PixelSlider'
 import { PixelSelect } from '../common/PixelSelect'
 import { getCheckerboardStyle } from '../common/PixelThumbnail'
 import { useLongPressReorder } from '../../utils/useLongPressReorder'
+import { useApp } from '../../state/AppContext'
 import { useI18n } from '../../i18n/I18nContext'
 
 interface PaletteSheetProps {
@@ -53,6 +55,7 @@ export function PaletteSheet({
   onSaveToLibrary,
 }: PaletteSheetProps) {
   const { t } = useI18n()
+  const { reducedMotion } = useApp()
   const [tab, setTab] = useState<'hsv' | 'rgb' | 'hex'>('hsv')
   const swatchGridRef = useRef<HTMLDivElement | null>(null)
 
@@ -497,96 +500,118 @@ export function PaletteSheet({
               </div>
 
               <div className="flex gap-1">
-                {(['hsv', 'rgb', 'hex'] as const).map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => setTab(m)}
-                    className={`min-h-[36px] px-2.5 text-xs font-bold uppercase ${
-                      tab === m ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-                    }`}
-                    data-testid={`color-tab-${m}`}
-                  >
-                    {m}
-                  </button>
-                ))}
+                {(['hsv', 'rgb', 'hex'] as const).map((m) => {
+                  const active = tab === m
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setTab(m)}
+                      className={`relative min-h-[36px] px-2.5 text-xs font-bold uppercase overflow-hidden ${
+                        active ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+                      }`}
+                      data-testid={`color-tab-${m}`}
+                    >
+                      {active && !reducedMotion && (
+                        <motion.span
+                          layoutId="palette-color-mode-pill"
+                          transition={{
+                            type: 'spring',
+                            stiffness: 520,
+                            damping: 36,
+                          }}
+                          className="absolute inset-0 bg-[var(--accent-primary)] pointer-events-none"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span className="relative z-10">{m}</span>
+                    </button>
+                  )
+                })}
               </div>
             </div>
 
-            {tab === 'hsv' && (
-              <div className="space-y-2">
-                <SliderNumberRow
-                  label={t('hue')}
-                  min={0}
-                  max={360}
-                  value={hsv.h}
-                  onChange={(val) => handleHsvChange(val, hsv.s, hsv.v)}
-                />
-                <SliderNumberRow
-                  label={t('saturation')}
-                  min={0}
-                  max={100}
-                  value={hsv.s}
-                  onChange={(val) => handleHsvChange(hsv.h, val, hsv.v)}
-                />
-                <SliderNumberRow
-                  label={t('value')}
-                  min={0}
-                  max={100}
-                  value={hsv.v}
-                  onChange={(val) => handleHsvChange(hsv.h, hsv.s, val)}
-                />
-              </div>
-            )}
+            <motion.div
+              key={tab}
+              initial={reducedMotion ? false : { opacity: 0.72, y: 3 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: reducedMotion ? 0 : 0.12, ease: 'easeOut' }}
+            >
+              {tab === 'hsv' && (
+                <div className="space-y-2">
+                  <SliderNumberRow
+                    label={t('hue')}
+                    min={0}
+                    max={360}
+                    value={hsv.h}
+                    onChange={(val) => handleHsvChange(val, hsv.s, hsv.v)}
+                  />
+                  <SliderNumberRow
+                    label={t('saturation')}
+                    min={0}
+                    max={100}
+                    value={hsv.s}
+                    onChange={(val) => handleHsvChange(hsv.h, val, hsv.v)}
+                  />
+                  <SliderNumberRow
+                    label={t('value')}
+                    min={0}
+                    max={100}
+                    value={hsv.v}
+                    onChange={(val) => handleHsvChange(hsv.h, hsv.s, val)}
+                  />
+                </div>
+              )}
 
-            {tab === 'rgb' && (
-              <div className="space-y-2">
-                <SliderNumberRow
-                  label={t('red')}
-                  min={0}
-                  max={255}
-                  value={rgb.r}
-                  onChange={(val) => handleRgbChange(val, rgb.g, rgb.b)}
-                />
-                <SliderNumberRow
-                  label={t('green')}
-                  min={0}
-                  max={255}
-                  value={rgb.g}
-                  onChange={(val) => handleRgbChange(rgb.r, val, rgb.b)}
-                />
-                <SliderNumberRow
-                  label={t('blue')}
-                  min={0}
-                  max={255}
-                  value={rgb.b}
-                  onChange={(val) => handleRgbChange(rgb.r, rgb.g, val)}
-                />
-              </div>
-            )}
+              {tab === 'rgb' && (
+                <div className="space-y-2">
+                  <SliderNumberRow
+                    label={t('red')}
+                    min={0}
+                    max={255}
+                    value={rgb.r}
+                    onChange={(val) => handleRgbChange(val, rgb.g, rgb.b)}
+                  />
+                  <SliderNumberRow
+                    label={t('green')}
+                    min={0}
+                    max={255}
+                    value={rgb.g}
+                    onChange={(val) => handleRgbChange(rgb.r, val, rgb.b)}
+                  />
+                  <SliderNumberRow
+                    label={t('blue')}
+                    min={0}
+                    max={255}
+                    value={rgb.b}
+                    onChange={(val) => handleRgbChange(rgb.r, rgb.g, val)}
+                  />
+                </div>
+              )}
 
-            {tab === 'hex' && (
-              <div className="flex items-center gap-2">
-                <label className="text-xs font-bold text-[var(--text-secondary)] shrink-0">
-                  {t('hexCode')}
-                </label>
-                <input
-                  type="text"
-                  value={hexInput}
-                  onChange={(e) => handleHexInputChange(e.target.value)}
-                  placeholder="#RRGGBB"
-                  maxLength={7}
-                  className="flex-1 min-h-[38px] px-3 text-sm pixel-input uppercase"
-                  data-testid="hex-direct-input"
-                />
-                <input
-                  type="color"
-                  value={currentHex}
-                  onChange={(e) => handleHexInputChange(e.target.value)}
-                  className="w-9 h-9 border-2 border-[var(--border-pixel)] cursor-pointer bg-transparent"
-                />
-              </div>
-            )}
+              {tab === 'hex' && (
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-bold text-[var(--text-secondary)] shrink-0">
+                    {t('hexCode')}
+                  </label>
+                  <input
+                    type="text"
+                    value={hexInput}
+                    onChange={(e) => handleHexInputChange(e.target.value)}
+                    placeholder="#RRGGBB"
+                    maxLength={7}
+                    className="flex-1 min-h-[38px] px-3 text-sm pixel-input uppercase"
+                    data-testid="hex-direct-input"
+                  />
+                  <input
+                    type="color"
+                    value={currentHex}
+                    onChange={(e) => handleHexInputChange(e.target.value)}
+                    className="w-9 h-9 border-2 border-[var(--border-pixel)] cursor-pointer bg-transparent"
+                  />
+                </div>
+              )}
+            </motion.div>
           </div>
         )}
       </div>

@@ -194,6 +194,8 @@ export interface UseEditorOptions {
   projectId: string | null
   historyLimit: number | 'unlimited'
   soundEnabled: boolean
+  sharedClipboard?: ClipboardBuffer | null
+  onUpdateSharedClipboard?: (clip: ClipboardBuffer | null) => void
   onSaved?: () => void
   onQuotaTrimmed?: () => void
   onSaveError?: () => void
@@ -205,6 +207,8 @@ export function useEditorController(options: UseEditorOptions) {
     projectId,
     historyLimit,
     soundEnabled,
+    sharedClipboard,
+    onUpdateSharedClipboard,
     onSaved,
     onQuotaTrimmed,
     onSaveError,
@@ -268,7 +272,16 @@ export function useEditorController(options: UseEditorOptions) {
   const [moveSession, setMoveSession] = useState<ActiveMoveSession | null>(null)
   const [selectionMask, setSelectionMask] = useState<Uint8Array | null>(null)
   const [worldSelection, setWorldSelection] = useState<WorldSelectionMask | null>(null)
-  const [clipboard, setClipboard] = useState<ClipboardBuffer | null>(null)
+  const [localClipboard, setLocalClipboard] = useState<ClipboardBuffer | null>(null)
+  const clipboard =
+    sharedClipboard !== undefined ? sharedClipboard : localClipboard
+  const updateClipboard = useCallback(
+    (next: ClipboardBuffer | null) => {
+      setLocalClipboard(next)
+      onUpdateSharedClipboard?.(next)
+    },
+    [onUpdateSharedClipboard]
+  )
 
   const [undoCount, setUndoCount] = useState(0)
   const [redoCount, setRedoCount] = useState(0)
@@ -679,8 +692,12 @@ export function useEditorController(options: UseEditorOptions) {
         pixelPatches: patch ? [patch] : undefined,
         beforeSelection: selectionTransition?.before,
         afterSelection: selectionTransition?.after,
-        beforeWorldSelection: cloneWorldSelectionMask(resolvedBeforeWorld),
-        afterWorldSelection: cloneWorldSelectionMask(resolvedAfterWorld),
+        beforeWorldSelection: selectionTransition
+          ? cloneWorldSelectionMask(resolvedBeforeWorld)
+          : undefined,
+        afterWorldSelection: selectionTransition
+          ? cloneWorldSelectionMask(resolvedAfterWorld)
+          : undefined,
       })
       syncHistoryCounts()
 
@@ -2028,9 +2045,9 @@ export function useEditorController(options: UseEditorOptions) {
     if (!project || !activeLayer || !effectiveWorldSelection) return false
     const clip = copyWorldSelectionFromLayer(activeLayer, effectiveWorldSelection)
     if (!clip) return false
-    setClipboard(clip)
+    updateClipboard(clip)
     return true
-  }, [project, activeLayer, effectiveWorldSelection])
+  }, [project, activeLayer, effectiveWorldSelection, updateClipboard])
 
   const cutSelectedPixels = useCallback((): boolean => {
     if (!project || !activeLayer || !effectiveWorldSelection) {
@@ -2041,24 +2058,37 @@ export function useEditorController(options: UseEditorOptions) {
       effectiveWorldSelection
     )
     if (!clip) return false
-    setClipboard(clip)
+    updateClipboard(clip)
     commitUpdatedLayer(activeLayer, nextLayer, 'Cut Selection')
     return true
-  }, [project, activeLayer, effectiveWorldSelection, commitUpdatedLayer])
+  }, [project, activeLayer, effectiveWorldSelection, updateClipboard, commitUpdatedLayer])
 
   const pasteClipboardPixels = useCallback((): boolean => {
     if (!project || !activeLayer || !activeLayerCanvasView || !clipboard) return false
     const beforeMask = cloneSelectionMask(selectionMask)
     const beforeWorld = cloneWorldSelectionMask(effectiveWorldSelection)
 
-    // Stamp clipboard into world layer at (clipboard.offsetX, clipboard.offsetY) so even off-canvas clipboard coordinates preserve pixels!
+    // When pasting across canvases of different dimensions, if the copied origin would land completely outside
+    // `[0..project.width-1, 0..project.height-1]`, clamp it onto the visible canvas so pasted art is never lost off-screen!
+    const intersectsCanvas =
+      clipboard.offsetX < project.width &&
+      clipboard.offsetX + clipboard.width > 0 &&
+      clipboard.offsetY < project.height &&
+      clipboard.offsetY + clipboard.height > 0
+    const targetOffsetX = intersectsCanvas
+      ? clipboard.offsetX
+      : Math.max(0, Math.min(project.width - clipboard.width, clipboard.offsetX))
+    const targetOffsetY = intersectsCanvas
+      ? clipboard.offsetY
+      : Math.max(0, Math.min(project.height - clipboard.height, clipboard.offsetY))
+
     const afterLayer = stampBufferIntoLayerWorld(
       activeLayer,
       clipboard.data,
       clipboard.width,
       clipboard.height,
-      clipboard.offsetX,
-      clipboard.offsetY
+      targetOffsetX,
+      targetOffsetY
     )
     const pastedMask = new Uint8Array(clipboard.width * clipboard.height)
     let anyNonTransparent = false
@@ -2070,15 +2100,15 @@ export function useEditorController(options: UseEditorOptions) {
     }
     const afterWorld: WorldSelectionMask | null = anyNonTransparent
       ? {
-          originX: clipboard.offsetX,
-          originY: clipboard.offsetY,
+          originX: targetOffsetX,
+          originY: targetOffsetY,
           width: clipboard.width,
           height: clipboard.height,
           mask: pastedMask,
         }
       : {
-          originX: clipboard.offsetX,
-          originY: clipboard.offsetY,
+          originX: targetOffsetX,
+          originY: targetOffsetY,
           width: clipboard.width,
           height: clipboard.height,
           mask: new Uint8Array(clipboard.width * clipboard.height).fill(1),
@@ -2803,7 +2833,7 @@ export function useEditorController(options: UseEditorOptions) {
       const target = layers.find((l) => l.id === layerId)
       if (!target) return false
       const view = extractLayerCanvasView(target, project.width, project.height)
-      setClipboard({
+      updateClipboard({
         width: project.width,
         height: project.height,
         offsetX: 0,
@@ -2812,7 +2842,7 @@ export function useEditorController(options: UseEditorOptions) {
       })
       return true
     },
-    [project, layers]
+    [project, layers, updateClipboard]
   )
 
   const flipLayer = useCallback(

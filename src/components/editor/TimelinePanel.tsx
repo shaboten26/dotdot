@@ -93,7 +93,7 @@ export function TimelinePanel({
   timeline,
   selectedCellKeys,
   celClipboard,
-  isPlaying,
+  isPlaying: _isPlaying,
   playbackSpeed,
   onionSkin,
   onSelectLayer,
@@ -432,98 +432,85 @@ export function TimelinePanel({
       )}
       </AnimatePresence>
 
-      {/* Main Row 1: Frame Status Indicator + Frame Add/Dup/Del + Cel Menu + Animation Settings (Transport moved to Tool Operation Dock!) */}
-      <div className="flex flex-wrap items-center justify-between gap-1.5 text-xs">
-        <div
-          className={`min-h-[34px] px-2.5 border-2 flex items-center gap-1.5 font-bold pixel-num ${
-            isPlaying
-              ? 'bg-[var(--accent-teal)] text-[var(--accent-teal-fg)] border-[var(--border-strong)]'
-              : 'bg-[var(--bg-elevated)] text-[var(--text-primary)] border-[var(--border-subtle)]'
-          }`}
-          data-testid="timeline-active-frame-status"
-        >
-          <PixelIcon name={isPlaying ? 'play' : 'film'} size={12} />
-          <span>
-            #{activeFrameIdx + 1}/{timeline.frames.length}
-          </span>
-          <span className="opacity-80 text-[11px]">
-            {activeFrame.durationMs}ms
-          </span>
-        </div>
+      {/* Main Row 1: Frame Add/Dup/Del + Cel Menu + Animation Settings (No #1/3 100ms badge; playback controls stay in the workspace tab bar!) */}
+      <div className="flex flex-wrap items-center justify-end gap-1 text-xs">
+        <div className="flex flex-wrap items-center gap-1 w-full justify-between">
+          <div className="flex flex-wrap items-center gap-1">
+            <button
+              type="button"
+              onClick={onAddEmptyFrame}
+              className="pixel-btn min-h-[36px] px-2.5 text-[11px] font-bold flex items-center gap-1"
+              data-testid="timeline-add-empty-frame-btn"
+            >
+              <PixelIcon name="plus" size={12} />
+              <span>{t('frameAddShort')}</span>
+            </button>
 
-        <div className="flex flex-wrap items-center gap-1">
-          <button
-            type="button"
-            onClick={onAddEmptyFrame}
-            className="pixel-btn min-h-[36px] px-2.5 text-[11px] font-bold flex items-center gap-1"
-            data-testid="timeline-add-empty-frame-btn"
-          >
-            <PixelIcon name="plus" size={12} />
-            <span>{t('frameAddShort')}</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => onDuplicateFrame('independent')}
+              className="pixel-btn min-h-[36px] px-2.5 text-[11px] font-bold flex items-center gap-1"
+              data-testid="timeline-dup-frame-btn"
+            >
+              <PixelIcon name="copy" size={12} />
+              <span>{t('frameDupShort')}</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => onDuplicateFrame('independent')}
-            className="pixel-btn min-h-[36px] px-2.5 text-[11px] font-bold flex items-center gap-1"
-            data-testid="timeline-dup-frame-btn"
-          >
-            <PixelIcon name="copy" size={12} />
-            <span>{t('frameDupShort')}</span>
-          </button>
+            <button
+              type="button"
+              disabled={timeline.frames.length <= 1}
+              onClick={() => onDeleteFrame(activeFrame.id)}
+              className="pixel-btn pixel-btn-danger min-h-[36px] px-2 text-[11px] font-bold flex items-center gap-1"
+              data-testid="timeline-del-frame-btn"
+            >
+              <PixelIcon name="trash" size={12} />
+              <span>{t('frameDelShort')}</span>
+            </button>
+          </div>
 
-          <button
-            type="button"
-            disabled={timeline.frames.length <= 1}
-            onClick={() => onDeleteFrame(activeFrame.id)}
-            className="pixel-btn pixel-btn-danger min-h-[36px] px-2 text-[11px] font-bold flex items-center gap-1"
-            data-testid="timeline-del-frame-btn"
-          >
-            <PixelIcon name="trash" size={12} />
-            <span>{t('frameDelShort')}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setSettingsOpen(false)
-              setCelMenuOpen((v) => !v)
-            }}
-            className={`min-h-[36px] px-2 text-[11px] font-bold flex items-center gap-1 ${
-              celMenuOpen || activeCellState === 'linked'
-                ? 'pixel-btn pixel-btn-teal'
-                : 'pixel-btn'
-            }`}
-            data-testid="timeline-cel-menu-btn"
-          >
-            <PixelIcon
-              name={activeCellState === 'linked' ? 'link' : 'layers'}
-              size={12}
-            />
-            <span>{activeCellKindLabel}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setCelMenuOpen(false)
-              setSettingsOpen((v) => !v)
-            }}
-            title={t('animSettingsTitle')}
-            className={`relative min-w-[36px] min-h-[36px] px-2 text-[11px] font-bold flex items-center justify-center gap-1 ${
-              settingsOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-            }`}
-            data-testid="timeline-settings-btn"
-          >
-            <PixelIcon name="settings" size={14} />
-            <span className="hidden sm:inline">{t('animSettingsBtn')}</span>
-            {onionSkin.enabled && (
-              <span
-                className="absolute top-0.5 right-0.5 w-2 h-2 bg-[var(--accent-teal)] border border-[var(--border-strong)]"
-                aria-hidden="true"
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                setSettingsOpen(false)
+                setCelMenuOpen((v) => !v)
+              }}
+              className={`min-h-[36px] px-2 text-[11px] font-bold flex items-center gap-1 ${
+                celMenuOpen || activeCellState === 'linked'
+                  ? 'pixel-btn pixel-btn-teal'
+                  : 'pixel-btn'
+              }`}
+              data-testid="timeline-cel-menu-btn"
+            >
+              <PixelIcon
+                name={activeCellState === 'linked' ? 'link' : 'layers'}
+                size={12}
               />
-            )}
-          </button>
+              <span>{activeCellKindLabel}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setCelMenuOpen(false)
+                setSettingsOpen((v) => !v)
+              }}
+              title={t('animSettingsTitle')}
+              className={`relative min-w-[36px] min-h-[36px] px-2 text-[11px] font-bold flex items-center justify-center gap-1 ${
+                settingsOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+              }`}
+              data-testid="timeline-settings-btn"
+            >
+              <PixelIcon name="settings" size={14} />
+              <span className="hidden sm:inline">{t('animSettingsBtn')}</span>
+              {onionSkin.enabled && (
+                <span
+                  className="absolute top-0.5 right-0.5 w-2 h-2 bg-[var(--accent-teal)] border border-[var(--border-strong)]"
+                  aria-hidden="true"
+                />
+              )}
+            </button>
+          </div>
         </div>
       </div>
 
