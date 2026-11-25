@@ -111,18 +111,29 @@ body,
 }
 
 /*
- * Section 1: iOS 27 PWA Top Progressive Blur Workaround
- * Reference: https://qiita.com/na-trium-144/items/0add98a80ca2391e3f17
- * WebKit checks for a top fixed element > 10px with an opaque background-color;
- * clipping that background to empty text keeps 0 visible pixels while disabling the unwanted blur
- * and matching the current theme's top header surface color!
+ * Fundamental iOS Home-Screen Standalone PWA Top Blur Suppression:
+ * 1. `.ios-pwa-top-solid-cap` provides a genuine, opaque `position: fixed; top: 0` strip (`>= 12px` & safe-area height)
+ *    using `var(--bg-surface)` directly behind the `z-20`/`z-30` app headers so WebKit's fixed-top-bar detector
+ *    always sees real opaque pixels without covering header controls.
+ * 2. `.ios-pwa-top-blur-fix` keeps a top-most zero-paint `background-clip: text` fixed sentinel for highest-z-index checks.
  */
+.ios-pwa-top-solid-cap {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: max(env(safe-area-inset-top, 0px), 12px);
+  z-index: 15;
+  pointer-events: none;
+  background-color: var(--bg-surface);
+}
+
 .ios-pwa-top-blur-fix {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  height: 11px;
+  height: 12px;
   z-index: 2147483647;
   pointer-events: none;
   background-color: var(--bg-surface);

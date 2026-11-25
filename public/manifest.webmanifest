@@ -6,8 +6,8 @@
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#181521",
-  "theme_color": "#181521",
+  "background_color": "#1d1b26",
+  "theme_color": "#262332",
   "categories": ["graphics", "design", "creativity"],
   "icons": [
     {

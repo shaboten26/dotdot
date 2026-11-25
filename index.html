@@ -9,8 +9,34 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="dotdot" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="theme-color" content="#181521" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: light)"
+      content="#f6f3ee"
+    />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: dark)"
+      content="#262332"
+    />
+    <script>
+      ;(function () {
+        try {
+          var ua = navigator.userAgent || ''
+          var isIos =
+            /iPhone|iPad|iPod/i.test(ua) ||
+            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+          var isStandalone =
+            Boolean(navigator.standalone) ||
+            (window.matchMedia &&
+              window.matchMedia('(display-mode: standalone)').matches)
+          if (isIos && isStandalone) {
+            document.documentElement.setAttribute('data-ios-standalone', 'true')
+          }
+        } catch (_e) {}
+      })()
+    </script>
     <meta
       name="description"
       content="ブラウザ・ホーム画面からオフラインで使えるドット絵制作専用スタジオ dotdot"

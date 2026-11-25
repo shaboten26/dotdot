@@ -169,10 +169,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     root.style.colorScheme = isDark ? 'dark' : 'light'
     root.lang = settings.language
 
-    const metaTheme = document.querySelector('meta[name="theme-color"]')
-    if (metaTheme) {
-      metaTheme.setAttribute('content', isDark ? '#262332' : '#f6f3ee')
-    }
+    const metaThemes = document.querySelectorAll('meta[name="theme-color"]')
+    const headerHex = isDark ? '#262332' : '#f6f3ee'
+    metaThemes.forEach((meta) => {
+      meta.setAttribute('content', headerHex)
+    })
 
     const u = settings.uiSize
     root.style.setProperty('--ui-scale', String((u.overallScale || 100) / 100))
