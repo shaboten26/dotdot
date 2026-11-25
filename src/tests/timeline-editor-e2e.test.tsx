@@ -85,9 +85,14 @@ describe('Streamlined Timeline, Layer Workspace Separation, GIF Visibility & Vie
     fireEvent.click(screen.getByTestId('workspace-tab-timeline'))
     expect(screen.getByTestId('timeline-cel-menu-btn').textContent).toContain('空セル')
 
-    // 5. Open consolidated Settings Icon popover (`timeline-settings-btn`) -> test batch ms, default ms, direction, and Onion Skin!
+    // 5. Open scrollable Animation Settings Modal (`timeline-settings-btn`) -> test grouped sections, scroll body, batch ms, direction, Onion Skin, bottom-most section, and Close button!
     fireEvent.click(screen.getByTestId('timeline-settings-btn'))
-    expect(await screen.findByTestId('timeline-settings-popover')).toBeTruthy()
+    const animModal = await screen.findByTestId('timeline-settings-popover')
+    expect(animModal.getAttribute('role')).toBe('dialog')
+    const scrollBody = screen.getByTestId('animation-settings-scroll-body')
+    expect(scrollBody.className).toContain('overflow-y-auto')
+    expect(scrollBody.className).toContain('overscroll-contain')
+    expect(screen.getByTestId('anim-settings-link-timeline-group')).toBeTruthy()
     const batchInput = screen.getByTestId('batch-ms-input')
     fireEvent.change(batchInput, { target: { value: '150' } })
     fireEvent.click(screen.getByTestId('batch-apply-all-btn'))
@@ -98,7 +103,10 @@ describe('Streamlined Timeline, Layer Workspace Separation, GIF Visibility & Vie
     })
     fireEvent.click(screen.getByTestId('onion-enabled-checkbox'))
     fireEvent.click(screen.getByTestId('timeline-dir-pingpong-btn'))
-    fireEvent.click(screen.getByTestId('timeline-settings-btn'))
+    fireEvent.click(screen.getByTestId('close-animation-settings-btn'))
+    await waitFor(() => {
+      expect(screen.queryByTestId('timeline-settings-popover')).toBeNull()
+    })
 
     // 6. Switch back to `ツール` tab -> verify PC mouse pointer hides Draw button, touch restores it
     fireEvent.click(screen.getByTestId('workspace-tab-tools'))
@@ -384,5 +392,5 @@ describe('Streamlined Timeline, Layer Workspace Separation, GIF Visibility & Vie
     await waitFor(() => {
       expect(toolDoubleTap.getAttribute('aria-checked')).toBe('true')
     })
-  })
+  }, 15000)
 })

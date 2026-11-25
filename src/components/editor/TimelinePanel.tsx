@@ -11,8 +11,7 @@ import type {
   OnionSkinConfig,
 } from '../../state/useEditorController'
 import { PixelIcon } from '../common/PixelIcon'
-import { PixelCheckbox } from '../common/PixelCheckbox'
-import { PixelSlider } from '../common/PixelSlider'
+import { AnimationSettingsModal } from './AnimationSettingsModal'
 import { useI18n } from '../../i18n/I18nContext'
 
 interface TimelinePanelProps {
@@ -65,13 +64,11 @@ interface TimelinePanelProps {
   onUpdateOnionSkin: (patch: Partial<OnionSkinConfig>) => void
 }
 
-const SPEED_OPTIONS = [0.5, 1, 1.5, 2] as const
-
 /**
  * Streamlined Animation Timeline (`>= 2` frames):
  * - Keeps the main workspace clean and approachable: only core frame & playback controls are visible by default.
- * - Consolidates advanced settings (direction, loop/once, speed, per-frame/default/batch ms, onion skin)
- *   behind a dedicated Settings icon popover (`timeline-settings-btn`) without shrinking the canvas.
+ * - Consolidates advanced settings (direction, loop/once, speed, per-frame/default/batch ms, onion skin, cel summary)
+ *   into a scrollable responsive modal / mobile bottom-sheet (`AnimationSettingsModal`) without shrinking the canvas.
  * - Places linked/independent/empty cel operations inside a focused Cel Actions popover (`timeline-cel-menu-btn`
  *   or re-tapping the currently active cell).
  * - GIF Export button is intentionally omitted from the timeline (available in Viewer & Export menu when >=2 frames).
@@ -124,9 +121,6 @@ export function TimelinePanel({
     0,
     timeline.frames.findIndex((f) => f.id === activeFrame.id)
   )
-  const [batchMsInput, setBatchMsInput] = useState<number>(
-    activeFrame?.durationMs ?? 100
-  )
 
   const refCountMap = useMemo(
     () => getCelReferenceCountMap(timeline.cels),
@@ -164,252 +158,24 @@ export function TimelinePanel({
       className="relative px-2.5 py-1.5 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] space-y-1.5 shrink-0"
       data-testid="timeline-workspace-panel"
     >
-      {/* Floating Popover 1: Consolidated Advanced Animation Settings (Settings Icon) */}
-      {settingsOpen && (
-        <div
-          className="absolute bottom-full right-2 left-2 sm:left-auto sm:w-80 mb-1.5 z-30 pixel-popover-translucent p-3 space-y-3 text-xs max-h-[52dvh] overflow-y-auto"
-          data-testid="timeline-settings-popover"
-        >
-          <div className="flex items-center justify-between pb-1.5 border-b border-[var(--border-subtle)]">
-            <span className="font-bold text-[var(--accent-primary)] flex items-center gap-1.5">
-              <PixelIcon name="settings" size={14} />
-              <span>{t('animSettingsTitle')}</span>
-            </span>
-            <button
-              type="button"
-              onClick={() => setSettingsOpen(false)}
-              className="pixel-btn min-w-[28px] min-h-[28px] flex items-center justify-center"
-              aria-label={t('close')}
-            >
-              <PixelIcon name="close" size={12} />
-            </button>
-          </div>
-
-          {/* 1. Playback Direction, Loop & Speed */}
-          <div className="space-y-1.5">
-            <div className="grid grid-cols-3 gap-1">
-              {(
-                [
-                  { id: 'forward', label: t('dirForward') },
-                  { id: 'reverse', label: t('dirReverse') },
-                  { id: 'pingpong', label: t('dirPingpong') },
-                ] as const
-              ).map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => onSetPlaybackDirection(opt.id)}
-                  className={`min-h-[32px] px-2 text-[11px] font-bold ${
-                    timeline.playbackDirection === opt.id
-                      ? 'pixel-btn pixel-btn-active'
-                      : 'pixel-btn'
-                  }`}
-                  data-testid={`timeline-dir-${opt.id}-btn`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="flex items-center justify-between gap-1.5">
-              <button
-                type="button"
-                onClick={() => onSetLoopPlayback(!timeline.loopPlayback)}
-                className={`min-h-[32px] px-2.5 text-[11px] font-bold flex-1 ${
-                  timeline.loopPlayback ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-                }`}
-                data-testid="timeline-loop-btn"
-              >
-                {timeline.loopPlayback ? t('loopPlaybackLabel') : t('oncePlaybackLabel')}
-              </button>
-
-              <div className="flex items-center gap-1">
-                {SPEED_OPTIONS.map((sp) => (
-                  <button
-                    key={sp}
-                    type="button"
-                    onClick={() => onSetPlaybackSpeed(sp)}
-                    className={`min-h-[32px] px-2 text-[11px] font-mono font-bold ${
-                      playbackSpeed === sp
-                        ? 'pixel-btn pixel-btn-active'
-                        : 'pixel-btn'
-                    }`}
-                    data-testid={`timeline-speed-${sp}-btn`}
-                  >
-                    {sp}x
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* 2. Frame Duration (Current Frame, Default New Frame, and Batch Apply) */}
-          <div className="space-y-2 pt-2 border-t border-[var(--border-subtle)]">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] font-bold text-[var(--text-secondary)]">
-                {t('frameDurationLabel')} (#{activeFrameIdx + 1})
-              </span>
-              <div className="flex items-center gap-1">
-                <input
-                  type="number"
-                  min={10}
-                  max={60000}
-                  step={10}
-                  value={activeFrame.durationMs}
-                  onChange={(e) => {
-                    const v = Number(e.target.value)
-                    if (!Number.isNaN(v) && v >= 10) {
-                      onSetFrameDuration(activeFrame.id, v)
-                    }
-                  }}
-                  className="w-20 min-h-[32px] px-2 text-right text-xs font-bold pixel-input"
-                  data-testid="active-frame-ms-input"
-                />
-                <span className="text-[10px] text-[var(--text-secondary)]">ms</span>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] text-[var(--text-secondary)]">
-                {t('defaultFrameDurationLabel')}
-              </span>
-              <div className="flex items-center gap-1">
-                <input
-                  type="number"
-                  min={10}
-                  max={60000}
-                  step={10}
-                  value={timeline.defaultFrameDurationMs}
-                  onChange={(e) => {
-                    const v = Number(e.target.value)
-                    if (!Number.isNaN(v) && v >= 10) {
-                      onSetDefaultFrameDuration(v)
-                    }
-                  }}
-                  className="w-20 min-h-[32px] px-2 text-right text-xs font-bold pixel-input"
-                  data-testid="default-frame-ms-input"
-                />
-                <span className="text-[10px] text-[var(--text-secondary)]">ms</span>
-              </div>
-            </div>
-
-            <div className="p-2 bg-[var(--bg-elevated)] border border-[var(--border-subtle)] space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-bold">{t('batchDurationLabel')}</span>
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    min={10}
-                    max={60000}
-                    step={10}
-                    value={batchMsInput}
-                    onChange={(e) =>
-                      setBatchMsInput(Math.max(10, Number(e.target.value) || 100))
-                    }
-                    className="w-20 min-h-[30px] px-2 text-right text-xs font-bold pixel-input"
-                    data-testid="batch-ms-input"
-                  />
-                  <span className="text-[10px] text-[var(--text-secondary)]">ms</span>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    onApplyBatchDuration({ mode: 'all' }, batchMsInput)
-                  }}
-                  className="pixel-btn pixel-btn-teal min-h-[30px] px-2.5 text-[11px] font-bold"
-                  data-testid="batch-apply-all-btn"
-                >
-                  {t('applyAllFramesBtn')}
-                </button>
-                {selectedFrameIdsFromCells.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onApplyBatchDuration(
-                        {
-                          mode: 'selected',
-                          selectedFrameIds: selectedFrameIdsFromCells,
-                        },
-                        batchMsInput
-                      )
-                    }}
-                    className="pixel-btn min-h-[30px] px-2.5 text-[11px] font-bold"
-                    data-testid="batch-apply-selected-btn"
-                  >
-                    {t('applySelectedFramesBtn')} ({selectedFrameIdsFromCells.length})
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* 3. Onion Skin Settings */}
-          <div
-            className="space-y-2 pt-2 border-t border-[var(--border-subtle)]"
-            data-testid="onion-skin-popover"
-          >
-            <PixelCheckbox
-              checked={onionSkin.enabled}
-              onChange={(v) => onUpdateOnionSkin({ enabled: v })}
-              label={t('onionSkinLabel')}
-              testId="onion-enabled-checkbox"
-            />
-            {onionSkin.enabled && (
-              <div className="space-y-2 pl-1">
-                <div className="grid grid-cols-2 gap-1.5">
-                  <PixelCheckbox
-                    checked={onionSkin.showPrev}
-                    onChange={(v) => onUpdateOnionSkin({ showPrev: v })}
-                    label={t('onionPrevLabel')}
-                  />
-                  <PixelCheckbox
-                    checked={onionSkin.showNext}
-                    onChange={(v) => onUpdateOnionSkin({ showNext: v })}
-                    label={t('onionNextLabel')}
-                  />
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-12 shrink-0 text-[11px]">
-                    {t('onionCountLabel')}
-                  </span>
-                  {[1, 2, 3].map((n) => (
-                    <button
-                      key={n}
-                      type="button"
-                      onClick={() =>
-                        onUpdateOnionSkin({ prevCount: n, nextCount: n })
-                      }
-                      className={`min-h-[28px] px-2 text-xs font-bold ${
-                        onionSkin.prevCount === n
-                          ? 'pixel-btn pixel-btn-active'
-                          : 'pixel-btn'
-                      }`}
-                    >
-                      ±{n}
-                    </button>
-                  ))}
-                </div>
-                <div className="space-y-1">
-                  <span className="text-[11px]">
-                    {t('onionOpacityLabel')}: <strong>{onionSkin.opacity}%</strong>
-                  </span>
-                  <PixelSlider
-                    min={10}
-                    max={80}
-                    step={5}
-                    value={onionSkin.opacity}
-                    unit="%"
-                    ariaLabel={t('onionOpacityLabel')}
-                    onChange={(v) => onUpdateOnionSkin({ opacity: v })}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Scrollable Animation Settings Modal / Mobile Bottom-Sheet (Safe-area aware, overscroll-contain) */}
+      <AnimationSettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        layers={layers}
+        activeLayerId={activeLayerId}
+        timeline={timeline}
+        selectedFrameIds={selectedFrameIdsFromCells}
+        playbackSpeed={playbackSpeed}
+        onionSkin={onionSkin}
+        onSetPlaybackDirection={onSetPlaybackDirection}
+        onSetLoopPlayback={onSetLoopPlayback}
+        onSetPlaybackSpeed={onSetPlaybackSpeed}
+        onSetFrameDuration={onSetFrameDuration}
+        onSetDefaultFrameDuration={onSetDefaultFrameDuration}
+        onApplyBatchDuration={onApplyBatchDuration}
+        onUpdateOnionSkin={onUpdateOnionSkin}
+      />
 
       {/* Floating Popover 2: Focused Cel & Linked-Cel Detail Menu (opened on demand) */}
       {celMenuOpen && (
@@ -659,7 +425,6 @@ export function TimelinePanel({
             type="button"
             onClick={() => {
               setCelMenuOpen(false)
-              setBatchMsInput(activeFrame.durationMs)
               setSettingsOpen((v) => !v)
             }}
             title={t('animSettingsTitle')}
