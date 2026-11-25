@@ -489,29 +489,50 @@ export function EditorPage() {
         {/* Lower Dock */}
         <section className="relative flex flex-col shrink-0 z-20">
           {editor.moveSession ? (
-            <ActiveMoveBar
-              moveSession={editor.moveSession}
-              onMoveStep={editor.updateActiveMoveOffset}
-              onCommit={editor.commitActiveMove}
-              onCancel={editor.cancelActiveMove}
-            />
+            <motion.div
+              key="active-move-bar"
+              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: reducedMotion ? 0 : 0.1, ease: 'easeOut' }}
+            >
+              <ActiveMoveBar
+                moveSession={editor.moveSession}
+                onMoveStep={editor.updateActiveMoveOffset}
+                onCommit={editor.commitActiveMove}
+                onCancel={editor.cancelActiveMove}
+              />
+            </motion.div>
           ) : editor.floatingShape ? (
-            <FloatingTransformBar
-              floatingShape={editor.floatingShape}
-              onRotate={editor.rotateFloatingShape}
-              onMove={editor.moveFloatingShape}
-              onCommit={editor.commitFloatingShape}
-              onDiscard={editor.discardFloatingShape}
-            />
+            <motion.div
+              key="floating-transform-bar"
+              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: reducedMotion ? 0 : 0.1, ease: 'easeOut' }}
+            >
+              <FloatingTransformBar
+                floatingShape={editor.floatingShape}
+                onRotate={editor.rotateFloatingShape}
+                onMove={editor.moveFloatingShape}
+                onCommit={editor.commitFloatingShape}
+                onDiscard={editor.discardFloatingShape}
+              />
+            </motion.div>
           ) : (
             <>
               {editor.hasSelection && !optionsOpen && (
-                <SelectionReadyBar
-                  onStartMove={() => {
-                    editor.startSelectionMove()
-                  }}
-                  onClearSelection={editor.clearCurrentSelection}
-                />
+                <motion.div
+                  key="selection-ready-bar"
+                  initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: reducedMotion ? 0 : 0.1, ease: 'easeOut' }}
+                >
+                  <SelectionReadyBar
+                    onStartMove={() => {
+                      editor.startSelectionMove()
+                    }}
+                    onClearSelection={editor.clearCurrentSelection}
+                  />
+                </motion.div>
               )}
               <ToolDetailPopover
                 open={optionsOpen}
@@ -644,6 +665,19 @@ export function EditorPage() {
           </div>
 
           {/* 2. Workspace Content (`ツール` Multi-Row Grid OR `レイヤー` [1 frame, reusing original LayerPanelContent] / `タイムライン` [>=2 frames]) */}
+          <motion.div
+            key={
+              workspaceTab === 'tools'
+                ? 'dock-tools'
+                : editor.timeline.frames.length <= 1
+                  ? 'dock-layers'
+                  : 'dock-timeline'
+            }
+            initial={reducedMotion ? { opacity: 1 } : { opacity: 0.72, y: 3 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: reducedMotion ? 0 : 0.11, ease: 'easeOut' }}
+            className="flex flex-col shrink-0"
+          >
           {workspaceTab === 'tools' ? (
             <MultiRowToolGrid
               tool={editor.tool}
@@ -812,6 +846,7 @@ export function EditorPage() {
               />
             </>
           )}
+          </motion.div>
 
           {/* 3. Palette Swatch Strip (with fixed leftmost Transparent Slot & Drag Reorder) */}
           <PaletteBar

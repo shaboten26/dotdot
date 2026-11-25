@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import type { LayerRuntime, PlaybackDirection } from '../../types'
 import {
   getCellStateKind,
@@ -15,6 +16,7 @@ import { PixelIcon } from '../common/PixelIcon'
 import { AnimationSettingsModal } from './AnimationSettingsModal'
 import { LinkCelModal } from './LinkCelModal'
 import { useI18n } from '../../i18n/I18nContext'
+import { useApp } from '../../state/AppContext'
 
 interface TimelinePanelProps {
   canvasWidth?: number
@@ -121,6 +123,7 @@ export function TimelinePanel({
   onUpdateOnionSkin,
 }: TimelinePanelProps) {
   const { t } = useI18n()
+  const { reducedMotion } = useApp()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [celMenuOpen, setCelMenuOpen] = useState(false)
   const [linkModalOpen, setLinkModalOpen] = useState(false)
@@ -240,8 +243,13 @@ export function TimelinePanel({
       )}
 
       {/* Floating Popover 2: Focused Cel & Linked-Cel Detail Menu (opened on demand) */}
+      <AnimatePresence>
       {celMenuOpen && (
-        <div
+        <motion.div
+          initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 4 }}
+          transition={{ duration: reducedMotion ? 0 : 0.11, ease: 'easeOut' }}
           className="absolute bottom-full right-2 left-2 sm:left-auto sm:w-72 mb-1.5 z-30 pixel-popover-translucent p-2.5 space-y-2 text-xs"
           data-testid="cel-actions-popover"
         >
@@ -420,8 +428,9 @@ export function TimelinePanel({
               </div>
             )}
           </div>
-        </div>
+        </motion.div>
       )}
+      </AnimatePresence>
 
       {/* Main Row 1: Frame Status Indicator + Frame Add/Dup/Del + Cel Menu + Animation Settings (Transport moved to Tool Operation Dock!) */}
       <div className="flex flex-wrap items-center justify-between gap-1.5 text-xs">
