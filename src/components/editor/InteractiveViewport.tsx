@@ -499,8 +499,8 @@ export function InteractiveViewport({
       Math.round(4 * dpr),
       Math.min(Math.round(16 * dpr), scale >= 2 ? Math.round(scale * dpr) : Math.round(8 * dpr))
     )
-    const cLight = checkerboardDark ? '#272334' : '#ede9df'
-    const cDark = checkerboardDark ? '#1d1a27' : '#dbd5c7'
+    const cLight = checkerboardDark ? '#252a36' : '#f3efe4'
+    const cDark = checkerboardDark ? '#1c2029' : '#dfd8c7'
     ctx.fillStyle = cLight
     ctx.fillRect(devLeft, devTop, devW, devH)
     ctx.fillStyle = cDark
@@ -609,7 +609,7 @@ export function InteractiveViewport({
 
     // 3. Crisp Symmetric 4-Sided Outer Pixel Frame
     const borderPx = Math.max(2, Math.round(2 * dpr))
-    ctx.fillStyle = checkerboardDark ? '#696082' : '#4a4358'
+    ctx.fillStyle = checkerboardDark ? '#646f84' : '#4c5565'
     ctx.fillRect(devLeft - borderPx, devTop - borderPx, devW + borderPx * 2, borderPx)
     ctx.fillRect(devLeft - borderPx, devTop + devH, devW + borderPx * 2, borderPx)
     ctx.fillRect(devLeft - borderPx, devTop, borderPx, devH)
