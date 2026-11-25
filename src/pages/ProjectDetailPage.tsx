@@ -1,4 +1,4 @@
-import { ViewTransition, useEffect, useMemo, useState } from 'react'
+import { ViewTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router'
 import type { LayerRuntime, ProjectRecord } from '../types'
 import {
@@ -11,6 +11,8 @@ import {
   saveProjectFull,
   type SingleProjectSizeEstimate,
 } from '../db/database'
+
+type LoadedProjectFull = NonNullable<Awaited<ReturnType<typeof loadProjectFull>>>
 import { exportCompositePngBytes } from '../engine/compositor'
 import { useApp } from '../state/AppContext'
 import { useI18n } from '../i18n/I18nContext'
@@ -23,21 +25,29 @@ import {
 } from '../components/editor/EditorModals'
 import { ExportGifModal } from '../components/editor/ExportGifModal'
 import type { TimelineState } from '../engine/animation'
+import { sortProjectsByGalleryMode } from '../utils/gallerySort'
 import {
   useViewTransitionNavigate,
   VTButtonLink,
 } from '../components/common/ViewTransitionNav'
 
+interface CachedArtworkPayload {
+  full: LoadedProjectFull
+  est: SingleProjectSizeEstimate | null
+}
+
 /**
  * Project Viewing Screen (`/project/:id`):
- * - Section 10: Official destination when tapping an artwork in the Gallery!
- * - Only tapping "編集する / Edit" transitions into `/editor/:id`.
- * - Sections 14 & 15: Independent "ダウンロード" and "共有" PNG buttons with custom pixel icons.
- * - Large, crisp, long-pressable `<img>` preview (preserves `<ViewTransition name={\`artwork-${id}\`}>`).
+ * - Official destination when tapping an artwork in the Gallery!
+ * - Supports left/right horizontal swipe to switch to next/previous artwork
+ *   strictly following the active Gallery sort order (`settings.gallerySortMode`),
+ *   with neighbor prefetching and guards against vertical scroll / pinch-zoom / multi-touch.
+ * - GIF Export is shown ONLY for animation artworks (`frameCount >= 2`).
  */
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
   const {
+    projects,
     settings,
     updateSettings,
     refreshProjects,
@@ -59,10 +69,43 @@ export function ProjectDetailPage() {
     useState<ExportPngInitialIntent>('download')
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
 
+  // Prefetch cache for neighbor artworks so horizontal swipe transitions feel instant
+  const prefetchCacheRef = useRef<Map<string, CachedArtworkPayload>>(new Map())
+
+  const sortedProjects = useMemo(
+    () => sortProjectsByGalleryMode(projects, settings.gallerySortMode),
+    [projects, settings.gallerySortMode]
+  )
+
+  const currentIndex = useMemo(
+    () => (id ? sortedProjects.findIndex((p) => p.id === id) : -1),
+    [sortedProjects, id]
+  )
+
+  const prevProject =
+    currentIndex > 0 ? sortedProjects[currentIndex - 1] ?? null : null
+  const nextProject =
+    currentIndex >= 0 && currentIndex < sortedProjects.length - 1
+      ? sortedProjects[currentIndex + 1] ?? null
+      : null
+
+  // Load current project (using prefetched cache immediately when available)
   useEffect(() => {
     if (!id) return
     let cancelled = false
-    setLoading(true)
+
+    const cached = prefetchCacheRef.current.get(id)
+    if (cached) {
+      setProject(cached.full.project)
+      setLayers(cached.full.layers)
+      setTimeline(cached.full.timeline)
+      setNameDraft(cached.full.project.name)
+      setSizeEstimate(cached.est)
+      setLoading(false)
+    } else {
+      setLoading(true)
+    }
+
     void (async () => {
       const [full, est] = await Promise.all([
         loadProjectFull(id, db),
@@ -70,18 +113,225 @@ export function ProjectDetailPage() {
       ])
       if (cancelled) return
       if (full) {
+        prefetchCacheRef.current.set(id, { full, est })
         setProject(full.project)
         setLayers(full.layers)
         setTimeline(full.timeline)
         setNameDraft(full.project.name)
+      } else if (!cached) {
+        setProject(null)
       }
       setSizeEstimate(est)
       setLoading(false)
     })()
+
     return () => {
       cancelled = true
     }
   }, [id])
+
+  // Prefetch previous & next artworks in gallery order
+  useEffect(() => {
+    let cancelled = false
+    const neighbors = [prevProject?.id, nextProject?.id].filter(
+      (nid): nid is string => Boolean(nid && !prefetchCacheRef.current.has(nid))
+    )
+    if (neighbors.length === 0) return
+
+    void (async () => {
+      for (const nid of neighbors) {
+        const [full, est] = await Promise.all([
+          loadProjectFull(nid, db),
+          estimateSingleProjectStorageBytes(nid, db),
+        ])
+        if (cancelled) return
+        if (full) {
+          if (prefetchCacheRef.current.size >= 8) {
+            const oldestKey = prefetchCacheRef.current.keys().next().value
+            if (oldestKey) prefetchCacheRef.current.delete(oldestKey)
+          }
+          prefetchCacheRef.current.set(nid, { full, est })
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [prevProject?.id, nextProject?.id])
+
+  const goToNeighbor = useCallback(
+    (target: ProjectRecord | null) => {
+      if (!target) return
+      setEditingName(false)
+      setExportOpen(false)
+      setExportGifOpen(false)
+      setConfirmDeleteOpen(false)
+      vtNavigate(`/project/${target.id}`)
+    },
+    [vtNavigate]
+  )
+
+  // Optional keyboard ArrowLeft / ArrowRight navigation when not editing inputs or modals
+  useEffect(() => {
+    if (sortedProjects.length <= 1) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (editingName || exportOpen || exportGifOpen || confirmDeleteOpen) return
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.key === 'ArrowLeft' && prevProject) {
+        e.preventDefault()
+        goToNeighbor(prevProject)
+      } else if (e.key === 'ArrowRight' && nextProject) {
+        e.preventDefault()
+        goToNeighbor(nextProject)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [
+    sortedProjects.length,
+    editingName,
+    exportOpen,
+    exportGifOpen,
+    confirmDeleteOpen,
+    prevProject,
+    nextProject,
+    goToNeighbor,
+  ])
+
+  // Horizontal swipe gesture tracking (strictly separated from vertical scroll, multi-touch, and pinch-zoom)
+  const activePointersRef = useRef<Set<number>>(new Set())
+  const swipeStateRef = useRef<{
+    pointerId: number
+    startX: number
+    startY: number
+    lastX: number
+    lastY: number
+    lockedAxis: 'none' | 'horizontal' | 'vertical'
+    aborted: boolean
+  } | null>(null)
+
+  const isViewportZoomed = () => {
+    if (typeof window === 'undefined') return false
+    const vv = window.visualViewport
+    return Boolean(vv && vv.scale > 1.05)
+  }
+
+  const handleSwipePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    activePointersRef.current.add(e.pointerId)
+
+    // Multi-touch or pinch-zoom -> immediately abort any swipe tracking
+    if (
+      activePointersRef.current.size > 1 ||
+      sortedProjects.length <= 1 ||
+      editingName ||
+      exportOpen ||
+      exportGifOpen ||
+      confirmDeleteOpen ||
+      isViewportZoomed()
+    ) {
+      if (swipeStateRef.current) {
+        swipeStateRef.current.aborted = true
+      }
+      swipeStateRef.current = null
+      return
+    }
+
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+
+    // Ignore interactive controls so buttons/inputs never trigger swipe
+    const targetEl = e.target as HTMLElement | null
+    if (
+      targetEl?.closest(
+        'button, a, input, textarea, select, [role="button"], [data-no-artwork-swipe="true"]'
+      )
+    ) {
+      return
+    }
+
+    // Avoid browser OS screen-edge back/forward swipe zone (left/right 18px)
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 0
+    if (vw > 120 && (e.clientX < 18 || e.clientX > vw - 18)) {
+      return
+    }
+
+    swipeStateRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      lockedAxis: 'none',
+      aborted: false,
+    }
+  }
+
+  const handleSwipePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = swipeStateRef.current
+    if (!st || st.pointerId !== e.pointerId || st.aborted) return
+
+    if (activePointersRef.current.size > 1 || isViewportZoomed()) {
+      st.aborted = true
+      swipeStateRef.current = null
+      return
+    }
+
+    st.lastX = e.clientX
+    st.lastY = e.clientY
+    const dx = st.lastX - st.startX
+    const dy = st.lastY - st.startY
+    const absX = Math.abs(dx)
+    const absY = Math.abs(dy)
+
+    if (st.lockedAxis === 'none' && (absX >= 12 || absY >= 12)) {
+      if (absY >= absX * 0.8) {
+        // User is scrolling vertically -> cancel horizontal swipe cleanly
+        st.lockedAxis = 'vertical'
+        st.aborted = true
+        swipeStateRef.current = null
+        return
+      }
+      st.lockedAxis = 'horizontal'
+    }
+  }
+
+  const handleSwipePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    activePointersRef.current.delete(e.pointerId)
+    const st = swipeStateRef.current
+    swipeStateRef.current = null
+
+    if (
+      !st ||
+      st.pointerId !== e.pointerId ||
+      st.aborted ||
+      activePointersRef.current.size > 0 ||
+      isViewportZoomed()
+    ) {
+      return
+    }
+
+    const dx = (e.clientX ?? st.lastX) - st.startX
+    const dy = (e.clientY ?? st.lastY) - st.startY
+    const absX = Math.abs(dx)
+    const absY = Math.abs(dy)
+
+    // Require intentional horizontal swipe (>= 48px and clearly horizontal)
+    if (absX < 48 || absX <= absY * 1.35) return
+
+    if (dx < 0 && nextProject) {
+      // Left swipe -> Next artwork in Gallery order
+      goToNeighbor(nextProject)
+    } else if (dx > 0 && prevProject) {
+      // Right swipe -> Previous artwork in Gallery order
+      goToNeighbor(prevProject)
+    }
+  }
+
+  const handleSwipePointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    activePointersRef.current.delete(e.pointerId)
+    swipeStateRef.current = null
+  }
 
   // Generate crisp preview PNG URL (long-press friendly on iOS Safari / PWA)
   const previewPngBytes = useMemo(() => {
@@ -135,8 +385,9 @@ export function ProjectDetailPage() {
       return
     }
     const updated: ProjectRecord = { ...project, name: trimmed }
-    await saveProjectFull({ project: updated, layers }, db)
+    await saveProjectFull({ project: updated, layers, timeline: timeline ?? undefined }, db)
     setProject(updated)
+    prefetchCacheRef.current.delete(updated.id)
     await refreshProjects()
   }
 
@@ -157,6 +408,7 @@ export function ProjectDetailPage() {
 
   const handleDeleteArtwork = async () => {
     if (!project) return
+    prefetchCacheRef.current.delete(project.id)
     await deleteProjectById(project.id, db)
     await refreshProjects()
     setConfirmDeleteOpen(false)
@@ -185,9 +437,19 @@ export function ProjectDetailPage() {
     )
   }
 
+  const frameCount = timeline?.frames.length ?? project.frames?.length ?? 1
+  const isAnimationArtwork = frameCount >= 2
+
   return (
     <ViewTransition>
-      <div className="min-h-dvh w-full flex flex-col bg-[var(--bg-app)] pl-safe pr-safe">
+      <div
+        className="min-h-dvh w-full flex flex-col bg-[var(--bg-app)] pl-safe pr-safe touch-pan-y"
+        onPointerDown={handleSwipePointerDown}
+        onPointerMove={handleSwipePointerMove}
+        onPointerUp={handleSwipePointerUp}
+        onPointerCancel={handleSwipePointerCancel}
+        data-testid="project-detail-swipe-surface"
+      >
         <header className="sticky top-0 z-20 px-3.5 py-2.5 pt-safe bg-[var(--bg-surface)] border-b-2 border-[var(--border-pixel)] flex items-center justify-between gap-2">
           <VTButtonLink
             to="/"
@@ -198,7 +460,9 @@ export function ProjectDetailPage() {
             <span>{t('back')}</span>
           </VTButtonLink>
 
-          <h1 className="text-sm font-bold truncate">{t('artworkDetail')}</h1>
+          <h1 className="text-sm font-bold truncate" data-testid="detail-header-title">
+            {project.name}
+          </h1>
 
           <button
             type="button"
@@ -217,11 +481,12 @@ export function ProjectDetailPage() {
           </button>
         </header>
 
-        <main className="flex-1 max-w-2xl w-full mx-auto p-4 pb-12 pb-safe space-y-5">
+        <main className="flex-1 max-w-2xl w-full mx-auto p-4 pb-12 pb-safe space-y-4">
           {/* Large Pixel-Art Preview (Long-pressable native <img> + ViewTransition) */}
           <div
             style={getCheckerboardStyle(settings.checkerboardDark, 12)}
             className="aspect-square max-h-[50dvh] w-full mx-auto pixel-card overflow-hidden flex items-center justify-center p-4"
+            data-testid="detail-preview-card"
           >
             <ViewTransition name={`artwork-${project.id}`}>
               {previewUrl ? (
@@ -238,7 +503,48 @@ export function ProjectDetailPage() {
             </ViewTransition>
           </div>
 
-          {/* Primary Edit Button + Independent Download & Share Buttons + Duplicate */}
+          {/* Neighbor Navigation Indicator (shown when gallery has >= 2 artworks) */}
+          {sortedProjects.length > 1 && currentIndex >= 0 && (
+            <div
+              className="flex items-center justify-between gap-2 px-2.5 py-1.5 pixel-card text-xs"
+              data-testid="detail-neighbor-nav"
+            >
+              <button
+                type="button"
+                disabled={!prevProject}
+                onClick={() => goToNeighbor(prevProject)}
+                className="pixel-btn min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1"
+                data-testid="detail-prev-artwork-btn"
+              >
+                <PixelIcon name="arrowLeft" size={13} />
+                <span className="truncate max-w-[110px]">
+                  {prevProject ? prevProject.name : '—'}
+                </span>
+              </button>
+
+              <span
+                className="text-xs font-bold text-[var(--text-secondary)] shrink-0"
+                data-testid="detail-artwork-position"
+              >
+                {currentIndex + 1} / {sortedProjects.length}
+              </span>
+
+              <button
+                type="button"
+                disabled={!nextProject}
+                onClick={() => goToNeighbor(nextProject)}
+                className="pixel-btn min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1"
+                data-testid="detail-next-artwork-btn"
+              >
+                <span className="truncate max-w-[110px]">
+                  {nextProject ? nextProject.name : '—'}
+                </span>
+                <PixelIcon name="arrowRight" size={13} />
+              </button>
+            </div>
+          )}
+
+          {/* Primary Edit Button + Export Actions (GIF shown ONLY when frameCount >= 2) + Duplicate */}
           <div className="space-y-2.5">
             <button
               type="button"
@@ -250,7 +556,13 @@ export function ProjectDetailPage() {
               <span>{t('openInEditor')}</span>
             </button>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <div
+              className={`grid gap-2.5 ${
+                isAnimationArtwork
+                  ? 'grid-cols-2 sm:grid-cols-4'
+                  : 'grid-cols-3'
+              }`}
+            >
               <button
                 type="button"
                 onClick={() => {
@@ -277,15 +589,17 @@ export function ProjectDetailPage() {
                 <span>{t('sharePngBtn')}</span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => setExportGifOpen(true)}
-                className="min-h-[48px] px-2.5 pixel-btn pixel-btn-active text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
-                data-testid="detail-export-gif-btn"
-              >
-                <PixelIcon name="film" size={16} />
-                <span>{t('exportGif')}</span>
-              </button>
+              {isAnimationArtwork && (
+                <button
+                  type="button"
+                  onClick={() => setExportGifOpen(true)}
+                  className="min-h-[48px] px-2.5 pixel-btn pixel-btn-active text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
+                  data-testid="detail-export-gif-btn"
+                >
+                  <PixelIcon name="film" size={16} />
+                  <span>{t('exportGif')}</span>
+                </button>
+              )}
 
               <button
                 type="button"
@@ -346,7 +660,7 @@ export function ProjectDetailPage() {
             />
             <MetaRow
               label={t('frameCount')}
-              value={`${project.frames?.length ?? 1}`}
+              value={`${frameCount}`}
               testId="detail-frame-count"
             />
             <MetaRow
@@ -400,7 +714,7 @@ export function ProjectDetailPage() {
           onShared={() => showToast(t('toastSharedPng'), 'success')}
         />
 
-        {timeline && (
+        {timeline && isAnimationArtwork && (
           <ExportGifModal
             open={exportGifOpen}
             projectName={project.name}

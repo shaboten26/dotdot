@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import {
   TRANSPARENT_COLOR_INDEX,
@@ -199,14 +199,14 @@ interface MultiRowToolGridProps {
   tool: ToolId
   toolSettings: ToolSettings
   optionsOpen: boolean
+  globalSettingsOpen?: boolean
   canUndo: boolean
   canRedo: boolean
-  layerCount: number
   hasSelection: boolean
   onTapTool: (t: ToolId) => void
-  onOpenLayers: () => void
   onUndo: () => void
   onRedo: () => void
+  onOpenGlobalSettings?: () => void
 }
 
 /**
@@ -214,19 +214,20 @@ interface MultiRowToolGridProps {
  * - Straight Line -> `line` icon; Bezier -> `bezier` icon
  * - Rectangle -> `rect` icon; Circle/Ellipse -> `ellipse` icon
  * - Select Wand / Rect / Ellipse -> `wand` / `rect` / `ellipse` icon
+ * - Layer management UI is strictly separated into the dedicated `レイヤー` / `タイムライン` workspace tab.
  */
 export function MultiRowToolGrid({
   tool,
   toolSettings,
   optionsOpen,
+  globalSettingsOpen = false,
   canUndo,
   canRedo,
-  layerCount,
   hasSelection,
   onTapTool,
-  onOpenLayers,
   onUndo,
   onRedo,
+  onOpenGlobalSettings,
 }: MultiRowToolGridProps) {
   const { t } = useI18n()
 
@@ -367,22 +368,23 @@ export function MultiRowToolGrid({
         </span>
       </button>
 
+      {/* Vacated 10th slot (formerly duplicate Layer button) repurposed for Global Workspace/Input Settings (`設定`) */}
       <button
         type="button"
-        onClick={onOpenLayers}
+        onClick={onOpenGlobalSettings}
+        aria-pressed={globalSettingsOpen}
         style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
-        className="pixel-btn px-1 py-1 flex flex-col items-center justify-center gap-0.5"
-        data-testid="open-layers-btn"
+        className={`px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
+          globalSettingsOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+        }`}
+        data-testid="open-global-editor-settings-btn"
       >
-        <div className="flex items-center gap-0.5">
-          <PixelIcon name="layers" />
-          <span className="text-[10px] font-bold">{layerCount}</span>
-        </div>
+        <PixelIcon name="settings" />
         <span
           style={{ fontSize: 'var(--tool-label-size, 11px)' }}
           className="leading-none truncate max-w-full font-bold"
         >
-          {t('toolLayers')}
+          {t('editorGlobalSettingsBtn')}
         </span>
       </button>
     </div>
@@ -522,6 +524,54 @@ export function FloatingTransformBar({
   )
 }
 
+interface SelectionReadyBarProps {
+  onStartMove: () => void
+  onClearSelection: () => void
+}
+
+/**
+ * Compact 1-line Selection Ready Bar shown when a selection exists before entering Move mode
+ * (and when ToolDetailPopover is closed), giving immediate access to "Start Move" without hiding the canvas.
+ */
+export function SelectionReadyBar({
+  onStartMove,
+  onClearSelection,
+}: SelectionReadyBarProps) {
+  const { t } = useI18n()
+  return (
+    <div
+      className="px-2.5 py-1 bg-[var(--bg-panel)] border-t-2 border-[var(--border-pixel)] flex items-center justify-between gap-2 text-xs shrink-0"
+      data-testid="selection-ready-bar"
+    >
+      <span className="font-bold text-[var(--accent-teal)] flex items-center gap-1.5 truncate">
+        <PixelIcon name="wand" size={13} />
+        <span className="truncate">{t('toolSelect')}</span>
+      </span>
+
+      <div className="flex items-center gap-1.5 shrink-0">
+        <button
+          type="button"
+          onClick={onStartMove}
+          className="pixel-btn pixel-btn-teal min-h-[34px] px-3 text-xs font-bold flex items-center gap-1.5"
+          data-testid="quick-start-selection-move-btn"
+        >
+          <PixelIcon name="move" size={13} />
+          <span>{t('startMoveBtn')}</span>
+        </button>
+        <button
+          type="button"
+          onClick={onClearSelection}
+          className="pixel-btn min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1"
+          data-testid="quick-clear-selection-btn"
+        >
+          <PixelIcon name="close" size={12} />
+          <span>{t('clearSelection')}</span>
+        </button>
+      </div>
+    </div>
+  )
+}
+
 interface ActiveMoveBarProps {
   moveSession: ActiveMoveSession
   onMoveStep: (dx: number, dy: number) => void
@@ -530,7 +580,10 @@ interface ActiveMoveBarProps {
 }
 
 /**
- * Unified Move Bar for Selection Move, Single-Layer Move, and Multi-Layer Batch Move!
+ * Compact Unified Move Bar for Selection Move, Single-Layer Move, and Multi-Layer Batch Move:
+ * - Single compact row so the canvas & selected pixels remain maximally visible.
+ * - Explicit Up / Down / Left / Right buttons move strictly 1 canvas pixel per click/tap
+ *   regardless of zoom level, with optional smooth hold-repeat after 340ms.
  */
 export function ActiveMoveBar({
   moveSession,
@@ -539,93 +592,143 @@ export function ActiveMoveBar({
   onCancel,
 }: ActiveMoveBarProps) {
   const { t } = useI18n()
-  const title =
+  const holdTimeoutRef = useRef<number | null>(null)
+  const holdIntervalRef = useRef<number | null>(null)
+
+  const stopHoldRepeat = () => {
+    if (holdTimeoutRef.current !== null) {
+      window.clearTimeout(holdTimeoutRef.current)
+      holdTimeoutRef.current = null
+    }
+    if (holdIntervalRef.current !== null) {
+      window.clearInterval(holdIntervalRef.current)
+      holdIntervalRef.current = null
+    }
+  }
+
+  useEffect(() => {
+    return () => stopHoldRepeat()
+  }, [])
+
+  const startHoldRepeat = (dx: number, dy: number) => {
+    stopHoldRepeat()
+    holdTimeoutRef.current = window.setTimeout(() => {
+      holdIntervalRef.current = window.setInterval(() => {
+        onMoveStep(dx, dy)
+      }, 95)
+    }, 340)
+  }
+
+  const labelShort =
     moveSession.mode === 'multi-layer'
-      ? `${t('moveMultiLayersTitle')} (${moveSession.layerIds.length})`
+      ? `${t('moveMultiLayersTitle')}(${moveSession.layerIds.length})`
       : moveSession.mode === 'layer'
         ? t('moveLayerTitle')
         : t('moveSelectionTitle')
 
   return (
     <div
-      className="px-2.5 py-2 bg-[var(--bg-panel)] border-t-2 border-[var(--border-pixel)] space-y-2 shrink-0"
+      className="px-2 py-1.5 bg-[var(--bg-panel)] border-t-2 border-[var(--border-pixel)] flex flex-wrap items-center justify-between gap-1.5 shrink-0"
       data-testid="active-move-bar"
     >
-      <div className="flex items-center justify-between gap-2 text-xs">
-        <span className="font-bold text-[var(--accent-teal)] flex items-center gap-1.5">
-          <PixelIcon name="move" size={14} />
-          <span>
-            {title} ({moveSession.dx >= 0 ? '+' : ''}
-            {moveSession.dx}, {moveSession.dy >= 0 ? '+' : ''}
-            {moveSession.dy})
-          </span>
-        </span>
-        <span className="text-[11px] text-[var(--text-secondary)] truncate">
-          {t('moveDragHint')}
+      {/* Compact Offset Readout */}
+      <div
+        className="flex items-center gap-1 text-xs font-bold text-[var(--accent-teal)] shrink-0"
+        data-testid="active-move-offset-badge"
+      >
+        <PixelIcon name="move" size={13} />
+        <span className="hidden sm:inline truncate max-w-[110px]">{labelShort}</span>
+        <span className="font-mono text-[11px] px-1.5 py-0.5 bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-[var(--text-primary)]">
+          {moveSession.dx >= 0 ? '+' : ''}
+          {moveSession.dx},{moveSession.dy >= 0 ? '+' : ''}
+          {moveSession.dy}px
         </span>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-1.5">
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => onMoveStep(-1, 0)}
-            className="pixel-btn min-w-[38px] min-h-[38px] flex items-center justify-center"
-            aria-label="Move Left 1px"
-            data-testid="move-step-left"
-          >
-            <PixelIcon name="arrowLeft" size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={() => onMoveStep(0, -1)}
-            className="pixel-btn min-w-[38px] min-h-[38px] flex items-center justify-center"
-            aria-label="Move Up 1px"
-            data-testid="move-step-up"
-          >
-            <PixelIcon name="arrowUp" size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={() => onMoveStep(0, 1)}
-            className="pixel-btn min-w-[38px] min-h-[38px] flex items-center justify-center"
-            aria-label="Move Down 1px"
-            data-testid="move-step-down"
-          >
-            <PixelIcon name="arrowDown" size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={() => onMoveStep(1, 0)}
-            className="pixel-btn min-w-[38px] min-h-[38px] flex items-center justify-center"
-            aria-label="Move Right 1px"
-            data-testid="move-step-right"
-          >
-            <PixelIcon name="arrowRight" size={14} />
-          </button>
-        </div>
+      {/* Explicit 1px Directional Arrow Buttons (Left / Up / Down / Right) */}
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onMoveStep(-1, 0)}
+          onPointerDown={(e) => {
+            if (e.button === 0 || e.pointerType !== 'mouse') startHoldRepeat(-1, 0)
+          }}
+          onPointerUp={stopHoldRepeat}
+          onPointerLeave={stopHoldRepeat}
+          onPointerCancel={stopHoldRepeat}
+          className="pixel-btn min-w-[38px] min-h-[36px] flex items-center justify-center"
+          aria-label="Move Left 1px"
+          data-testid="move-step-left"
+        >
+          <PixelIcon name="arrowLeft" size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onMoveStep(0, -1)}
+          onPointerDown={(e) => {
+            if (e.button === 0 || e.pointerType !== 'mouse') startHoldRepeat(0, -1)
+          }}
+          onPointerUp={stopHoldRepeat}
+          onPointerLeave={stopHoldRepeat}
+          onPointerCancel={stopHoldRepeat}
+          className="pixel-btn min-w-[38px] min-h-[36px] flex items-center justify-center"
+          aria-label="Move Up 1px"
+          data-testid="move-step-up"
+        >
+          <PixelIcon name="arrowUp" size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onMoveStep(0, 1)}
+          onPointerDown={(e) => {
+            if (e.button === 0 || e.pointerType !== 'mouse') startHoldRepeat(0, 1)
+          }}
+          onPointerUp={stopHoldRepeat}
+          onPointerLeave={stopHoldRepeat}
+          onPointerCancel={stopHoldRepeat}
+          className="pixel-btn min-w-[38px] min-h-[36px] flex items-center justify-center"
+          aria-label="Move Down 1px"
+          data-testid="move-step-down"
+        >
+          <PixelIcon name="arrowDown" size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onMoveStep(1, 0)}
+          onPointerDown={(e) => {
+            if (e.button === 0 || e.pointerType !== 'mouse') startHoldRepeat(1, 0)
+          }}
+          onPointerUp={stopHoldRepeat}
+          onPointerLeave={stopHoldRepeat}
+          onPointerCancel={stopHoldRepeat}
+          className="pixel-btn min-w-[38px] min-h-[36px] flex items-center justify-center"
+          aria-label="Move Right 1px"
+          data-testid="move-step-right"
+        >
+          <PixelIcon name="arrowRight" size={14} />
+        </button>
+      </div>
 
-        {/* Commit + Rightmost Cancel */}
-        <div className="flex items-center gap-1.5 ml-auto">
-          <button
-            type="button"
-            onClick={onCommit}
-            className="pixel-btn pixel-btn-teal min-h-[38px] px-3 text-xs font-bold flex items-center gap-1"
-            data-testid="commit-move-btn"
-          >
-            <PixelIcon name="check" size={14} />
-            {t('commitMoveBtn')}
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="pixel-btn pixel-btn-danger min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1"
-            data-testid="cancel-move-btn"
-          >
-            <PixelIcon name="close" size={14} />
-            {t('cancelMoveBtn')}
-          </button>
-        </div>
+      {/* Commit + Rightmost Cancel */}
+      <div className="flex items-center gap-1 ml-auto">
+        <button
+          type="button"
+          onClick={onCommit}
+          className="pixel-btn pixel-btn-teal min-h-[36px] px-2.5 text-xs font-bold flex items-center gap-1"
+          data-testid="commit-move-btn"
+        >
+          <PixelIcon name="check" size={13} />
+          <span>{t('commitMoveBtn')}</span>
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="pixel-btn pixel-btn-danger min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
+          data-testid="cancel-move-btn"
+        >
+          <PixelIcon name="close" size={13} />
+          <span>{t('cancelMoveBtn')}</span>
+        </button>
       </div>
     </div>
   )

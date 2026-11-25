@@ -16,6 +16,7 @@ import { PixelSlider } from '../components/common/PixelSlider'
 import { PixelThumbnail } from '../components/common/PixelThumbnail'
 import { CanvasSizePresetsPicker } from '../components/common/CanvasSizePresetsPicker'
 import { useLongPressReorder } from '../utils/useLongPressReorder'
+import { sortProjectsByGalleryMode } from '../utils/gallerySort'
 import {
   useViewTransitionNavigate,
   VTButtonLink,
@@ -59,22 +60,11 @@ export function GalleryPage() {
   const [reorderMode, setReorderMode] = useState(false)
   const gridContainerRef = useRef<HTMLDivElement | null>(null)
 
-  const sortedProjects = useMemo((): ProjectRecord[] => {
-    const list = [...projects]
-    switch (settings.gallerySortMode) {
-      case 'newest':
-        return list.sort((a, b) => b.createdAt - a.createdAt)
-      case 'oldest':
-        return list.sort((a, b) => a.createdAt - b.createdAt)
-      case 'updated':
-        return list.sort((a, b) => b.updatedAt - a.updatedAt)
-      case 'name':
-        return list.sort((a, b) => a.name.localeCompare(b.name))
-      case 'manual':
-      default:
-        return list.sort((a, b) => a.order - b.order)
-    }
-  }, [projects, settings.gallerySortMode])
+  const sortedProjects = useMemo(
+    (): ProjectRecord[] =>
+      sortProjectsByGalleryMode(projects, settings.gallerySortMode),
+    [projects, settings.gallerySortMode]
+  )
 
   const sortedIds = useMemo(
     () => sortedProjects.map((p) => p.id),

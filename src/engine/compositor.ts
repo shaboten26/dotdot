@@ -322,11 +322,17 @@ export function getExportScaleOptions(
 }
 
 /**
- * Section 13-2: Compute initial default integer export scale whose output long edge is closest to ~2000px
- * (`targetScale = round(2000 / max(canvasWidth, canvasHeight))`), clamped to valid options `<= 4000px`.
+ * Compute initial default integer export scale whose output long edge is <= 2000px
+ * and as close as possible to 2000px (`Math.max(1, Math.floor(2000 / max(canvasWidth, canvasHeight)))`),
+ * clamped to valid options `<= 4000px`.
+ * Shared across both PNG and GIF exports.
  * Examples:
- * - `256 × 256` -> `8x` (`2048 × 2048px`)
- * - `80 × 80` -> `25x` (`2000 × 2000px`)
+ * - `256 × 256` -> `7x` (`1792 × 1792px`)
+ * - `128 × 128` -> `15x` (`1920 × 1920px`)
+ * - `96 × 96`   -> `20x` (`1920 × 1920px`)
+ * - `80 × 80`   -> `25x` (`2000 × 2000px`)
+ * - `64 × 64`   -> `31x` (`1984 × 1984px`)
+ * - `32 × 32`   -> `62x` (`1984 × 1984px`)
  */
 export function getDefaultExportScale(
   width: number,
@@ -338,24 +344,9 @@ export function getDefaultExportScale(
   if (options.length === 0) return 1
 
   const maxSide = Math.max(1, Math.max(width, height))
-  const idealScale = Math.max(1, Math.round(targetLongEdge / maxSide))
-  const maxAllowed = options[options.length - 1].scale
-  const clampedIdeal = Math.min(maxAllowed, idealScale)
-
-  let best = options[0].scale
-  let bestDiff = Infinity
-  for (const opt of options) {
-    const longEdge = Math.max(opt.width, opt.height)
-    const diff = Math.abs(longEdge - targetLongEdge)
-    if (
-      diff < bestDiff ||
-      (diff === bestDiff && opt.scale === clampedIdeal)
-    ) {
-      bestDiff = diff
-      best = opt.scale
-    }
-  }
-  return best
+  const maxAllowed = options[options.length - 1]!.scale
+  const floorScale = Math.max(1, Math.floor(targetLongEdge / maxSide))
+  return Math.min(maxAllowed, floorScale)
 }
 
 /**

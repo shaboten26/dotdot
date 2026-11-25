@@ -12,12 +12,14 @@ import {
   FloatingTransformBar,
   MultiRowToolGrid,
   PaletteBar,
+  SelectionReadyBar,
   ToolDetailPopover,
 } from '../components/editor/ToolPanels'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
-import { LayerSheet } from '../components/editor/LayerSheet'
+import { LayerPanelContent, LayerSheet } from '../components/editor/LayerSheet'
 import { TimelinePanel } from '../components/editor/TimelinePanel'
 import { ExportGifModal } from '../components/editor/ExportGifModal'
+import { GlobalEditorSettingsModal } from '../components/editor/GlobalEditorSettingsModal'
 import {
   CanvasResizeModal,
   ExportPngModal,
@@ -57,6 +59,7 @@ export function EditorPage() {
   const [resizeOpen, setResizeOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [exportGifOpen, setExportGifOpen] = useState(false)
+  const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   const [workspaceTab, setWorkspaceTab] = useState<'tools' | 'frames'>('tools')
   const [inputModality, setInputModality] = useState<InputModality>(() =>
     detectInitialInputModality()
@@ -344,18 +347,20 @@ export function EditorPage() {
                     <span>{t('exportPng')}</span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setHeaderMenuOpen(false)
-                      setExportGifOpen(true)
-                    }}
-                    className="w-full min-h-[42px] px-3 pixel-btn pixel-btn-active flex items-center gap-2 text-xs font-bold text-left"
-                    data-testid="editor-export-gif-btn"
-                  >
-                    <PixelIcon name="film" size={16} />
-                    <span>{t('exportGif')}</span>
-                  </button>
+                  {editor.timeline.frames.length >= 2 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHeaderMenuOpen(false)
+                        setExportGifOpen(true)
+                      }}
+                      className="w-full min-h-[42px] px-3 pixel-btn pixel-btn-active flex items-center gap-2 text-xs font-bold text-left"
+                      data-testid="editor-export-gif-btn"
+                    >
+                      <PixelIcon name="film" size={16} />
+                      <span>{t('exportGif')}</span>
+                    </button>
+                  )}
 
                   <button
                     type="button"
@@ -441,6 +446,15 @@ export function EditorPage() {
             activeHexColor={editor.activeHexColor}
             isTransparentColor={editor.isTransparentColorSelected}
             eyedropperDoubleTap={settings.eyedropperDoubleTap}
+            cursorSpeed={settings.cursorSpeed}
+            cursorSize={settings.cursorSize}
+            activeCustomCursor={
+              settings.activeCursorId === 'standard'
+                ? null
+                : settings.customCursors.find(
+                    (c) => c.id === settings.activeCursorId
+                  ) ?? null
+            }
             fitTrigger={fitTrigger}
             onModalityChange={setInputModality}
             onMoveCursor={editor.moveCursorTo}
@@ -476,39 +490,49 @@ export function EditorPage() {
               onDiscard={editor.discardFloatingShape}
             />
           ) : (
-            <ToolDetailPopover
-              open={optionsOpen}
-              onClose={() => setOptionsOpen(false)}
-              tool={editor.tool}
-              settings={editor.toolSettings}
-              paletteColors={editor.palette.colors}
-              eyedropperDoubleTap={settings.eyedropperDoubleTap}
-              onToggleEyedropperDoubleTap={(next) =>
-                void updateSettings({ eyedropperDoubleTap: next })
-              }
-              hasSelection={editor.hasSelection}
-              hasClipboard={editor.clipboard !== null}
-              onChange={(patch) =>
-                editor.setToolSettings((prev) => ({ ...prev, ...patch }))
-              }
-              onStartSelectionMove={() => {
-                editor.startSelectionMove()
-              }}
-              onNudgeSelection={editor.nudgeSelection}
-              onApplyOutline={editor.outlineSelection}
-              onCut={() => {
-                if (editor.cutSelectedPixels()) showToast(t('toastCut'))
-              }}
-              onCopy={() => {
-                if (editor.copySelectedPixels()) showToast(t('toastCopied'))
-              }}
-              onPaste={() => {
-                if (editor.pasteClipboardPixels()) showToast(t('toastPasted'))
-              }}
-              onFlipSelection={editor.flipSelectedPixels}
-              onInvertSelection={editor.invertCurrentSelection}
-              onClearSelection={editor.clearCurrentSelection}
-            />
+            <>
+              {editor.hasSelection && !optionsOpen && (
+                <SelectionReadyBar
+                  onStartMove={() => {
+                    editor.startSelectionMove()
+                  }}
+                  onClearSelection={editor.clearCurrentSelection}
+                />
+              )}
+              <ToolDetailPopover
+                open={optionsOpen}
+                onClose={() => setOptionsOpen(false)}
+                tool={editor.tool}
+                settings={editor.toolSettings}
+                paletteColors={editor.palette.colors}
+                eyedropperDoubleTap={settings.eyedropperDoubleTap}
+                onToggleEyedropperDoubleTap={(next) =>
+                  void updateSettings({ eyedropperDoubleTap: next })
+                }
+                hasSelection={editor.hasSelection}
+                hasClipboard={editor.clipboard !== null}
+                onChange={(patch) =>
+                  editor.setToolSettings((prev) => ({ ...prev, ...patch }))
+                }
+                onStartSelectionMove={() => {
+                  editor.startSelectionMove()
+                }}
+                onNudgeSelection={editor.nudgeSelection}
+                onApplyOutline={editor.outlineSelection}
+                onCut={() => {
+                  if (editor.cutSelectedPixels()) showToast(t('toastCut'))
+                }}
+                onCopy={() => {
+                  if (editor.copySelectedPixels()) showToast(t('toastCopied'))
+                }}
+                onPaste={() => {
+                  if (editor.pasteClipboardPixels()) showToast(t('toastPasted'))
+                }}
+                onFlipSelection={editor.flipSelectedPixels}
+                onInvertSelection={editor.invertCurrentSelection}
+                onClearSelection={editor.clearCurrentSelection}
+              />
+            </>
           )}
 
           {/* Workspace Mode Switcher: `ツール` vs (`レイヤー` [1 frame] / `タイムライン` [>=2 frames]) */}
@@ -605,24 +629,90 @@ export function EditorPage() {
             )}
           </div>
 
-          {/* 2. Workspace Content (`ツール` Multi-Row Grid OR `レイヤー`/`タイムライン` Inline Panel) */}
+          {/* 2. Workspace Content (`ツール` Multi-Row Grid OR `レイヤー` [1 frame, reusing original LayerPanelContent] / `タイムライン` [>=2 frames]) */}
           {workspaceTab === 'tools' ? (
             <MultiRowToolGrid
               tool={editor.tool}
               toolSettings={editor.toolSettings}
               optionsOpen={optionsOpen}
+              globalSettingsOpen={globalSettingsOpen}
               canUndo={editor.canUndo}
               canRedo={editor.canRedo}
-              layerCount={editor.layers.length}
               hasSelection={editor.hasSelection}
               onTapTool={handleTapTool}
-              onOpenLayers={() => {
-                setOptionsOpen(false)
-                setLayersOpen(true)
-              }}
               onUndo={editor.undo}
               onRedo={editor.redo}
+              onOpenGlobalSettings={() => {
+                setOptionsOpen(false)
+                setHeaderMenuOpen(false)
+                setGlobalSettingsOpen((prev) => !prev)
+              }}
             />
+          ) : editor.timeline.frames.length <= 1 ? (
+            <div
+              className="px-2.5 py-2 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] shrink-0"
+              data-testid="inline-layers-workspace"
+            >
+              <LayerPanelContent
+                compactInline
+                canvasWidth={editor.project.width}
+                canvasHeight={editor.project.height}
+                checkerDark={settings.checkerboardDark}
+                layers={editor.layers}
+                activeLayerId={editor.activeLayerId}
+                selectedLayerIds={editor.selectedLayerIds}
+                onSelectLayer={editor.setActiveLayerId}
+                onToggleLayerSelected={editor.toggleLayerSelected}
+                onClearLayerSelection={editor.clearLayerSelection}
+                onStartMultiLayerMoveOnCanvas={() => {
+                  editor.startMultiLayerMove()
+                }}
+                onDuplicateSelectedLayers={() => {
+                  if (!editor.duplicateSelectedLayers()) {
+                    showToast(t('layerMaxReached'), 'warning')
+                  }
+                }}
+                onMergeSelectedLayers={() => {
+                  editor.mergeSelectedLayers()
+                }}
+                onDeleteSelectedLayers={() => {
+                  if (!editor.deleteSelectedLayers()) {
+                    showToast(t('cannotDeleteLastLayer'), 'warning')
+                  }
+                }}
+                onAddLayer={() => {
+                  if (!editor.addNewLayer()) {
+                    showToast(t('layerMaxReached'), 'warning')
+                  }
+                }}
+                onDuplicateLayer={(id) => {
+                  if (!editor.duplicateLayer(id)) {
+                    showToast(t('layerMaxReached'), 'warning')
+                  }
+                }}
+                onDeleteLayer={(id) => {
+                  if (!editor.deleteLayer(id)) {
+                    showToast(t('cannotDeleteLastLayer'), 'warning')
+                  }
+                }}
+                onMergeDown={editor.mergeLayerDown}
+                onUpdateLayer={editor.updateLayerProps}
+                onReorderLayers={editor.reorderLayers}
+                onClearLayer={editor.clearLayerPixels}
+                onCopyLayer={(id) => {
+                  if (editor.copyLayerToClipboard(id)) {
+                    showToast(t('toastCopied'))
+                  }
+                }}
+                onFlipLayer={editor.flipLayer}
+                onStartLayerMoveOnCanvas={(id) => {
+                  editor.startLayerMove(id)
+                }}
+                onAddFirstAnimationFrame={() => {
+                  editor.duplicateFrame('independent')
+                }}
+              />
+            </div>
           ) : (
             <TimelinePanel
               canvasWidth={editor.project.width}
@@ -658,11 +748,11 @@ export function EditorPage() {
                 }
               }}
               onSetFrameDuration={editor.setFrameDuration}
+              onSetDefaultFrameDuration={editor.setDefaultFrameDuration}
               onApplyBatchDuration={editor.applyBatchDuration}
               onClearCell={editor.clearCell}
               onUnlinkCell={editor.unlinkCell}
-              onLinkCellTo={editor.linkCellTo}
-              onMoveCellTo={editor.moveCellTo}
+              onLinkCellToAny={editor.linkCellToAny}
               onToggleCellSelected={editor.toggleCellSelected}
               onClearCellSelection={editor.clearCellSelection}
               onBatchClearCells={editor.batchClearSelectedCells}
@@ -683,7 +773,6 @@ export function EditorPage() {
               onSetPlaybackDirection={editor.setPlaybackDirection}
               onSetLoopPlayback={editor.setLoopPlayback}
               onUpdateOnionSkin={editor.updateOnionSkin}
-              onOpenExportGif={() => setExportGifOpen(true)}
             />
           )}
 
@@ -838,6 +927,11 @@ export function EditorPage() {
           onDownloaded={() => showToast(t('toastExportedGif'), 'success')}
           onShared={() => showToast(t('toastSharedGif'), 'success')}
           onCancelled={() => showToast(t('toastGifCancelled'), 'info')}
+        />
+
+        <GlobalEditorSettingsModal
+          open={globalSettingsOpen}
+          onClose={() => setGlobalSettingsOpen(false)}
         />
       </div>
     </ViewTransition>

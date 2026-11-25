@@ -6,6 +6,9 @@ import type {
   CelBufferRecord,
   CelBufferRuntime,
   CelMap,
+  CursorDisplaySize,
+  CustomCursorData,
+  CustomCursorGridSize,
   FrameMeta,
   LayerPixelRecord,
   LayerRuntime,
@@ -291,6 +294,10 @@ export function shouldShowBackupReminder(
   return false
 }
 
+export const MIN_CURSOR_SPEED = 0.25
+export const MAX_CURSOR_SPEED = 3.0
+export const DEFAULT_CURSOR_SPEED = 1.0
+
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   id: 'app-settings',
   theme: 'system',
@@ -303,11 +310,69 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   confirmDestructive: true,
   soundEnabled: false,
   eyedropperDoubleTap: true,
+  cursorSpeed: DEFAULT_CURSOR_SPEED,
+  cursorSize: 'standard',
+  activeCursorId: 'standard',
+  customCursors: [],
   activeProjectId: null,
   gallerySortMode: 'manual',
   uiSize: { ...DEFAULT_UI_SIZE_CONFIG },
   customCanvasPresets: [],
   backupMeta: { ...DEFAULT_BACKUP_META },
+}
+
+export function normalizeCustomCursors(
+  raw?: ReadonlyArray<Partial<CustomCursorData>> | null
+): CustomCursorData[] {
+  if (!Array.isArray(raw)) return []
+  const result: CustomCursorData[] = []
+  const seenIds = new Set<string>()
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i]
+    if (!item) continue
+    const gridSize: CustomCursorGridSize = item.gridSize === 8 ? 8 : 16
+    const total = gridSize * gridSize
+    const id =
+      typeof item.id === 'string' && item.id.trim() && item.id !== 'standard'
+        ? item.id.trim()
+        : `cursor-${i + 1}-${gridSize}`
+    if (seenIds.has(id)) continue
+    seenIds.add(id)
+
+    const name =
+      typeof item.name === 'string' && item.name.trim()
+        ? item.name.trim().slice(0, 32)
+        : `カスタム ${result.length + 1}`
+
+    const hotspotX = Math.max(
+      0,
+      Math.min(gridSize - 1, Math.round(Number(item.hotspotX) || 0))
+    )
+    const hotspotY = Math.max(
+      0,
+      Math.min(gridSize - 1, Math.round(Number(item.hotspotY) || 0))
+    )
+
+    const pixels = new Array<string>(total).fill('')
+    if (Array.isArray(item.pixels)) {
+      for (let p = 0; p < Math.min(total, item.pixels.length); p++) {
+        const val = item.pixels[p]
+        if (typeof val === 'string' && /^#[0-9a-fA-F]{6}$/.test(val.trim())) {
+          pixels[p] = val.trim().toLowerCase()
+        }
+      }
+    }
+
+    result.push({
+      id,
+      name,
+      gridSize,
+      hotspotX,
+      hotspotY,
+      pixels,
+    })
+  }
+  return result
 }
 
 export function hasCanvasPresetDimensions(
@@ -403,6 +468,31 @@ export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSett
     }
   }
 
+  const rawSpeed = Number(raw?.cursorSpeed)
+  const cursorSpeed = Number.isFinite(rawSpeed)
+    ? Math.round(
+        Math.max(MIN_CURSOR_SPEED, Math.min(MAX_CURSOR_SPEED, rawSpeed)) * 100
+      ) / 100
+    : DEFAULT_CURSOR_SPEED
+
+  const cursorSize: CursorDisplaySize =
+    raw?.cursorSize === 'small' ||
+    raw?.cursorSize === 'standard' ||
+    raw?.cursorSize === 'large'
+      ? raw.cursorSize
+      : 'standard'
+
+  const customCursors = normalizeCustomCursors(raw?.customCursors)
+  const requestedCursorId =
+    typeof raw?.activeCursorId === 'string' && raw.activeCursorId.trim()
+      ? raw.activeCursorId.trim()
+      : 'standard'
+  const activeCursorId =
+    requestedCursorId === 'standard' ||
+    customCursors.some((c) => c.id === requestedCursorId)
+      ? requestedCursorId
+      : 'standard'
+
   return {
     ...DEFAULT_APP_SETTINGS,
     ...(raw ?? {}),
@@ -417,6 +507,10 @@ export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSett
         : null,
     eyedropperDoubleTap:
       typeof raw?.eyedropperDoubleTap === 'boolean' ? raw.eyedropperDoubleTap : true,
+    cursorSpeed,
+    cursorSize,
+    activeCursorId,
+    customCursors,
     uiSize,
     customCanvasPresets: normalizeCustomPresets(raw?.customCanvasPresets),
     backupMeta: normalizeBackupMeta(raw?.backupMeta),

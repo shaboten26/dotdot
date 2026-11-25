@@ -6,38 +6,40 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * Retro, calm, low-saturation FLAT pixel-art studio palette (Zero shadows!)
- * Light theme: warm stone / parchment gray-white
- * Dark theme: muted plum-charcoal / dusk slate
- * Accents: muted lavender-purple, calm sage-teal, dusty rose
+ * Soft, approachable low-saturation retro carbon & lavender/sage FLAT pixel-art studio palette (Zero shadows!)
+ * Light theme: warm greige-linen with soft lavender-slate borders & muted lavender / sage-green / dusty-rose accents
+ * Dark theme: soft dusk blue-plum carbon with gentle lavender, sage-green, and dusty-rose highlights
  */
 :root {
-  --bg-app: #e9e5dc;
-  --bg-surface: #f4f1ea;
-  --bg-elevated: #e1dcd1;
-  --bg-panel: #fbf9f4;
-  --text-primary: #2b2733;
-  --text-secondary: #686274;
-  --border-pixel: #4a4358;
-  --border-subtle: #c4bdb0;
-  --border-strong: #2b2733;
+  --bg-app: #ece8e1;
+  --bg-surface: #f6f3ee;
+  --bg-elevated: #e4dfd8;
+  --bg-panel: #fcfaf7;
+  --text-primary: #2d2938;
+  --text-secondary: #686178;
+  --text-on-accent: #faf8fc;
+  --border-pixel: #544d68;
+  --border-subtle: #c8c1b8;
+  --border-strong: #2d2938;
 
-  --accent-primary: #6b5ea8;
-  --accent-primary-hover: #5b4e96;
-  --accent-primary-fg: #f8f6f2;
-  --accent-primary-border: #3f356b;
+  --accent-primary: #786ab8;
+  --accent-primary-hover: #685aa8;
+  --accent-primary-fg: #faf8fc;
+  --accent-primary-border: #493e7a;
 
-  --accent-teal: #46827a;
-  --accent-teal-hover: #3b7069;
-  --accent-teal-fg: #f6faf9;
-  --accent-teal-border: #2b544f;
+  --accent-teal: #528b80;
+  --accent-teal-hover: #45796f;
+  --accent-teal-fg: #f7fbfa;
+  --accent-teal-border: #325951;
 
-  --accent-rose: #b05d72;
-  --accent-rose-hover: #994c60;
-  --accent-rose-fg: #fcf6f8;
-  --accent-rose-border: #703545;
+  --accent-rose: #b8677d;
+  --accent-rose-hover: #a3566b;
+  --accent-rose-fg: #fdf7f9;
+  --accent-rose-border: #75394a;
 
-  --canvas-well: #d7d2c6;
+  --accent-amber: #b98548;
+
+  --canvas-well: #dcd6cc;
 
   /* Dynamic UI customization variables (updated from AppSettings.uiSize) */
   --ui-scale: 1;
@@ -51,32 +53,35 @@
 }
 
 .dark {
-  --bg-app: #181521;
-  --bg-surface: #221e2e;
-  --bg-elevated: #2d283c;
-  --bg-panel: #272335;
-  --text-primary: #eae6f2;
-  --text-secondary: #a29ab5;
-  --border-pixel: #696082;
-  --border-subtle: #3d3750;
-  --border-strong: #eae6f2;
+  --bg-app: #1d1b26;
+  --bg-surface: #262332;
+  --bg-elevated: #312d40;
+  --bg-panel: #2b2738;
+  --text-primary: #efeaf6;
+  --text-secondary: #aba3bf;
+  --text-on-accent: #191622;
+  --border-pixel: #70688a;
+  --border-subtle: #433d57;
+  --border-strong: #efeaf6;
 
-  --accent-primary: #8476c4;
-  --accent-primary-hover: #9386cf;
-  --accent-primary-fg: #16131f;
-  --accent-primary-border: #c5bced;
+  --accent-primary: #988bd4;
+  --accent-primary-hover: #a69ade;
+  --accent-primary-fg: #191622;
+  --accent-primary-border: #d0c8f4;
 
-  --accent-teal: #579b91;
-  --accent-teal-hover: #67aba1;
-  --accent-teal-fg: #111f1d;
-  --accent-teal-border: #9bd6cd;
+  --accent-teal: #6ba89b;
+  --accent-teal-hover: #7bb6aa;
+  --accent-teal-fg: #12201d;
+  --accent-teal-border: #a8ded2;
 
-  --accent-rose: #c47388;
-  --accent-rose-hover: #d18397;
-  --accent-rose-fg: #1e1115;
-  --accent-rose-border: #eeb4c3;
+  --accent-rose: #cf8095;
+  --accent-rose-hover: #da8fa3;
+  --accent-rose-fg: #211318;
+  --accent-rose-border: #f2becb;
 
-  --canvas-well: #13111a;
+  --accent-amber: #d6a467;
+
+  --canvas-well: #17151f;
 }
 
 /* Global Zero-Shadow Rule (Section 3: completely forbid box-shadow, drop-shadow, text-shadow) */
@@ -177,13 +182,15 @@ body,
   border-style: dashed;
 }
 
-.pixel-btn-active {
+.pixel-btn-active,
+.pixel-btn-primary {
   background-color: var(--accent-primary);
   color: var(--accent-primary-fg);
   border: 2px solid var(--border-strong);
 }
 
-.pixel-btn-active:hover:not(:disabled) {
+.pixel-btn-active:hover:not(:disabled),
+.pixel-btn-primary:hover:not(:disabled) {
   background-color: var(--accent-primary-hover);
 }
 

@@ -308,20 +308,55 @@ export function linkCellToSourceCell(
   sourceFrameId: string,
   targetFrameId: string
 ): { cels: CelMap; celBuffers: Record<string, CelBufferRuntime>; changed: boolean } {
-  if (sourceFrameId === targetFrameId) {
+  return linkCellToAnySourceCell(
+    cels,
+    celBuffers,
+    layerId,
+    sourceFrameId,
+    layerId,
+    targetFrameId
+  )
+}
+
+/**
+ * Retroactive Cel Linking (Section 4):
+ * Links an existing target cell `(targetLayerId, targetFrameId)` to share the exact `celId`
+ * of a non-empty source cell `(sourceLayerId, sourceFrameId)`.
+ * - Prevents self-reference (`source === target`).
+ * - Because `CelMap` maps cells flatly to `celBuffers[celId]` (never cell-to-cell pointers),
+ *   circular references are structurally impossible!
+ * - Preserves full Undo/Redo when executed via `HistoryManager` (`CanvasSnapshot` stores both `cels` and `celBuffers`).
+ */
+export function linkCellToAnySourceCell(
+  cels: CelMap,
+  celBuffers: Readonly<Record<string, CelBufferRuntime>>,
+  sourceLayerId: string,
+  sourceFrameId: string,
+  targetLayerId: string,
+  targetFrameId: string
+): { cels: CelMap; celBuffers: Record<string, CelBufferRuntime>; changed: boolean } {
+  if (sourceLayerId === targetLayerId && sourceFrameId === targetFrameId) {
     return { cels, celBuffers: { ...celBuffers }, changed: false }
   }
-  const srcKey = makeCellKey(layerId, sourceFrameId)
-  const dstKey = makeCellKey(layerId, targetFrameId)
+  const srcKey = makeCellKey(sourceLayerId, sourceFrameId)
+  const dstKey = makeCellKey(targetLayerId, targetFrameId)
   const srcRef = cels[srcKey]
+  const dstRef = cels[dstKey]
 
   if (!srcRef || srcRef.kind === 'empty' || !celBuffers[srcRef.celId]) {
+    if (!dstRef || dstRef.kind === 'empty') {
+      return { cels, celBuffers: { ...celBuffers }, changed: false }
+    }
     const nextCels: CelMap = { ...cels, [dstKey]: { kind: 'empty' } }
     return {
       cels: nextCels,
       celBuffers: pruneUnreferencedCelBuffers(nextCels, celBuffers),
       changed: true,
     }
+  }
+
+  if (dstRef?.kind === 'cel' && dstRef.celId === srcRef.celId) {
+    return { cels, celBuffers: { ...celBuffers }, changed: false }
   }
 
   const nextCels: CelMap = {
@@ -333,6 +368,72 @@ export function linkCellToSourceCell(
     celBuffers: pruneUnreferencedCelBuffers(nextCels, celBuffers),
     changed: true,
   }
+}
+
+function hasAnyVisibleAlpha(data: Uint8ClampedArray): boolean {
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] !== 0) return true
+  }
+  return false
+}
+
+/**
+ * Returns `true` when `target` currently owns non-empty pixel data that differs from `source`,
+ * requiring explicit user confirmation before replacing target's image data with a shared link to `source`.
+ */
+export function willLinkingOverwriteDistinctPixels(
+  cels: CelMap,
+  celBuffers: Readonly<Record<string, CelBufferRuntime>>,
+  sourceLayerId: string,
+  sourceFrameId: string,
+  targetLayerId: string,
+  targetFrameId: string
+): boolean {
+  const dstRef = cels[makeCellKey(targetLayerId, targetFrameId)]
+  if (!dstRef || dstRef.kind === 'empty') return false
+  const dstBuf = celBuffers[dstRef.celId]
+  if (!dstBuf || !hasAnyVisibleAlpha(dstBuf.data)) return false
+
+  const srcRef = cels[makeCellKey(sourceLayerId, sourceFrameId)]
+  if (!srcRef || srcRef.kind === 'empty') return true
+  if (srcRef.celId === dstRef.celId) return false
+  const srcBuf = celBuffers[srcRef.celId]
+  if (!srcBuf) return true
+
+  if (
+    srcBuf.offsetX !== dstBuf.offsetX ||
+    srcBuf.offsetY !== dstBuf.offsetY ||
+    srcBuf.dataWidth !== dstBuf.dataWidth ||
+    srcBuf.dataHeight !== dstBuf.dataHeight ||
+    srcBuf.data.length !== dstBuf.data.length
+  ) {
+    return true
+  }
+
+  for (let i = 0; i < dstBuf.data.length; i++) {
+    if (dstBuf.data[i] !== srcBuf.data[i]) return true
+  }
+  return false
+}
+
+export function getCellsSharingCelId(
+  cels: CelMap,
+  celId: string
+): Array<{ cellKey: string; layerId: string; frameId: string }> {
+  const out: Array<{ cellKey: string; layerId: string; frameId: string }> = []
+  for (const [ck, ref] of Object.entries(cels)) {
+    if (ref?.kind === 'cel' && ref.celId === celId) {
+      const sep = ck.lastIndexOf(':')
+      if (sep >= 0) {
+        out.push({
+          cellKey: ck,
+          layerId: ck.slice(0, sep),
+          frameId: ck.slice(sep + 1),
+        })
+      }
+    }
+  }
+  return out
 }
 
 export function copyCellAsIndependent(

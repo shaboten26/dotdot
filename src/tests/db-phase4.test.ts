@@ -66,6 +66,21 @@ describe('IndexedDB (Dexie), Palettes, Startup Invariants & Environment Pack ZIP
       confirmDestructive: true,
       soundEnabled: false,
       eyedropperDoubleTap: false,
+      cursorSpeed: 1.8,
+      cursorSize: 'large',
+      activeCursorId: 'cursor-test-arrow',
+      customCursors: [
+        {
+          id: 'cursor-test-arrow',
+          name: 'Test Arrow 8x8',
+          gridSize: 8,
+          hotspotX: 1,
+          hotspotY: 2,
+          pixels: Array.from({ length: 64 }, (_, idx) =>
+            idx === 9 ? '#f8f6f2' : ''
+          ),
+        },
+      ],
       activeProjectId: null,
       gallerySortMode: 'newest',
       uiSize: {
@@ -160,6 +175,11 @@ describe('IndexedDB (Dexie), Palettes, Startup Invariants & Environment Pack ZIP
     const restoredSettings = await destDb.settings.get('app-settings')
     expect(restoredSettings?.uiSize.drawButtonVh).toBe(18)
     expect(restoredSettings?.eyedropperDoubleTap).toBe(false)
+    expect(restoredSettings?.cursorSpeed).toBe(1.8)
+    expect(restoredSettings?.cursorSize).toBe('large')
+    expect(restoredSettings?.activeCursorId).toBe('cursor-test-arrow')
+    expect(restoredSettings?.customCursors[0]?.hotspotX).toBe(1)
+    expect(restoredSettings?.customCursors[0]?.hotspotY).toBe(2)
     expect(restoredSettings?.customCanvasPresets[0]?.name).toBe('Wide Banner')
 
     const restoredHero = await loadProjectFull(created.project.id, destDb)

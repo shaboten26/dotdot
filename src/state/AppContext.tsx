@@ -171,7 +171,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     const metaTheme = document.querySelector('meta[name="theme-color"]')
     if (metaTheme) {
-      metaTheme.setAttribute('content', isDark ? '#221e2e' : '#f4f1ea')
+      metaTheme.setAttribute('content', isDark ? '#262332' : '#f6f3ee')
     }
 
     const u = settings.uiSize

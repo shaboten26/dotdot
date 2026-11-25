@@ -88,6 +88,7 @@ import {
   DEFAULT_FRAME_DURATION_MS,
   deleteFrameFromTimeline,
   insertNewFrame,
+  linkCellToAnySourceCell,
   linkCellToSourceCell,
   makeCellKey,
   projectFrameLayers,
@@ -289,6 +290,7 @@ export function useEditorController(options: UseEditorOptions) {
 
   const historyRef = useRef<HistoryManager>(new HistoryManager(historyLimit))
   const saveTimerRef = useRef<number | null>(null)
+  const pendingSaveFnRef = useRef<(() => Promise<void>) | null>(null)
   const mountedRef = useRef<boolean>(true)
   useEffect(() => {
     mountedRef.current = true
@@ -297,6 +299,11 @@ export function useEditorController(options: UseEditorOptions) {
       if (saveTimerRef.current !== null) {
         clearTimeout(saveTimerRef.current)
         saveTimerRef.current = null
+      }
+      if (pendingSaveFnRef.current) {
+        const flush = pendingSaveFnRef.current
+        pendingSaveFnRef.current = null
+        void flush()
       }
     }
   }, [])
@@ -475,49 +482,60 @@ export function useEditorController(options: UseEditorOptions) {
         window.clearTimeout(saveTimerRef.current)
       }
       const tlToSave = explicitTimeline ?? timelineRef.current
-      setSaving(true)
-      saveTimerRef.current = window.setTimeout(async () => {
-        saveTimerRef.current = null
+      const projToSave: ProjectRecord = {
+        ...nextProj,
+        activeLayerId: nextActiveLayerId,
+        frames: tlToSave.frames,
+        cels: tlToSave.cels,
+        activeFrameId: tlToSave.activeFrameId,
+        defaultFrameDurationMs: tlToSave.defaultFrameDurationMs,
+        playbackDirection: tlToSave.playbackDirection,
+        loopPlayback: tlToSave.loopPlayback,
+        palette: {
+          name: nextPalette.name,
+          colors: [...nextPalette.colors],
+          sourcePaletteId: nextPalette.sourcePaletteId,
+          author: nextPalette.author,
+          sourceUrl: nextPalette.sourceUrl,
+        },
+        selectedColorIndex: nextSelectedColorIdx,
+      }
+      const layersSnapshot = [...nextLayers]
+      const historySnapshot = historyRef.current.serialize()
+
+      const executeSave = async () => {
         try {
-          const projToSave: ProjectRecord = {
-            ...nextProj,
-            activeLayerId: nextActiveLayerId,
-            frames: tlToSave.frames,
-            cels: tlToSave.cels,
-            activeFrameId: tlToSave.activeFrameId,
-            defaultFrameDurationMs: tlToSave.defaultFrameDurationMs,
-            playbackDirection: tlToSave.playbackDirection,
-            loopPlayback: tlToSave.loopPlayback,
-            palette: {
-              name: nextPalette.name,
-              colors: [...nextPalette.colors],
-              sourcePaletteId: nextPalette.sourcePaletteId,
-              author: nextPalette.author,
-              sourceUrl: nextPalette.sourceUrl,
-            },
-            selectedColorIndex: nextSelectedColorIdx,
-          }
           const res = await saveProjectFull(
             {
               project: projToSave,
-              layers: nextLayers,
+              layers: layersSnapshot,
               timeline: tlToSave,
-              history: historyRef.current.serialize(),
+              history: historySnapshot,
             },
             db
           )
-          if (!mountedRef.current) return
-          setProject(projToSave)
-          setSaving(false)
-          if (res.quotaTrimmed) {
-            onQuotaTrimmed?.()
+          if (mountedRef.current) {
+            setProject(projToSave)
+            setSaving(false)
+            if (res.quotaTrimmed) {
+              onQuotaTrimmed?.()
+            }
           }
           onSaved?.()
         } catch {
-          if (!mountedRef.current) return
-          setSaving(false)
-          onSaveError?.()
+          if (mountedRef.current) {
+            setSaving(false)
+            onSaveError?.()
+          }
         }
+      }
+
+      pendingSaveFnRef.current = executeSave
+      setSaving(true)
+      saveTimerRef.current = window.setTimeout(() => {
+        saveTimerRef.current = null
+        pendingSaveFnRef.current = null
+        void executeSave()
       }, 120)
     },
     [onQuotaTrimmed, onSaveError, onSaved]
@@ -3466,6 +3484,38 @@ export function useEditorController(options: UseEditorOptions) {
     [executeStructuralChange]
   )
 
+  const linkCellToAny = useCallback(
+    (
+      sourceLayerId: string,
+      sourceFrameId: string,
+      targetLayerId: string,
+      targetFrameId: string
+    ): boolean => {
+      return executeStructuralChange(
+        'Change to Linked Cel',
+        (curr, currActive, w, h, curTl) => {
+          const res = linkCellToAnySourceCell(
+            curTl.cels,
+            curTl.celBuffers,
+            sourceLayerId,
+            sourceFrameId,
+            targetLayerId,
+            targetFrameId
+          )
+          if (!res.changed) return null
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: { ...curTl, cels: res.cels, celBuffers: res.celBuffers },
+          }
+        }
+      )
+    },
+    [executeStructuralChange]
+  )
+
   const copyCellTo = useCallback(
     (layerId: string, sourceFrameId: string, targetFrameId: string): boolean => {
       return executeStructuralChange(
@@ -3760,6 +3810,28 @@ export function useEditorController(options: UseEditorOptions) {
       )
     },
     [celClipboard, activeLayerId, linkCellTo, executeStructuralChange]
+  )
+
+  const setDefaultFrameDuration = useCallback(
+    (durationMs: number) => {
+      if (!project) return
+      const clamped = clampFrameDurationMs(durationMs)
+      const nextTl: TimelineState = {
+        ...timelineRef.current,
+        defaultFrameDurationMs: clamped,
+      }
+      timelineRef.current = nextTl
+      setTimeline(nextTl)
+      persistCommittedState(
+        { ...project, defaultFrameDurationMs: clamped },
+        layers,
+        palette,
+        selectedColorIndex,
+        activeLayerId,
+        nextTl
+      )
+    },
+    [project, persistCommittedState, layers, palette, selectedColorIndex, activeLayerId]
   )
 
   // Playback Controls & Timer Loop
@@ -4081,10 +4153,12 @@ export function useEditorController(options: UseEditorOptions) {
     deleteFrame,
     reorderFrames,
     setFrameDuration,
+    setDefaultFrameDuration,
     applyBatchDuration,
     clearCell,
     unlinkCell,
     linkCellTo,
+    linkCellToAny,
     copyCellTo,
     moveCellTo,
     selectedCellKeys,

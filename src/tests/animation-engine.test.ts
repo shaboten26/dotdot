@@ -7,8 +7,10 @@ import {
   createSingleFrameTimelineFromLayers,
   deleteFrameFromTimeline,
   getCellStateKind,
+  getCellsSharingCelId,
   getLinkedFrameIdsForCell,
   insertNewFrame,
+  linkCellToAnySourceCell,
   linkCellToSourceCell,
   makeCellKey,
   projectFrameLayers,
@@ -17,6 +19,7 @@ import {
   roundDurationToGifMs,
   setCellToEmpty,
   unlinkCellToIndependent,
+  willLinkingOverwriteDistinctPixels,
 } from '../engine/animation'
 import { estimateProjectLoad } from '../engine/loadEstimator'
 import type { LayerRuntime } from '../types'
@@ -189,5 +192,74 @@ describe('Unified 1-Frame Still & N-Frame Animation Engine + Load Estimator', ()
       roundedMs: 20,
       isVeryShort: true,
     })
+  })
+
+  it('retroactively links independent cels, detects distinct pixel overwrites, switches link targets, prevents self-reference, and keeps remaining cels intact on frame deletion', () => {
+    const bufA = createPixelBuffer(4, 4)
+    setPixel(bufA, 4, 4, 0, 0, { r: 255, g: 0, b: 0, a: 255 })
+    const layer: LayerRuntime = {
+      id: 'l1',
+      name: 'Layer 1',
+      visible: true,
+      opacity: 100,
+      blendMode: 'normal',
+      clipping: false,
+      offsetX: 0,
+      offsetY: 0,
+      dataWidth: 4,
+      dataHeight: 4,
+      data: bufA,
+    }
+
+    // Frame 1: Cel A (Red at 0,0)
+    let tl = createSingleFrameTimelineFromLayers([layer], { frameId: 'f1' })
+    // Frame 2: Independent duplicate -> paint Green at (1,1) -> Cel B
+    tl = insertNewFrame(tl, [layer], 'duplicate-independent', 'f1')
+    const f2Id = tl.frames[1]!.id
+    const celBId = (tl.cels[makeCellKey('l1', f2Id)] as { kind: 'cel'; celId: string }).celId
+    setPixel(tl.celBuffers[celBId]!.data, 4, 4, 1, 1, { r: 0, g: 255, b: 0, a: 255 })
+
+    // Frame 3: Independent duplicate -> paint Blue at (2,2) -> Cel C
+    tl = insertNewFrame(tl, [layer], 'duplicate-independent', f2Id)
+    const f3Id = tl.frames[2]!.id
+    const celCId = (tl.cels[makeCellKey('l1', f3Id)] as { kind: 'cel'; celId: string }).celId
+    setPixel(tl.celBuffers[celCId]!.data, 4, 4, 2, 2, { r: 0, g: 0, b: 255, a: 255 })
+
+    // Self-reference MUST be rejected
+    const selfRes = linkCellToAnySourceCell(tl.cels, tl.celBuffers, 'l1', f2Id, 'l1', f2Id)
+    expect(selfRes.changed).toBe(false)
+
+    // Linking Cel B (f2) to Cel A (f1) will overwrite distinct pixels -> returns true
+    expect(
+      willLinkingOverwriteDistinctPixels(tl.cels, tl.celBuffers, 'l1', 'f1', 'l1', f2Id)
+    ).toBe(true)
+
+    const linkedAB = linkCellToAnySourceCell(tl.cels, tl.celBuffers, 'l1', 'f1', 'l1', f2Id)
+    expect(linkedAB.changed).toBe(true)
+    tl = { ...tl, cels: linkedAB.cels, celBuffers: linkedAB.celBuffers }
+
+    expect(getCellStateKind(tl.cels, tl.celBuffers, 'l1', 'f1')).toBe('linked')
+    expect(getCellStateKind(tl.cels, tl.celBuffers, 'l1', f2Id)).toBe('linked')
+    expect(getCellStateKind(tl.cels, tl.celBuffers, 'l1', f3Id)).toBe('independent')
+
+    const celAId = (tl.cels[makeCellKey('l1', 'f1')] as { kind: 'cel'; celId: string }).celId
+    expect(getCellsSharingCelId(tl.cels, celAId).map((c) => c.frameId)).toEqual(['f1', f2Id])
+
+    // Switch link source of f2 from f1 (Cel A) to f3 (Cel C)
+    const switchedBC = linkCellToAnySourceCell(tl.cels, tl.celBuffers, 'l1', f3Id, 'l1', f2Id)
+    expect(switchedBC.changed).toBe(true)
+    tl = { ...tl, cels: switchedBC.cels, celBuffers: switchedBC.celBuffers }
+
+    // Now f1 is back to independent, while f2 and f3 are linked!
+    expect(getCellStateKind(tl.cels, tl.celBuffers, 'l1', 'f1')).toBe('independent')
+    expect(getCellStateKind(tl.cels, tl.celBuffers, 'l1', f2Id)).toBe('linked')
+    expect(getCellStateKind(tl.cels, tl.celBuffers, 'l1', f3Id)).toBe('linked')
+
+    // Deleting source frame f3 MUST NOT corrupt f2 (f2 retains Cel C's pixel buffer cleanly as an independent cel!)
+    const afterDel = deleteFrameFromTimeline(tl, f3Id)!
+    expect(afterDel).not.toBeNull()
+    expect(getCellStateKind(afterDel.cels, afterDel.celBuffers, 'l1', f2Id)).toBe('independent')
+    const projectedF2 = projectFrameLayers([layer], afterDel.cels, afterDel.celBuffers, f2Id, 4, 4)
+    expect(getPixel(projectedF2[0]!.data, 4, 4, 2, 2)).toEqual({ r: 0, g: 0, b: 255, a: 255 })
   })
 })

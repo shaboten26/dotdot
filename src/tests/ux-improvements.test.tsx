@@ -430,10 +430,8 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
             optionsOpen={false}
             canUndo={false}
             canRedo={false}
-            layerCount={1}
             hasSelection={false}
             onTapTool={vi.fn()}
-            onOpenLayers={vi.fn()}
             onUndo={vi.fn()}
             onRedo={vi.fn()}
           />

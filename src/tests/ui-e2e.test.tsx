@@ -128,18 +128,19 @@ describe('Full React UI Workflow Integration Tests', () => {
     })
     fireEvent.click(redoBtn)
 
-    // 6. Layers Sheet: Add layer, open 3-dots menu & toggle Clipping PixelCheckbox
-    fireEvent.click(screen.getByTestId('open-layers-btn'))
+    // 6. Dedicated Layers Tab (1-frame still artwork reuses original LayerPanelContent; no duplicate layer button in Tool tab!)
+    expect(screen.queryByTestId('open-layers-btn')).toBeNull()
+    fireEvent.click(screen.getByTestId('workspace-tab-layers'))
     fireEvent.click(await screen.findByTestId('add-layer-btn'))
     await waitFor(() => {
-      expect(screen.getByTestId('open-layers-btn').textContent).toContain('2')
+      expect(screen.getByTestId('workspace-tab-layers').textContent).toContain('2')
     })
     const moreButtons = screen.getAllByLabelText('その他の操作')
     fireEvent.click(moreButtons[0]!)
     const clipCheck = await screen.findByTestId('toggle-clipping-btn')
     fireEvent.click(clipCheck)
     expect(clipCheck.getAttribute('aria-checked')).toBe('true')
-    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.click(screen.getByTestId('workspace-tab-tools'))
 
     // 7. Palette Sheet: Edit HEX directly
     fireEvent.click(screen.getByTestId('open-palette-btn'))
