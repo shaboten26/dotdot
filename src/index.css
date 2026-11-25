@@ -6,6 +6,40 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
+ * Dedicated pixel-art numeral & numeric-symbol face ("DotDotPixelDigits")
+ * Covers ASCII digits 0-9 (U+0030-0039) and common numeric notation symbols
+ * (# % ( ) + , - . / : and × U+00D7) with crisp Silkscreen pixel glyphs while
+ * letting Japanese/Korean/Latin prose fall through cleanly to DotGothic16.
+ */
+@font-face {
+  font-family: "DotDotPixelDigits";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src:
+    url("@fontsource/silkscreen/files/silkscreen-latin-400-normal.woff2") format("woff2"),
+    url("@fontsource/silkscreen/files/silkscreen-latin-400-normal.woff") format("woff");
+  unicode-range: U+0023, U+0025, U+0028-0029, U+002B-003A, U+00D7;
+}
+
+@font-face {
+  font-family: "DotDotPixelDigits";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src:
+    url("@fontsource/silkscreen/files/silkscreen-latin-700-normal.woff2") format("woff2"),
+    url("@fontsource/silkscreen/files/silkscreen-latin-700-normal.woff") format("woff");
+  unicode-range: U+0023, U+0025, U+0028-0029, U+002B-003A, U+00D7;
+}
+
+@theme {
+  --font-sans: "DotDotPixelDigits", "DotGothic16", "Silkscreen", "Apple SD Gothic Neo",
+    "Malgun Gothic", "Hiragino Sans", "Noto Sans JP", monospace, sans-serif;
+  --font-mono: "DotDotPixelDigits", "Silkscreen", "DotGothic16", monospace;
+}
+
+/*
  * Soft, approachable low-saturation retro carbon & lavender/sage FLAT pixel-art studio palette (Zero shadows!)
  * Light theme: warm greige-linen with soft lavender-slate borders & muted lavender / sage-green / dusty-rose accents
  * Dark theme: soft dusk blue-plum carbon with gentle lavender, sage-green, and dusty-rose highlights
@@ -101,13 +135,30 @@ body,
   padding: 0;
   background-color: var(--bg-app);
   color: var(--text-primary);
-  font-family: "DotGothic16", "Silkscreen", "Apple SD Gothic Neo", "Malgun Gothic",
-    "Hiragino Sans", "Noto Sans JP", monospace, sans-serif;
+  font-family: var(--font-sans);
   font-size: calc(16px * var(--ui-scale));
   line-height: 1.35;
   letter-spacing: 0.02em;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: none;
+}
+
+/* Ensure native form controls, buttons, inputs, selects, and SVG labels never fall back to system UI fonts for numerals */
+button,
+input,
+select,
+textarea,
+optgroup,
+svg text {
+  font-family: inherit;
+}
+
+input[type="number"],
+.pixel-num,
+.tabular-nums,
+.font-mono {
+  font-family: "DotDotPixelDigits", "Silkscreen", "DotGothic16", monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 /*
