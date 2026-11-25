@@ -3762,6 +3762,28 @@ export function useEditorController(options: UseEditorOptions) {
     [celClipboard, activeLayerId, linkCellTo, executeStructuralChange]
   )
 
+  const setDefaultFrameDuration = useCallback(
+    (durationMs: number) => {
+      if (!project) return
+      const clamped = clampFrameDurationMs(durationMs)
+      const nextTl: TimelineState = {
+        ...timelineRef.current,
+        defaultFrameDurationMs: clamped,
+      }
+      timelineRef.current = nextTl
+      setTimeline(nextTl)
+      persistCommittedState(
+        { ...project, defaultFrameDurationMs: clamped },
+        layers,
+        palette,
+        selectedColorIndex,
+        activeLayerId,
+        nextTl
+      )
+    },
+    [project, persistCommittedState, layers, palette, selectedColorIndex, activeLayerId]
+  )
+
   // Playback Controls & Timer Loop
   const setPlaybackDirection = useCallback(
     (dir: PlaybackDirection) => {
@@ -4081,6 +4103,7 @@ export function useEditorController(options: UseEditorOptions) {
     deleteFrame,
     reorderFrames,
     setFrameDuration,
+    setDefaultFrameDuration,
     applyBatchDuration,
     clearCell,
     unlinkCell,

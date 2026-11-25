@@ -201,10 +201,8 @@ interface MultiRowToolGridProps {
   optionsOpen: boolean
   canUndo: boolean
   canRedo: boolean
-  layerCount: number
   hasSelection: boolean
   onTapTool: (t: ToolId) => void
-  onOpenLayers: () => void
   onUndo: () => void
   onRedo: () => void
 }
@@ -214,6 +212,7 @@ interface MultiRowToolGridProps {
  * - Straight Line -> `line` icon; Bezier -> `bezier` icon
  * - Rectangle -> `rect` icon; Circle/Ellipse -> `ellipse` icon
  * - Select Wand / Rect / Ellipse -> `wand` / `rect` / `ellipse` icon
+ * - Layer management UI is strictly separated into the dedicated `レイヤー` / `タイムライン` workspace tab.
  */
 export function MultiRowToolGrid({
   tool,
@@ -221,10 +220,8 @@ export function MultiRowToolGrid({
   optionsOpen,
   canUndo,
   canRedo,
-  layerCount,
   hasSelection,
   onTapTool,
-  onOpenLayers,
   onUndo,
   onRedo,
 }: MultiRowToolGridProps) {
@@ -364,25 +361,6 @@ export function MultiRowToolGrid({
           className="leading-none truncate max-w-full font-bold"
         >
           {t('redo')}
-        </span>
-      </button>
-
-      <button
-        type="button"
-        onClick={onOpenLayers}
-        style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
-        className="pixel-btn px-1 py-1 flex flex-col items-center justify-center gap-0.5"
-        data-testid="open-layers-btn"
-      >
-        <div className="flex items-center gap-0.5">
-          <PixelIcon name="layers" />
-          <span className="text-[10px] font-bold">{layerCount}</span>
-        </div>
-        <span
-          style={{ fontSize: 'var(--tool-label-size, 11px)' }}
-          className="leading-none truncate max-w-full font-bold"
-        >
-          {t('toolLayers')}
         </span>
       </button>
     </div>

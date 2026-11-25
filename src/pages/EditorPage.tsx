@@ -15,7 +15,7 @@ import {
   ToolDetailPopover,
 } from '../components/editor/ToolPanels'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
-import { LayerSheet } from '../components/editor/LayerSheet'
+import { LayerPanelContent, LayerSheet } from '../components/editor/LayerSheet'
 import { TimelinePanel } from '../components/editor/TimelinePanel'
 import { ExportGifModal } from '../components/editor/ExportGifModal'
 import {
@@ -607,7 +607,7 @@ export function EditorPage() {
             )}
           </div>
 
-          {/* 2. Workspace Content (`ツール` Multi-Row Grid OR `レイヤー`/`タイムライン` Inline Panel) */}
+          {/* 2. Workspace Content (`ツール` Multi-Row Grid OR `レイヤー` [1 frame, reusing original LayerPanelContent] / `タイムライン` [>=2 frames]) */}
           {workspaceTab === 'tools' ? (
             <MultiRowToolGrid
               tool={editor.tool}
@@ -615,21 +615,78 @@ export function EditorPage() {
               optionsOpen={optionsOpen}
               canUndo={editor.canUndo}
               canRedo={editor.canRedo}
-              layerCount={editor.layers.length}
               hasSelection={editor.hasSelection}
               onTapTool={handleTapTool}
-              onOpenLayers={() => {
-                setOptionsOpen(false)
-                setLayersOpen(true)
-              }}
               onUndo={editor.undo}
               onRedo={editor.redo}
             />
+          ) : editor.timeline.frames.length <= 1 ? (
+            <div
+              className="px-2.5 py-2 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] shrink-0"
+              data-testid="inline-layers-workspace"
+            >
+              <LayerPanelContent
+                compactInline
+                canvasWidth={editor.project.width}
+                canvasHeight={editor.project.height}
+                checkerDark={settings.checkerboardDark}
+                layers={editor.layers}
+                activeLayerId={editor.activeLayerId}
+                selectedLayerIds={editor.selectedLayerIds}
+                onSelectLayer={editor.setActiveLayerId}
+                onToggleLayerSelected={editor.toggleLayerSelected}
+                onClearLayerSelection={editor.clearLayerSelection}
+                onStartMultiLayerMoveOnCanvas={() => {
+                  editor.startMultiLayerMove()
+                }}
+                onDuplicateSelectedLayers={() => {
+                  if (!editor.duplicateSelectedLayers()) {
+                    showToast(t('layerMaxReached'), 'warning')
+                  }
+                }}
+                onMergeSelectedLayers={() => {
+                  editor.mergeSelectedLayers()
+                }}
+                onDeleteSelectedLayers={() => {
+                  if (!editor.deleteSelectedLayers()) {
+                    showToast(t('cannotDeleteLastLayer'), 'warning')
+                  }
+                }}
+                onAddLayer={() => {
+                  if (!editor.addNewLayer()) {
+                    showToast(t('layerMaxReached'), 'warning')
+                  }
+                }}
+                onDuplicateLayer={(id) => {
+                  if (!editor.duplicateLayer(id)) {
+                    showToast(t('layerMaxReached'), 'warning')
+                  }
+                }}
+                onDeleteLayer={(id) => {
+                  if (!editor.deleteLayer(id)) {
+                    showToast(t('cannotDeleteLastLayer'), 'warning')
+                  }
+                }}
+                onMergeDown={editor.mergeLayerDown}
+                onUpdateLayer={editor.updateLayerProps}
+                onReorderLayers={editor.reorderLayers}
+                onClearLayer={editor.clearLayerPixels}
+                onCopyLayer={(id) => {
+                  if (editor.copyLayerToClipboard(id)) {
+                    showToast(t('toastCopied'))
+                  }
+                }}
+                onFlipLayer={editor.flipLayer}
+                onStartLayerMoveOnCanvas={(id) => {
+                  editor.startLayerMove(id)
+                }}
+                onAddFirstAnimationFrame={() => {
+                  editor.duplicateFrame('independent')
+                }}
+              />
+            </div>
           ) : (
             <TimelinePanel
-              canvasWidth={editor.project.width}
-              canvasHeight={editor.project.height}
-              checkerDark={settings.checkerboardDark}
               layers={editor.layers}
               activeLayerId={editor.activeLayerId}
               timeline={editor.timeline}
@@ -660,11 +717,10 @@ export function EditorPage() {
                 }
               }}
               onSetFrameDuration={editor.setFrameDuration}
+              onSetDefaultFrameDuration={editor.setDefaultFrameDuration}
               onApplyBatchDuration={editor.applyBatchDuration}
               onClearCell={editor.clearCell}
               onUnlinkCell={editor.unlinkCell}
-              onLinkCellTo={editor.linkCellTo}
-              onMoveCellTo={editor.moveCellTo}
               onToggleCellSelected={editor.toggleCellSelected}
               onClearCellSelection={editor.clearCellSelection}
               onBatchClearCells={editor.batchClearSelectedCells}
@@ -685,7 +741,6 @@ export function EditorPage() {
               onSetPlaybackDirection={editor.setPlaybackDirection}
               onSetLoopPlayback={editor.setLoopPlayback}
               onUpdateOnionSkin={editor.updateOnionSkin}
-              onOpenExportGif={() => setExportGifOpen(true)}
             />
           )}
 

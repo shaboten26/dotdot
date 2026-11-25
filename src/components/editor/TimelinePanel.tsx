@@ -13,13 +13,9 @@ import type {
 import { PixelIcon } from '../common/PixelIcon'
 import { PixelCheckbox } from '../common/PixelCheckbox'
 import { PixelSlider } from '../common/PixelSlider'
-import { LayerBufferThumbnail } from '../common/PixelThumbnail'
 import { useI18n } from '../../i18n/I18nContext'
 
 interface TimelinePanelProps {
-  canvasWidth: number
-  canvasHeight: number
-  checkerDark?: boolean
   layers: readonly LayerRuntime[]
   activeLayerId: string
   timeline: TimelineState
@@ -46,6 +42,7 @@ interface TimelinePanelProps {
   onDuplicateFrame: (mode: 'independent' | 'linked') => void
   onDeleteFrame: (frameId?: string) => void
   onSetFrameDuration: (frameId: string, durationMs: number) => void
+  onSetDefaultFrameDuration: (durationMs: number) => void
   onApplyBatchDuration: (
     scope:
       | { mode: 'selected'; selectedFrameIds: readonly string[] }
@@ -54,16 +51,6 @@ interface TimelinePanelProps {
   ) => void
   onClearCell: (layerId?: string, frameId?: string) => void
   onUnlinkCell: (layerId?: string, frameId?: string) => void
-  onLinkCellTo: (
-    layerId: string,
-    sourceFrameId: string,
-    targetFrameId: string
-  ) => void
-  onMoveCellTo: (
-    layerId: string,
-    sourceFrameId: string,
-    targetFrameId: string
-  ) => void
   onToggleCellSelected: (cellKey: string) => void
   onClearCellSelection: () => void
   onBatchClearCells: () => void
@@ -76,15 +63,20 @@ interface TimelinePanelProps {
   onSetPlaybackDirection: (dir: PlaybackDirection) => void
   onSetLoopPlayback: (loop: boolean) => void
   onUpdateOnionSkin: (patch: Partial<OnionSkinConfig>) => void
-  onOpenExportGif: () => void
 }
 
 const SPEED_OPTIONS = [0.5, 1, 1.5, 2] as const
 
+/**
+ * Streamlined Animation Timeline (`>= 2` frames):
+ * - Keeps the main workspace clean and approachable: only core frame & playback controls are visible by default.
+ * - Consolidates advanced settings (direction, loop/once, speed, per-frame/default/batch ms, onion skin)
+ *   behind a dedicated Settings icon popover (`timeline-settings-btn`) without shrinking the canvas.
+ * - Places linked/independent/empty cel operations inside a focused Cel Actions popover (`timeline-cel-menu-btn`
+ *   or re-tapping the currently active cell).
+ * - GIF Export button is intentionally omitted from the timeline (available in Viewer & Export menu when >=2 frames).
+ */
 export function TimelinePanel({
-  canvasWidth,
-  canvasHeight,
-  checkerDark = false,
   layers,
   activeLayerId,
   timeline,
@@ -103,11 +95,10 @@ export function TimelinePanel({
   onDuplicateFrame,
   onDeleteFrame,
   onSetFrameDuration,
+  onSetDefaultFrameDuration,
   onApplyBatchDuration,
   onClearCell,
   onUnlinkCell,
-  onLinkCellTo,
-  onMoveCellTo,
   onToggleCellSelected,
   onClearCellSelection,
   onBatchClearCells,
@@ -120,12 +111,11 @@ export function TimelinePanel({
   onSetPlaybackDirection,
   onSetLoopPlayback,
   onUpdateOnionSkin,
-  onOpenExportGif,
 }: TimelinePanelProps) {
   const { t } = useI18n()
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [celMenuOpen, setCelMenuOpen] = useState(false)
   const [multiSelectMode, setMultiSelectMode] = useState(false)
-  const [onionPopoverOpen, setOnionPopoverOpen] = useState(false)
-  const [batchOpen, setBatchOpen] = useState(false)
 
   const activeFrame =
     timeline.frames.find((f) => f.id === timeline.activeFrameId) ??
@@ -144,7 +134,6 @@ export function TimelinePanel({
   )
 
   const displayLayersTopDown = useMemo(() => [...layers].reverse(), [layers])
-  const isSingleFrameMode = timeline.frames.length <= 1
 
   const activeCellState = getCellStateKind(
     timeline.cels,
@@ -163,472 +152,560 @@ export function TimelinePanel({
     return Array.from(s)
   }, [selectedCellKeys])
 
-  // 1-Frame Still Artwork Mode -> Compact Inline Layer Workspace + Quick Add Frame to Convert into Animation!
-  if (isSingleFrameMode) {
-    return (
-      <div
-        className="px-2.5 py-2 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] space-y-2 shrink-0"
-        data-testid="inline-layers-workspace"
-      >
-        <div className="flex flex-wrap items-center justify-between gap-1.5">
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={onAddLayer}
-              className="pixel-btn pixel-btn-active min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1"
-              data-testid="inline-add-layer-btn"
-            >
-              <PixelIcon name="plus" size={13} />
-              <span>{t('addLayer')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={onOpenLayerSheet}
-              className="pixel-btn min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1"
-              data-testid="inline-open-layer-sheet-btn"
-            >
-              <PixelIcon name="layers" size={13} />
-              <span>{t('layersTitle')}</span>
-            </button>
-          </div>
+  const activeCellKindLabel =
+    activeCellState === 'empty'
+      ? t('celEmptyLabel')
+      : activeCellState === 'linked'
+        ? t('celLinkedLabel')
+        : t('celIndependentLabel')
 
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => onDuplicateFrame('independent')}
-              className="pixel-btn pixel-btn-teal min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1"
-              data-testid="convert-to-animation-dup-btn"
-            >
-              <PixelIcon name="film" size={13} />
-              <span>+ {t('duplicateFrameBtn')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={onAddEmptyFrame}
-              className="pixel-btn min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1"
-              data-testid="convert-to-animation-empty-btn"
-            >
-              <PixelIcon name="plus" size={13} />
-              <span>{t('addEmptyFrameBtn')}</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="max-h-36 overflow-y-auto space-y-1 pr-0.5">
-          {displayLayersTopDown.map((layer) => {
-            const isActive = layer.id === activeLayerId
-            return (
-              <div
-                key={layer.id}
-                onClick={() => onSelectLayer(layer.id)}
-                className={`px-2 py-1 border-2 flex items-center gap-2 cursor-pointer ${
-                  isActive
-                    ? 'bg-[var(--bg-panel)] border-[var(--accent-primary)]'
-                    : 'bg-[var(--bg-elevated)] border-[var(--border-pixel)]'
-                }`}
-                data-testid={`inline-layer-row-${layer.id}`}
-              >
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onUpdateLayer(layer.id, { visible: !layer.visible })
-                  }}
-                  className="pixel-btn w-7 h-7 flex items-center justify-center shrink-0"
-                  title={layer.visible ? t('layerVisible') : t('layerHidden')}
-                >
-                  <PixelIcon name={layer.visible ? 'eye' : 'eyeOff'} size={13} />
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onUpdateLayer(layer.id, { locked: !layer.locked })
-                  }}
-                  className={`pixel-btn w-7 h-7 flex items-center justify-center shrink-0 ${
-                    layer.locked ? 'pixel-btn-active' : ''
-                  }`}
-                  data-testid={`inline-layer-lock-${layer.id}`}
-                >
-                  <PixelIcon name={layer.locked ? 'lock' : 'unlock'} size={13} />
-                </button>
-                <LayerBufferThumbnail
-                  layer={layer}
-                  canvasWidth={canvasWidth}
-                  canvasHeight={canvasHeight}
-                  size={24}
-                  checkerDark={checkerDark}
-                />
-                <span className="text-xs font-bold truncate flex-1">
-                  {layer.name}
-                </span>
-                <span className="text-[10px] text-[var(--text-secondary)] shrink-0">
-                  {layer.opacity}%
-                </span>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    )
-  }
-
-  // >= 2 Frames Mode -> Full Compact Layer × Frame Cel Matrix Timeline!
   return (
     <div
-      className="relative px-2 py-1.5 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] space-y-1.5 shrink-0"
+      className="relative px-2.5 py-1.5 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] space-y-1.5 shrink-0"
       data-testid="timeline-workspace-panel"
     >
-      {/* Onion Skin Popover */}
-      {onionPopoverOpen && (
+      {/* Floating Popover 1: Consolidated Advanced Animation Settings (Settings Icon) */}
+      {settingsOpen && (
         <div
-          className="absolute bottom-full right-2 mb-1.5 z-30 w-64 pixel-popover-translucent p-2.5 space-y-2 text-xs"
-          data-testid="onion-skin-popover"
+          className="absolute bottom-full right-2 left-2 sm:left-auto sm:w-80 mb-1.5 z-30 pixel-popover-translucent p-3 space-y-3 text-xs max-h-[52dvh] overflow-y-auto"
+          data-testid="timeline-settings-popover"
         >
-          <div className="flex items-center justify-between font-bold">
-            <span>{t('onionSkinLabel')}</span>
-            <button
-              type="button"
-              onClick={() => setOnionPopoverOpen(false)}
-              className="pixel-btn w-6 h-6 flex items-center justify-center"
-            >
-              <PixelIcon name="close" size={12} />
-            </button>
-          </div>
-          <PixelCheckbox
-            checked={onionSkin.enabled}
-            onChange={(v) => onUpdateOnionSkin({ enabled: v })}
-            label={t('onionSkinLabel')}
-            testId="onion-enabled-checkbox"
-          />
-          <div className="grid grid-cols-2 gap-1.5">
-            <PixelCheckbox
-              checked={onionSkin.showPrev}
-              onChange={(v) => onUpdateOnionSkin({ showPrev: v })}
-              label={t('onionPrevLabel')}
-            />
-            <PixelCheckbox
-              checked={onionSkin.showNext}
-              onChange={(v) => onUpdateOnionSkin({ showNext: v })}
-              label={t('onionNextLabel')}
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-12 shrink-0">{t('onionCountLabel')}</span>
-            {[1, 2, 3].map((n) => (
-              <button
-                key={n}
-                type="button"
-                onClick={() => onUpdateOnionSkin({ prevCount: n, nextCount: n })}
-                className={`min-h-[28px] px-2 text-xs font-bold ${
-                  onionSkin.prevCount === n
-                    ? 'pixel-btn pixel-btn-active'
-                    : 'pixel-btn'
-                }`}
-              >
-                ±{n}
-              </button>
-            ))}
-          </div>
-          <div className="space-y-1">
-            <span>
-              {t('onionOpacityLabel')}: <strong>{onionSkin.opacity}%</strong>
+          <div className="flex items-center justify-between pb-1.5 border-b border-[var(--border-subtle)]">
+            <span className="font-bold text-[var(--accent-primary)] flex items-center gap-1.5">
+              <PixelIcon name="settings" size={14} />
+              <span>{t('animSettingsTitle')}</span>
             </span>
-            <PixelSlider
-              min={10}
-              max={80}
-              step={5}
-              value={onionSkin.opacity}
-              unit="%"
-              ariaLabel={t('onionOpacityLabel')}
-              onChange={(v) => onUpdateOnionSkin({ opacity: v })}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Batch ms Popover */}
-      {batchOpen && (
-        <div
-          className="absolute bottom-full left-2 mb-1.5 z-30 w-72 pixel-popover-translucent p-2.5 space-y-2 text-xs"
-          data-testid="batch-duration-popover"
-        >
-          <div className="flex items-center justify-between font-bold">
-            <span>{t('batchDurationLabel')}</span>
             <button
               type="button"
-              onClick={() => setBatchOpen(false)}
-              className="pixel-btn w-6 h-6 flex items-center justify-center"
+              onClick={() => setSettingsOpen(false)}
+              className="pixel-btn min-w-[28px] min-h-[28px] flex items-center justify-center"
+              aria-label={t('close')}
             >
               <PixelIcon name="close" size={12} />
             </button>
           </div>
-          <div className="flex items-center gap-1.5">
-            <input
-              type="number"
-              min={10}
-              max={60000}
-              step={10}
-              value={batchMsInput}
-              onChange={(e) =>
-                setBatchMsInput(Math.max(10, Number(e.target.value) || 100))
-              }
-              className="w-24 min-h-[32px] px-2 text-xs font-bold pixel-input"
-              data-testid="batch-ms-input"
-            />
-            <span>ms</span>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            <button
-              type="button"
-              onClick={() => {
-                onApplyBatchDuration({ mode: 'all' }, batchMsInput)
-                setBatchOpen(false)
-              }}
-              className="pixel-btn pixel-btn-active min-h-[32px] px-2.5 text-xs font-bold"
-              data-testid="batch-apply-all-btn"
-            >
-              {t('applyAllFramesBtn')}
-            </button>
-            {selectedFrameIdsFromCells.length > 0 && (
+
+          {/* 1. Playback Direction, Loop & Speed */}
+          <div className="space-y-1.5">
+            <div className="grid grid-cols-3 gap-1">
+              {(
+                [
+                  { id: 'forward', label: t('dirForward') },
+                  { id: 'reverse', label: t('dirReverse') },
+                  { id: 'pingpong', label: t('dirPingpong') },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => onSetPlaybackDirection(opt.id)}
+                  className={`min-h-[32px] px-2 text-[11px] font-bold ${
+                    timeline.playbackDirection === opt.id
+                      ? 'pixel-btn pixel-btn-active'
+                      : 'pixel-btn'
+                  }`}
+                  data-testid={`timeline-dir-${opt.id}-btn`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between gap-1.5">
               <button
                 type="button"
-                onClick={() => {
-                  onApplyBatchDuration(
-                    {
-                      mode: 'selected',
-                      selectedFrameIds: selectedFrameIdsFromCells,
-                    },
-                    batchMsInput
-                  )
-                  setBatchOpen(false)
-                }}
-                className="pixel-btn pixel-btn-teal min-h-[32px] px-2.5 text-xs font-bold"
-                data-testid="batch-apply-selected-btn"
+                onClick={() => onSetLoopPlayback(!timeline.loopPlayback)}
+                className={`min-h-[32px] px-2.5 text-[11px] font-bold flex-1 ${
+                  timeline.loopPlayback ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+                }`}
+                data-testid="timeline-loop-btn"
               >
-                {t('applySelectedFramesBtn')} ({selectedFrameIdsFromCells.length})
+                {timeline.loopPlayback ? t('loopPlaybackLabel') : t('oncePlaybackLabel')}
               </button>
+
+              <div className="flex items-center gap-1">
+                {SPEED_OPTIONS.map((sp) => (
+                  <button
+                    key={sp}
+                    type="button"
+                    onClick={() => onSetPlaybackSpeed(sp)}
+                    className={`min-h-[32px] px-2 text-[11px] font-mono font-bold ${
+                      playbackSpeed === sp
+                        ? 'pixel-btn pixel-btn-active'
+                        : 'pixel-btn'
+                    }`}
+                    data-testid={`timeline-speed-${sp}-btn`}
+                  >
+                    {sp}x
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* 2. Frame Duration (Current Frame, Default New Frame, and Batch Apply) */}
+          <div className="space-y-2 pt-2 border-t border-[var(--border-subtle)]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-bold text-[var(--text-secondary)]">
+                {t('frameDurationLabel')} (#{activeFrameIdx + 1})
+              </span>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={10}
+                  max={60000}
+                  step={10}
+                  value={activeFrame.durationMs}
+                  onChange={(e) => {
+                    const v = Number(e.target.value)
+                    if (!Number.isNaN(v) && v >= 10) {
+                      onSetFrameDuration(activeFrame.id, v)
+                    }
+                  }}
+                  className="w-20 min-h-[32px] px-2 text-right text-xs font-bold pixel-input"
+                  data-testid="active-frame-ms-input"
+                />
+                <span className="text-[10px] text-[var(--text-secondary)]">ms</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] text-[var(--text-secondary)]">
+                {t('defaultFrameDurationLabel')}
+              </span>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={10}
+                  max={60000}
+                  step={10}
+                  value={timeline.defaultFrameDurationMs}
+                  onChange={(e) => {
+                    const v = Number(e.target.value)
+                    if (!Number.isNaN(v) && v >= 10) {
+                      onSetDefaultFrameDuration(v)
+                    }
+                  }}
+                  className="w-20 min-h-[32px] px-2 text-right text-xs font-bold pixel-input"
+                  data-testid="default-frame-ms-input"
+                />
+                <span className="text-[10px] text-[var(--text-secondary)]">ms</span>
+              </div>
+            </div>
+
+            <div className="p-2 bg-[var(--bg-elevated)] border border-[var(--border-subtle)] space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold">{t('batchDurationLabel')}</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min={10}
+                    max={60000}
+                    step={10}
+                    value={batchMsInput}
+                    onChange={(e) =>
+                      setBatchMsInput(Math.max(10, Number(e.target.value) || 100))
+                    }
+                    className="w-20 min-h-[30px] px-2 text-right text-xs font-bold pixel-input"
+                    data-testid="batch-ms-input"
+                  />
+                  <span className="text-[10px] text-[var(--text-secondary)]">ms</span>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onApplyBatchDuration({ mode: 'all' }, batchMsInput)
+                  }}
+                  className="pixel-btn pixel-btn-teal min-h-[30px] px-2.5 text-[11px] font-bold"
+                  data-testid="batch-apply-all-btn"
+                >
+                  {t('applyAllFramesBtn')}
+                </button>
+                {selectedFrameIdsFromCells.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onApplyBatchDuration(
+                        {
+                          mode: 'selected',
+                          selectedFrameIds: selectedFrameIdsFromCells,
+                        },
+                        batchMsInput
+                      )
+                    }}
+                    className="pixel-btn min-h-[30px] px-2.5 text-[11px] font-bold"
+                    data-testid="batch-apply-selected-btn"
+                  >
+                    {t('applySelectedFramesBtn')} ({selectedFrameIdsFromCells.length})
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* 3. Onion Skin Settings */}
+          <div
+            className="space-y-2 pt-2 border-t border-[var(--border-subtle)]"
+            data-testid="onion-skin-popover"
+          >
+            <PixelCheckbox
+              checked={onionSkin.enabled}
+              onChange={(v) => onUpdateOnionSkin({ enabled: v })}
+              label={t('onionSkinLabel')}
+              testId="onion-enabled-checkbox"
+            />
+            {onionSkin.enabled && (
+              <div className="space-y-2 pl-1">
+                <div className="grid grid-cols-2 gap-1.5">
+                  <PixelCheckbox
+                    checked={onionSkin.showPrev}
+                    onChange={(v) => onUpdateOnionSkin({ showPrev: v })}
+                    label={t('onionPrevLabel')}
+                  />
+                  <PixelCheckbox
+                    checked={onionSkin.showNext}
+                    onChange={(v) => onUpdateOnionSkin({ showNext: v })}
+                    label={t('onionNextLabel')}
+                  />
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-12 shrink-0 text-[11px]">
+                    {t('onionCountLabel')}
+                  </span>
+                  {[1, 2, 3].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() =>
+                        onUpdateOnionSkin({ prevCount: n, nextCount: n })
+                      }
+                      className={`min-h-[28px] px-2 text-xs font-bold ${
+                        onionSkin.prevCount === n
+                          ? 'pixel-btn pixel-btn-active'
+                          : 'pixel-btn'
+                      }`}
+                    >
+                      ±{n}
+                    </button>
+                  ))}
+                </div>
+                <div className="space-y-1">
+                  <span className="text-[11px]">
+                    {t('onionOpacityLabel')}: <strong>{onionSkin.opacity}%</strong>
+                  </span>
+                  <PixelSlider
+                    min={10}
+                    max={80}
+                    step={5}
+                    value={onionSkin.opacity}
+                    unit="%"
+                    ariaLabel={t('onionOpacityLabel')}
+                    onChange={(v) => onUpdateOnionSkin({ opacity: v })}
+                  />
+                </div>
+              </div>
             )}
           </div>
         </div>
       )}
 
-      {/* Row 1: Transport + Direction/Loop/Speed + Onion + Frame Duration + Frame Add/Dup/Del */}
-      <div className="flex flex-wrap items-center justify-between gap-1 text-xs">
+      {/* Floating Popover 2: Focused Cel & Linked-Cel Detail Menu (opened on demand) */}
+      {celMenuOpen && (
+        <div
+          className="absolute bottom-full right-2 left-2 sm:left-auto sm:w-72 mb-1.5 z-30 pixel-popover-translucent p-2.5 space-y-2 text-xs"
+          data-testid="cel-actions-popover"
+        >
+          <div className="flex items-center justify-between pb-1 border-b border-[var(--border-subtle)]">
+            <span
+              className="font-bold text-[var(--accent-teal)]"
+              data-testid="active-cel-kind-badge"
+            >
+              {activeCellKindLabel} (#{activeFrameIdx + 1})
+            </span>
+            <button
+              type="button"
+              onClick={() => setCelMenuOpen(false)}
+              className="pixel-btn min-w-[26px] min-h-[26px] flex items-center justify-center"
+              aria-label={t('close')}
+            >
+              <PixelIcon name="close" size={12} />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                onDuplicateFrame('linked')
+              }}
+              className="pixel-btn pixel-btn-teal min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1.5"
+              data-testid="timeline-dup-linked-frame-btn"
+            >
+              <PixelIcon name="link" size={13} />
+              <span>{t('dupLinkedFrameBtn')}</span>
+            </button>
+
+            {activeCellState === 'linked' && (
+              <button
+                type="button"
+                onClick={() => {
+                  onUnlinkCell(activeLayerId, activeFrame.id)
+                }}
+                className="pixel-btn min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1.5"
+                data-testid="cel-unlink-active-btn"
+              >
+                <PixelIcon name="unlink" size={13} />
+                <span>{t('celUnlinkBtn')}</span>
+              </button>
+            )}
+
+            {activeCellState !== 'empty' && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClearCell(activeLayerId, activeFrame.id)
+                }}
+                className="pixel-btn pixel-btn-danger min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1.5"
+                data-testid="cel-clear-active-btn"
+              >
+                <PixelIcon name="trash" size={13} />
+                <span>{t('celClearBtn')}</span>
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5 pt-1.5 border-t border-[var(--border-subtle)]">
+            <button
+              type="button"
+              onClick={onCopyActiveCell}
+              className="pixel-btn min-h-[32px] px-2.5 text-[11px] font-bold flex items-center gap-1"
+              data-testid="cel-copy-btn"
+            >
+              <PixelIcon name="copy" size={12} />
+              <span>{t('copy')}</span>
+            </button>
+            <button
+              type="button"
+              disabled={!celClipboard}
+              onClick={() => onPasteToActiveCell(false)}
+              className="pixel-btn min-h-[32px] px-2.5 text-[11px] font-bold"
+              data-testid="cel-paste-btn"
+            >
+              {t('paste')}
+            </button>
+            {celClipboard &&
+              !celClipboard.isEmpty &&
+              celClipboard.sourceLayerId === activeLayerId && (
+                <button
+                  type="button"
+                  onClick={() => onPasteToActiveCell(true)}
+                  className="pixel-btn min-h-[32px] px-2 text-[11px] font-bold flex items-center gap-1"
+                  data-testid="cel-paste-linked-btn"
+                >
+                  <PixelIcon name="link" size={11} />
+                  <span>{t('pasteLinkedBtn')}</span>
+                </button>
+              )}
+          </div>
+
+          {/* Optional Multi-Cel Selection Mode */}
+          <div className="pt-1.5 border-t border-[var(--border-subtle)] space-y-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setMultiSelectMode((v) => {
+                  if (v) onClearCellSelection()
+                  return !v
+                })
+              }}
+              className={`w-full min-h-[30px] px-2 text-[11px] font-bold ${
+                multiSelectMode ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+              }`}
+              data-testid="cel-multiselect-toggle-btn"
+            >
+              {multiSelectMode && selectedCellKeys.length > 0
+                ? `${t('selectedLayersCount')}: ${selectedCellKeys.length}`
+                : `${t('toolSelect')} (${t('celActionsBtn')})`}
+            </button>
+
+            {selectedCellKeys.length >= 2 && (
+              <div className="flex flex-wrap gap-1">
+                <button
+                  type="button"
+                  onClick={onBatchLinkCells}
+                  className="pixel-btn pixel-btn-teal min-h-[30px] px-2 text-[11px] font-bold flex items-center gap-1"
+                  data-testid="cel-batch-link-btn"
+                >
+                  <PixelIcon name="link" size={11} />
+                  <span>{t('celLinkBtn')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onBatchUnlinkCells}
+                  className="pixel-btn min-h-[30px] px-2 text-[11px] font-bold flex items-center gap-1"
+                  data-testid="cel-batch-unlink-btn"
+                >
+                  <PixelIcon name="unlink" size={11} />
+                  <span>{t('celUnlinkBtn')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onBatchClearCells}
+                  className="pixel-btn pixel-btn-danger min-h-[30px] px-2 text-[11px] font-bold"
+                  data-testid="cel-batch-clear-btn"
+                >
+                  {t('celClearBtn')}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Main Row 1: Clean Core Controls Only (Transport + Add/Dup/Del + Cel Menu + Settings Icon) */}
+      <div className="flex flex-wrap items-center justify-between gap-1.5 text-xs">
         <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={() => onStepFrame(-1)}
             title={t('prevFrameBtn')}
-            className="pixel-btn min-w-[32px] min-h-[32px] flex items-center justify-center"
+            className="pixel-btn min-w-[36px] min-h-[36px] flex items-center justify-center"
             data-testid="timeline-prev-frame-btn"
           >
-            <PixelIcon name="arrowLeft" size={13} />
+            <PixelIcon name="arrowLeft" size={14} />
           </button>
+
           <button
             type="button"
             onClick={onTogglePlay}
-            title={isPlaying ? t('pauseBtn') : t('playBtn')}
-            className={`min-w-[36px] min-h-[32px] px-2 flex items-center justify-center gap-1 font-bold ${
+            className={`min-h-[36px] px-2.5 flex items-center justify-center gap-1.5 font-bold ${
               isPlaying ? 'pixel-btn pixel-btn-teal' : 'pixel-btn pixel-btn-active'
             }`}
             data-testid="timeline-play-btn"
           >
             <PixelIcon name={isPlaying ? 'pause' : 'play'} size={13} />
-            <span className="text-[11px]">
+            <span>{isPlaying ? t('pauseBtn') : t('playBtn')}</span>
+            <span className="text-[11px] opacity-90">
               {activeFrameIdx + 1}/{timeline.frames.length}
             </span>
           </button>
+
           <button
             type="button"
             onClick={() => onStepFrame(1)}
             title={t('nextFrameBtn')}
-            className="pixel-btn min-w-[32px] min-h-[32px] flex items-center justify-center"
+            className="pixel-btn min-w-[36px] min-h-[36px] flex items-center justify-center"
             data-testid="timeline-next-frame-btn"
           >
-            <PixelIcon name="arrowRight" size={13} />
-          </button>
-
-          {/* Direction cycle button */}
-          <button
-            type="button"
-            onClick={() => {
-              const order: PlaybackDirection[] = ['forward', 'reverse', 'pingpong']
-              const next =
-                order[(order.indexOf(timeline.playbackDirection) + 1) % order.length]!
-              onSetPlaybackDirection(next)
-            }}
-            className="pixel-btn min-h-[32px] px-2 text-[11px] font-bold"
-            data-testid="timeline-direction-btn"
-          >
-            {timeline.playbackDirection === 'forward'
-              ? '→'
-              : timeline.playbackDirection === 'reverse'
-                ? '←'
-                : '↔'}
-          </button>
-
-          {/* Loop toggle */}
-          <button
-            type="button"
-            onClick={() => onSetLoopPlayback(!timeline.loopPlayback)}
-            className={`min-h-[32px] px-2 text-[11px] font-bold ${
-              timeline.loopPlayback ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-            }`}
-            data-testid="timeline-loop-btn"
-          >
-            {timeline.loopPlayback ? t('loopPlaybackLabel') : t('oncePlaybackLabel')}
-          </button>
-
-          {/* Speed cycle */}
-          <button
-            type="button"
-            onClick={() => {
-              const idx = SPEED_OPTIONS.indexOf(
-                playbackSpeed as (typeof SPEED_OPTIONS)[number]
-              )
-              const next = SPEED_OPTIONS[(idx + 1) % SPEED_OPTIONS.length]!
-              onSetPlaybackSpeed(next)
-            }}
-            className="pixel-btn min-h-[32px] px-1.5 text-[11px] font-mono font-bold"
-            data-testid="timeline-speed-btn"
-          >
-            {playbackSpeed}x
+            <PixelIcon name="arrowRight" size={14} />
           </button>
         </div>
 
-        {/* Active Frame Duration (ms) + Batch + Onion + GIF + Frame Add/Dup/Del */}
         <div className="flex flex-wrap items-center gap-1">
-          <div className="flex items-center gap-0.5 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] px-1.5 min-h-[32px]">
-            <PixelIcon name="clock" size={12} />
-            <input
-              type="number"
-              min={10}
-              max={60000}
-              step={10}
-              value={activeFrame.durationMs}
-              onChange={(e) => {
-                const v = Number(e.target.value)
-                if (!Number.isNaN(v) && v >= 10) {
-                  onSetFrameDuration(activeFrame.id, v)
-                }
-              }}
-              className="w-14 bg-transparent text-right text-xs font-bold focus:outline-none select-text"
-              data-testid="active-frame-ms-input"
-            />
-            <span className="text-[10px] text-[var(--text-secondary)]">ms</span>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              setBatchMsInput(activeFrame.durationMs)
-              setBatchOpen((v) => !v)
-              setOnionPopoverOpen(false)
-            }}
-            className={`min-h-[32px] px-2 text-[11px] font-bold ${
-              batchOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-            }`}
-            data-testid="open-batch-ms-btn"
-          >
-            {t('batchDurationLabel')}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              if (!onionSkin.enabled) {
-                onUpdateOnionSkin({ enabled: true })
-              }
-              setOnionPopoverOpen((v) => !v)
-              setBatchOpen(false)
-            }}
-            className={`min-h-[32px] px-2 text-[11px] font-bold flex items-center gap-1 ${
-              onionSkin.enabled ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-            }`}
-            data-testid="timeline-onion-btn"
-          >
-            <PixelIcon name="onion" size={13} />
-          </button>
-
           <button
             type="button"
             onClick={onAddEmptyFrame}
-            title={t('addEmptyFrameBtn')}
-            className="pixel-btn min-h-[32px] px-2 text-[11px] font-bold flex items-center gap-0.5"
+            className="pixel-btn min-h-[36px] px-2.5 text-[11px] font-bold flex items-center gap-1"
             data-testid="timeline-add-empty-frame-btn"
           >
             <PixelIcon name="plus" size={12} />
-            <span>F</span>
+            <span>{t('frameAddShort')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => onDuplicateFrame('independent')}
-            title={t('duplicateFrameBtn')}
-            className="pixel-btn min-h-[32px] px-2 text-[11px] font-bold flex items-center gap-0.5"
+            className="pixel-btn min-h-[36px] px-2.5 text-[11px] font-bold flex items-center gap-1"
             data-testid="timeline-dup-frame-btn"
           >
             <PixelIcon name="copy" size={12} />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onDuplicateFrame('linked')}
-            title={`${t('duplicateFrameBtn')} (${t('celLinkedLabel')})`}
-            className="pixel-btn min-h-[32px] px-2 text-[11px] font-bold flex items-center gap-0.5"
-            data-testid="timeline-dup-linked-frame-btn"
-          >
-            <PixelIcon name="link" size={12} />
+            <span>{t('frameDupShort')}</span>
           </button>
 
           <button
             type="button"
             disabled={timeline.frames.length <= 1}
             onClick={() => onDeleteFrame(activeFrame.id)}
-            title={t('deleteFrameBtn')}
-            className="pixel-btn pixel-btn-danger min-h-[32px] px-2 text-[11px] font-bold flex items-center justify-center"
+            className="pixel-btn pixel-btn-danger min-h-[36px] px-2 text-[11px] font-bold flex items-center gap-1"
             data-testid="timeline-del-frame-btn"
           >
             <PixelIcon name="trash" size={12} />
+            <span>{t('frameDelShort')}</span>
           </button>
 
           <button
             type="button"
-            onClick={onOpenExportGif}
-            className="pixel-btn pixel-btn-teal min-h-[32px] px-2 text-[11px] font-bold flex items-center gap-1"
-            data-testid="timeline-export-gif-btn"
+            onClick={() => {
+              setSettingsOpen(false)
+              setCelMenuOpen((v) => !v)
+            }}
+            className={`min-h-[36px] px-2 text-[11px] font-bold flex items-center gap-1 ${
+              celMenuOpen || activeCellState === 'linked'
+                ? 'pixel-btn pixel-btn-teal'
+                : 'pixel-btn'
+            }`}
+            data-testid="timeline-cel-menu-btn"
           >
-            <PixelIcon name="film" size={12} />
-            <span>GIF</span>
+            <PixelIcon
+              name={activeCellState === 'linked' ? 'link' : 'layers'}
+              size={12}
+            />
+            <span>{activeCellKindLabel}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setCelMenuOpen(false)
+              setBatchMsInput(activeFrame.durationMs)
+              setSettingsOpen((v) => !v)
+            }}
+            title={t('animSettingsTitle')}
+            className={`relative min-w-[36px] min-h-[36px] px-2 text-[11px] font-bold flex items-center justify-center gap-1 ${
+              settingsOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+            }`}
+            data-testid="timeline-settings-btn"
+          >
+            <PixelIcon name="settings" size={14} />
+            <span className="hidden sm:inline">{t('animSettingsBtn')}</span>
+            {onionSkin.enabled && (
+              <span
+                className="absolute top-0.5 right-0.5 w-2 h-2 bg-[var(--accent-teal)] border border-[var(--border-strong)]"
+                aria-hidden="true"
+              />
+            )}
           </button>
         </div>
       </div>
 
-      {/* Row 2: Layer × Frame Cel Matrix */}
+      {/* Main Row 2: Easy-to-Read Layer × Frame Cel Matrix */}
       <div className="border-2 border-[var(--border-pixel)] bg-[var(--bg-elevated)] max-h-40 overflow-auto">
         <table className="w-full border-collapse text-xs">
           <thead className="sticky top-0 z-10 bg-[var(--bg-surface)] border-b-2 border-[var(--border-pixel)]">
             <tr>
-              <th className="sticky left-0 z-20 bg-[var(--bg-surface)] border-r-2 border-[var(--border-pixel)] px-1.5 py-1 text-left min-w-[116px]">
+              <th className="sticky left-0 z-20 bg-[var(--bg-surface)] border-r-2 border-[var(--border-pixel)] px-2 py-1 text-left min-w-[126px]">
                 <div className="flex items-center justify-between gap-1">
                   <button
                     type="button"
                     onClick={onOpenLayerSheet}
-                    className="pixel-btn px-1.5 py-0.5 text-[10px] font-bold flex items-center gap-1"
+                    className="pixel-btn px-2 py-0.5 text-[11px] font-bold flex items-center gap-1"
                     data-testid="timeline-open-layers-modal-btn"
                   >
-                    <PixelIcon name="layers" size={11} />
-                    <span>{layers.length}</span>
+                    <PixelIcon name="layers" size={12} />
+                    <span>
+                      {t('tabLayers')} ({layers.length})
+                    </span>
                   </button>
                   <button
                     type="button"
                     onClick={onAddLayer}
-                    className="pixel-btn px-1.5 py-0.5 text-[10px] font-bold"
+                    className="pixel-btn min-w-[26px] min-h-[26px] px-1.5 text-[11px] font-bold flex items-center justify-center"
                     title={t('addLayer')}
                     data-testid="timeline-add-layer-btn"
                   >
-                    +L
+                    <PixelIcon name="plus" size={11} />
                   </button>
                 </div>
               </th>
@@ -638,18 +715,15 @@ export function TimelinePanel({
                   <th
                     key={f.id}
                     onClick={() => onSelectFrame(f.id)}
-                    className={`min-w-[38px] px-1 py-0.5 text-center border-r border-[var(--border-subtle)] cursor-pointer select-none ${
+                    className={`min-w-[42px] px-1.5 py-1 text-center border-r border-[var(--border-subtle)] cursor-pointer select-none ${
                       isCurFrame
                         ? 'bg-[var(--accent-primary)] text-[var(--accent-primary-fg)]'
                         : 'hover:bg-[var(--bg-panel)]'
                     }`}
                     data-testid={`timeline-frame-header-${fIdx}`}
                   >
-                    <div className="text-[11px] font-bold leading-tight">
+                    <div className="text-xs font-bold leading-tight">
                       {fIdx + 1}
-                    </div>
-                    <div className="text-[9px] opacity-85 leading-none">
-                      {f.durationMs}
                     </div>
                   </th>
                 )
@@ -667,24 +741,25 @@ export function TimelinePanel({
                 >
                   <td
                     onClick={() => onSelectLayer(layer.id)}
-                    className={`sticky left-0 z-10 px-1.5 py-1 border-r-2 border-[var(--border-pixel)] cursor-pointer ${
+                    className={`sticky left-0 z-10 px-2 py-1 border-r-2 border-[var(--border-pixel)] cursor-pointer ${
                       isCurLayer
                         ? 'bg-[var(--bg-panel)] font-bold'
                         : 'bg-[var(--bg-surface)]'
                     }`}
                   >
-                    <div className="flex items-center gap-1 max-w-[120px]">
+                    <div className="flex items-center gap-1.5 max-w-[130px]">
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation()
                           onUpdateLayer(layer.id, { visible: !layer.visible })
                         }}
-                        className="opacity-80 hover:opacity-100 shrink-0"
+                        className="opacity-85 hover:opacity-100 shrink-0"
+                        aria-label={t('layerVisible')}
                       >
                         <PixelIcon
                           name={layer.visible ? 'eye' : 'eyeOff'}
-                          size={12}
+                          size={13}
                         />
                       </button>
                       <button
@@ -693,14 +768,14 @@ export function TimelinePanel({
                           e.stopPropagation()
                           onUpdateLayer(layer.id, { locked: !layer.locked })
                         }}
-                        className="opacity-80 hover:opacity-100 shrink-0"
+                        className="opacity-85 hover:opacity-100 shrink-0"
                       >
                         <PixelIcon
                           name={layer.locked ? 'lock' : 'unlock'}
-                          size={12}
+                          size={13}
                         />
                       </button>
-                      <span className="truncate text-[11px]">{layer.name}</span>
+                      <span className="truncate text-xs">{layer.name}</span>
                     </div>
                   </td>
 
@@ -738,8 +813,8 @@ export function TimelinePanel({
                       nextRef?.kind === 'cel' &&
                       nextRef.celId === ref.celId
 
-                    const isActiveCell =
-                      isCurLayer && f.id === activeFrame.id
+                    const isCurFrame = f.id === activeFrame.id
+                    const isActiveCell = isCurLayer && isCurFrame
                     const isMultiSelected = selectedCellKeys.includes(ck)
 
                     return (
@@ -748,22 +823,26 @@ export function TimelinePanel({
                         onClick={(e) => {
                           if (multiSelectMode || e.shiftKey) {
                             onToggleCellSelected(ck)
+                          } else if (isActiveCell) {
+                            setSettingsOpen(false)
+                            setCelMenuOpen((v) => !v)
                           } else {
                             onSelectLayer(layer.id)
                             onSelectFrame(f.id)
                           }
                         }}
-                        className={`relative h-7 text-center border-r border-[var(--border-subtle)] cursor-pointer select-none ${
+                        className={`relative h-8 text-center border-r border-[var(--border-subtle)] cursor-pointer select-none ${
                           isMultiSelected
                             ? 'bg-[var(--accent-teal)] text-[var(--accent-teal-fg)]'
                             : isActiveCell
                               ? 'bg-[var(--bg-panel)] outline-2 -outline-offset-2 outline-[var(--accent-primary)]'
-                              : ''
+                              : isCurFrame
+                                ? 'bg-[var(--bg-surface)]/80'
+                                : ''
                         }`}
                         data-testid={`cel-${layer.id}-${fIdx}`}
                         data-cel-kind={kind}
                       >
-                        {/* Horizontal connector bar for adjacent linked cels */}
                         {linkedLeft && (
                           <span
                             className="absolute left-0 top-1/2 -translate-y-1/2 w-1/2 h-0.5 bg-[var(--accent-teal)]"
@@ -776,7 +855,15 @@ export function TimelinePanel({
                             aria-hidden="true"
                           />
                         )}
-                        <span className="relative z-10 text-[11px] font-bold">
+                        <span
+                          className={`relative z-10 text-xs font-bold ${
+                            kind === 'linked'
+                              ? 'text-[var(--accent-teal)]'
+                              : kind === 'empty'
+                                ? 'text-[var(--text-secondary)]'
+                                : ''
+                          }`}
+                        >
                           {kind === 'empty'
                             ? '·'
                             : kind === 'linked'
@@ -791,168 +878,6 @@ export function TimelinePanel({
             })}
           </tbody>
         </table>
-      </div>
-
-      {/* Row 3: Cel Action Strip (Empty / Independent / Linked + Multi-Cel Batch + Copy/Paste/Move) */}
-      <div className="flex flex-wrap items-center justify-between gap-1 text-[11px]">
-        <div className="flex flex-wrap items-center gap-1">
-          <button
-            type="button"
-            onClick={() => {
-              setMultiSelectMode((v) => {
-                if (v) onClearCellSelection()
-                return !v
-              })
-            }}
-            className={`min-h-[28px] px-2 font-bold ${
-              multiSelectMode ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-            }`}
-            data-testid="cel-multiselect-toggle-btn"
-          >
-            {multiSelectMode && selectedCellKeys.length > 0
-              ? `${t('selectedLayersCount')}:${selectedCellKeys.length}`
-              : t('toolSelect')}
-          </button>
-
-          {selectedCellKeys.length >= 2 ? (
-            <>
-              <button
-                type="button"
-                onClick={onBatchLinkCells}
-                className="pixel-btn pixel-btn-teal min-h-[28px] px-2 font-bold flex items-center gap-1"
-                data-testid="cel-batch-link-btn"
-              >
-                <PixelIcon name="link" size={11} />
-                <span>{t('celLinkBtn')}</span>
-              </button>
-              <button
-                type="button"
-                onClick={onBatchUnlinkCells}
-                className="pixel-btn min-h-[28px] px-2 font-bold flex items-center gap-1"
-                data-testid="cel-batch-unlink-btn"
-              >
-                <PixelIcon name="unlink" size={11} />
-                <span>{t('celUnlinkBtn')}</span>
-              </button>
-              <button
-                type="button"
-                onClick={onBatchClearCells}
-                className="pixel-btn pixel-btn-danger min-h-[28px] px-2 font-bold"
-                data-testid="cel-batch-clear-btn"
-              >
-                {t('celClearBtn')}
-              </button>
-            </>
-          ) : (
-            <>
-              <span
-                className="px-1.5 py-0.5 bg-[var(--bg-elevated)] border border-[var(--border-pixel)] font-bold"
-                data-testid="active-cel-kind-badge"
-              >
-                {activeCellState === 'empty'
-                  ? t('celEmptyLabel')
-                  : activeCellState === 'linked'
-                    ? t('celLinkedLabel')
-                    : t('celIndependentLabel')}
-              </span>
-
-              {activeCellState === 'linked' && (
-                <button
-                  type="button"
-                  onClick={() => onUnlinkCell(activeLayerId, activeFrame.id)}
-                  className="pixel-btn min-h-[28px] px-2 font-bold flex items-center gap-1"
-                  data-testid="cel-unlink-active-btn"
-                >
-                  <PixelIcon name="unlink" size={11} />
-                  <span>{t('celUnlinkBtn')}</span>
-                </button>
-              )}
-
-              {activeFrameIdx > 0 && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    onLinkCellTo(
-                      activeLayerId,
-                      timeline.frames[activeFrameIdx - 1]!.id,
-                      activeFrame.id
-                    )
-                  }
-                  className="pixel-btn min-h-[28px] px-2 font-bold flex items-center gap-1"
-                  data-testid="cel-link-prev-btn"
-                >
-                  <PixelIcon name="link" size={11} />
-                  <span>{t('celLinkBtn')}</span>
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={() => onClearCell(activeLayerId, activeFrame.id)}
-                className="pixel-btn min-h-[28px] px-2 font-bold"
-                data-testid="cel-clear-active-btn"
-              >
-                {t('celClearBtn')}
-              </button>
-            </>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={onCopyActiveCell}
-            className="pixel-btn min-h-[28px] px-2 font-bold"
-            title={t('celCopyBtn')}
-            data-testid="cel-copy-btn"
-          >
-            <PixelIcon name="copy" size={11} />
-          </button>
-          <button
-            type="button"
-            disabled={!celClipboard}
-            onClick={() => onPasteToActiveCell(false)}
-            className="pixel-btn min-h-[28px] px-2 font-bold"
-            title={t('celPasteBtn')}
-            data-testid="cel-paste-btn"
-          >
-            <PixelIcon name="paste" size={11} />
-          </button>
-          {activeFrameIdx > 0 && (
-            <button
-              type="button"
-              onClick={() =>
-                onMoveCellTo(
-                  activeLayerId,
-                  activeFrame.id,
-                  timeline.frames[activeFrameIdx - 1]!.id
-                )
-              }
-              className="pixel-btn min-h-[28px] px-1.5 font-bold"
-              title="←"
-              data-testid="cel-move-left-btn"
-            >
-              ←
-            </button>
-          )}
-          {activeFrameIdx < timeline.frames.length - 1 && (
-            <button
-              type="button"
-              onClick={() =>
-                onMoveCellTo(
-                  activeLayerId,
-                  activeFrame.id,
-                  timeline.frames[activeFrameIdx + 1]!.id
-                )
-              }
-              className="pixel-btn min-h-[28px] px-1.5 font-bold"
-              title="→"
-              data-testid="cel-move-right-btn"
-            >
-              →
-            </button>
-          )}
-        </div>
       </div>
     </div>
   )
