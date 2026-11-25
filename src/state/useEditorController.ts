@@ -3884,7 +3884,18 @@ export function useEditorController(options: UseEditorOptions) {
 
   const stopPlay = useCallback(() => {
     setIsPlaying(false)
-  }, [])
+    playStepCursorRef.current = 0
+    const curTl = timelineRef.current
+    if (curTl.frames.length >= 2) {
+      const targetFrame =
+        curTl.playbackDirection === 'reverse'
+          ? curTl.frames[curTl.frames.length - 1]
+          : curTl.frames[0]
+      if (targetFrame && targetFrame.id !== curTl.activeFrameId) {
+        selectFrame(targetFrame.id)
+      }
+    }
+  }, [selectFrame])
 
   const playStepCursorRef = useRef<number>(0)
   useEffect(() => {

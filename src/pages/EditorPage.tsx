@@ -13,6 +13,7 @@ import {
   MultiRowToolGrid,
   PaletteBar,
   SelectionReadyBar,
+  TimelineTransportDock,
   ToolDetailPopover,
 } from '../components/editor/ToolPanels'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
@@ -714,66 +715,87 @@ export function EditorPage() {
               />
             </div>
           ) : (
-            <TimelinePanel
-              canvasWidth={editor.project.width}
-              canvasHeight={editor.project.height}
-              checkerDark={settings.checkerboardDark}
-              layers={editor.layers}
-              activeLayerId={editor.activeLayerId}
-              timeline={editor.timeline}
-              selectedCellKeys={editor.selectedCellKeys}
-              celClipboard={editor.celClipboard}
-              isPlaying={editor.isPlaying}
-              playbackSpeed={editor.playbackSpeed}
-              onionSkin={editor.onionSkin}
-              onSelectLayer={editor.setActiveLayerId}
-              onUpdateLayer={editor.updateLayerProps}
-              onAddLayer={() => {
-                if (!editor.addNewLayer()) {
-                  showToast(t('layerMaxReached'), 'warning')
-                }
-              }}
-              onOpenLayerSheet={() => setLayersOpen(true)}
-              onSelectFrame={editor.selectFrame}
-              onStepFrame={editor.stepFrame}
-              onAddEmptyFrame={() => {
-                editor.addEmptyFrame()
-              }}
-              onDuplicateFrame={(mode) => {
-                editor.duplicateFrame(mode)
-              }}
-              onDeleteFrame={(fid) => {
-                if (!editor.deleteFrame(fid)) {
-                  showToast(t('cannotDeleteLastFrame'), 'warning')
-                }
-              }}
-              onSetFrameDuration={editor.setFrameDuration}
-              onSetDefaultFrameDuration={editor.setDefaultFrameDuration}
-              onApplyBatchDuration={editor.applyBatchDuration}
-              onClearCell={editor.clearCell}
-              onUnlinkCell={editor.unlinkCell}
-              onLinkCellToAny={editor.linkCellToAny}
-              onToggleCellSelected={editor.toggleCellSelected}
-              onClearCellSelection={editor.clearCellSelection}
-              onBatchClearCells={editor.batchClearSelectedCells}
-              onBatchUnlinkCells={editor.batchUnlinkSelectedCells}
-              onBatchLinkCells={editor.batchLinkSelectedCells}
-              onCopyActiveCell={() => {
-                if (editor.copyActiveCell()) {
-                  showToast(t('toastCopied'))
-                }
-              }}
-              onPasteToActiveCell={(asLinked) => {
-                if (editor.pasteToActiveCell(asLinked)) {
-                  showToast(t('toastPasted'))
-                }
-              }}
-              onTogglePlay={editor.togglePlay}
-              onSetPlaybackSpeed={editor.setPlaybackSpeed}
-              onSetPlaybackDirection={editor.setPlaybackDirection}
-              onSetLoopPlayback={editor.setLoopPlayback}
-              onUpdateOnionSkin={editor.updateOnionSkin}
-            />
+            <>
+              <TimelinePanel
+                canvasWidth={editor.project.width}
+                canvasHeight={editor.project.height}
+                checkerDark={settings.checkerboardDark}
+                layers={editor.layers}
+                activeLayerId={editor.activeLayerId}
+                timeline={editor.timeline}
+                selectedCellKeys={editor.selectedCellKeys}
+                celClipboard={editor.celClipboard}
+                isPlaying={editor.isPlaying}
+                playbackSpeed={editor.playbackSpeed}
+                onionSkin={editor.onionSkin}
+                onSelectLayer={editor.setActiveLayerId}
+                onUpdateLayer={editor.updateLayerProps}
+                onAddLayer={() => {
+                  if (!editor.addNewLayer()) {
+                    showToast(t('layerMaxReached'), 'warning')
+                  }
+                }}
+                onOpenLayerSheet={() => setLayersOpen(true)}
+                onSelectFrame={editor.selectFrame}
+                onAddEmptyFrame={() => {
+                  editor.addEmptyFrame()
+                }}
+                onDuplicateFrame={(mode) => {
+                  editor.duplicateFrame(mode)
+                }}
+                onDeleteFrame={(fid) => {
+                  if (!editor.deleteFrame(fid)) {
+                    showToast(t('cannotDeleteLastFrame'), 'warning')
+                  }
+                }}
+                onSetFrameDuration={editor.setFrameDuration}
+                onSetDefaultFrameDuration={editor.setDefaultFrameDuration}
+                onApplyBatchDuration={editor.applyBatchDuration}
+                onClearCell={editor.clearCell}
+                onUnlinkCell={editor.unlinkCell}
+                onLinkCellToAny={editor.linkCellToAny}
+                onToggleCellSelected={editor.toggleCellSelected}
+                onClearCellSelection={editor.clearCellSelection}
+                onBatchClearCells={editor.batchClearSelectedCells}
+                onBatchUnlinkCells={editor.batchUnlinkSelectedCells}
+                onBatchLinkCells={editor.batchLinkSelectedCells}
+                onCopyActiveCell={() => {
+                  if (editor.copyActiveCell()) {
+                    showToast(t('toastCopied'))
+                  }
+                }}
+                onPasteToActiveCell={(asLinked) => {
+                  if (editor.pasteToActiveCell(asLinked)) {
+                    showToast(t('toastPasted'))
+                  }
+                }}
+                onSetPlaybackSpeed={editor.setPlaybackSpeed}
+                onSetPlaybackDirection={editor.setPlaybackDirection}
+                onSetLoopPlayback={editor.setLoopPlayback}
+                onUpdateOnionSkin={editor.updateOnionSkin}
+              />
+
+              {/* Frame Transport Controls placed in the Tool Operation Area slot during Timeline View */}
+              <TimelineTransportDock
+                isPlaying={editor.isPlaying}
+                activeFrameIndex={Math.max(
+                  0,
+                  editor.timeline.frames.findIndex(
+                    (f) => f.id === editor.timeline.activeFrameId
+                  )
+                )}
+                totalFrames={editor.timeline.frames.length}
+                globalSettingsOpen={globalSettingsOpen}
+                onStepFrame={editor.stepFrame}
+                onTogglePlay={editor.togglePlay}
+                onStopPlay={editor.stopPlay}
+                onOpenGlobalSettings={() => {
+                  setOptionsOpen(false)
+                  setHeaderMenuOpen(false)
+                  setGlobalSettingsOpen((prev) => !prev)
+                }}
+              />
+            </>
           )}
 
           {/* 3. Palette Swatch Strip (with fixed leftmost Transparent Slot & Drag Reorder) */}
