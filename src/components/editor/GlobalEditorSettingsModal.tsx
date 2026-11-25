@@ -655,7 +655,7 @@ export function GlobalEditorSettingsModal({
                         }`}
                         data-testid="custom-cursor-tool-hotspot"
                       >
-                        <PixelIcon name="select" size={12} />
+                        <PixelIcon name="crosshair" size={12} />
                         <span>
                           {t('customCursorToolHotspot')} ({draftHotspotX},
                           {draftHotspotY})
@@ -740,10 +740,10 @@ export function GlobalEditorSettingsModal({
                             >
                               {isHotspot && (
                                 <span
-                                  className="absolute inset-0 flex items-center justify-center pointer-events-none text-[8px] font-bold text-[#e05268]"
+                                  className="absolute inset-0 flex items-center justify-center pointer-events-none text-[#e05268]"
                                   aria-hidden="true"
                                 >
-                                  +
+                                  <PixelIcon name="crosshair" size={9} />
                                 </span>
                               )}
                             </div>

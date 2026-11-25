@@ -757,7 +757,7 @@ export function TimelinePanel({
                           />
                         )}
                         <span
-                          className={`relative z-10 text-xs font-bold ${
+                          className={`relative z-10 inline-flex items-center justify-center ${
                             kind === 'linked'
                               ? 'text-[var(--accent-teal)]'
                               : kind === 'empty'
@@ -765,11 +765,16 @@ export function TimelinePanel({
                                 : ''
                           }`}
                         >
-                          {kind === 'empty'
-                            ? '·'
-                            : kind === 'linked'
-                              ? '◆'
-                              : '●'}
+                          <PixelIcon
+                            name={
+                              kind === 'empty'
+                                ? 'celEmpty'
+                                : kind === 'linked'
+                                  ? 'celDiamond'
+                                  : 'celDot'
+                            }
+                            size={11}
+                          />
                         </span>
                       </td>
                     )

@@ -549,9 +549,10 @@ export function LinkCelModal({
                         checkerDark={checkerDark}
                         sizePx={64}
                       />
-                      <span className="text-[10px] font-bold text-[var(--accent-teal)]">
-                        #{selectedCandidate.frameIndex + 1} (◆{' '}
-                        {t('celLinkedLabel')})
+                      <span className="text-[10px] font-bold text-[var(--accent-teal)] inline-flex items-center gap-0.5">
+                        <span>#{selectedCandidate.frameIndex + 1} (</span>
+                        <PixelIcon name="celDiamond" size={10} />
+                        <span>{t('celLinkedLabel')})</span>
                       </span>
                     </div>
                   </div>

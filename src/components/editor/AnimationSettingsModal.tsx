@@ -452,24 +452,27 @@ export function AnimationSettingsModal({
                     <div className="text-[var(--text-secondary)]">
                       {t('celIndependentLabel')}
                     </div>
-                    <div className="font-mono font-bold text-sm">
-                      ● {celStats.independentCount}
+                    <div className="font-mono font-bold text-sm inline-flex items-center justify-center gap-1">
+                      <PixelIcon name="celDot" size={11} />
+                      <span>{celStats.independentCount}</span>
                     </div>
                   </div>
                   <div className="p-1.5 bg-[var(--bg-elevated)] border border-[var(--border-subtle)]">
                     <div className="text-[var(--text-secondary)]">
                       {t('celLinkedLabel')}
                     </div>
-                    <div className="font-mono font-bold text-sm text-[var(--accent-teal)]">
-                      ◆ {celStats.linkedCount}
+                    <div className="font-mono font-bold text-sm text-[var(--accent-teal)] inline-flex items-center justify-center gap-1">
+                      <PixelIcon name="celDiamond" size={11} />
+                      <span>{celStats.linkedCount}</span>
                     </div>
                   </div>
                   <div className="p-1.5 bg-[var(--bg-elevated)] border border-[var(--border-subtle)]">
                     <div className="text-[var(--text-secondary)]">
                       {t('celEmptyLabel')}
                     </div>
-                    <div className="font-mono font-bold text-sm text-[var(--text-secondary)]">
-                      · {celStats.emptyCount}
+                    <div className="font-mono font-bold text-sm text-[var(--text-secondary)] inline-flex items-center justify-center gap-1">
+                      <PixelIcon name="celEmpty" size={11} />
+                      <span>{celStats.emptyCount}</span>
                     </div>
                   </div>
                 </div>
