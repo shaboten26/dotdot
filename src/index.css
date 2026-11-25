@@ -6,40 +6,53 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * Soft, approachable low-saturation retro carbon & lavender/sage FLAT pixel-art studio palette (Zero shadows!)
- * Light theme: warm greige-linen with soft lavender-slate borders & muted lavender / sage-green / dusty-rose accents
- * Dark theme: soft dusk blue-plum carbon with gentle lavender, sage-green, and dusty-rose highlights
+ * Unified DotGothic16 pixel-gothic typography across all text AND all numerals (0-9).
+ * Overrides both --font-sans and --font-mono so Tailwind's .font-mono, form inputs,
+ * buttons, badges, coordinates, frame numbers, and sizes all render in readable 16x16 DotGothic16
+ * instead of falling back to system monospace or tiny 5x5 Silkscreen digits.
+ */
+@theme {
+  --font-sans: "DotGothic16", "Apple SD Gothic Neo", "Malgun Gothic",
+    "Hiragino Sans", "Noto Sans JP", monospace, sans-serif;
+  --font-mono: "DotGothic16", "Apple SD Gothic Neo", "Malgun Gothic",
+    "Hiragino Sans", "Noto Sans JP", monospace;
+}
+
+/*
+ * Retro-Cute Digital Gadget, Handheld Console & Stationery FLAT Pixel-Art Studio Palette (Zero shadows!)
+ * Avoids sugary pink or harsh neon/pure-white; pairs warm ivory cream & muted blue-gray slate
+ * with nostalgic console grape, calm turquoise/sage-teal, and warm terracotta-coral accents.
  */
 :root {
-  --bg-app: #ece8e1;
-  --bg-surface: #f6f3ee;
-  --bg-elevated: #e4dfd8;
-  --bg-panel: #fcfaf7;
-  --text-primary: #2d2938;
-  --text-secondary: #686178;
-  --text-on-accent: #faf8fc;
-  --border-pixel: #544d68;
-  --border-subtle: #c8c1b8;
-  --border-strong: #2d2938;
+  --bg-app: #efe9dc;
+  --bg-surface: #f7f3e8;
+  --bg-elevated: #e5decb;
+  --bg-panel: #fbf8f1;
+  --text-primary: #2b303a;
+  --text-secondary: #5e6675;
+  --text-on-accent: #faf8f4;
+  --border-pixel: #4c5565;
+  --border-subtle: #c5bdab;
+  --border-strong: #262b34;
 
-  --accent-primary: #786ab8;
-  --accent-primary-hover: #685aa8;
-  --accent-primary-fg: #faf8fc;
-  --accent-primary-border: #493e7a;
+  --accent-primary: #6d65a8;
+  --accent-primary-hover: #5d5596;
+  --accent-primary-fg: #faf8f4;
+  --accent-primary-border: #433d73;
 
-  --accent-teal: #528b80;
-  --accent-teal-hover: #45796f;
-  --accent-teal-fg: #f7fbfa;
-  --accent-teal-border: #325951;
+  --accent-teal: #3f8c82;
+  --accent-teal-hover: #34786f;
+  --accent-teal-fg: #f6fbf9;
+  --accent-teal-border: #275952;
 
-  --accent-rose: #b8677d;
-  --accent-rose-hover: #a3566b;
-  --accent-rose-fg: #fdf7f9;
-  --accent-rose-border: #75394a;
+  --accent-rose: #c2645a;
+  --accent-rose-hover: #ad544b;
+  --accent-rose-fg: #fdf8f6;
+  --accent-rose-border: #7a3831;
 
-  --accent-amber: #b98548;
+  --accent-amber: #c48a3a;
 
-  --canvas-well: #dcd6cc;
+  --canvas-well: #ddd5c3;
 
   /* Dynamic UI customization variables (updated from AppSettings.uiSize) */
   --ui-scale: 1;
@@ -53,35 +66,35 @@
 }
 
 .dark {
-  --bg-app: #1d1b26;
-  --bg-surface: #262332;
-  --bg-elevated: #312d40;
-  --bg-panel: #2b2738;
-  --text-primary: #efeaf6;
-  --text-secondary: #aba3bf;
-  --text-on-accent: #191622;
-  --border-pixel: #70688a;
-  --border-subtle: #433d57;
-  --border-strong: #efeaf6;
+  --bg-app: #1c2029;
+  --bg-surface: #252a36;
+  --bg-elevated: #303746;
+  --bg-panel: #2a303d;
+  --text-primary: #f2ede2;
+  --text-secondary: #a5aebf;
+  --text-on-accent: #191c24;
+  --border-pixel: #646f84;
+  --border-subtle: #3d4557;
+  --border-strong: #f2ede2;
 
-  --accent-primary: #988bd4;
-  --accent-primary-hover: #a69ade;
-  --accent-primary-fg: #191622;
-  --accent-primary-border: #d0c8f4;
+  --accent-primary: #968fd4;
+  --accent-primary-hover: #a59ee0;
+  --accent-primary-fg: #191c24;
+  --accent-primary-border: #d2cef2;
 
-  --accent-teal: #6ba89b;
-  --accent-teal-hover: #7bb6aa;
-  --accent-teal-fg: #12201d;
-  --accent-teal-border: #a8ded2;
+  --accent-teal: #62b3a6;
+  --accent-teal-hover: #73c0b4;
+  --accent-teal-fg: #12211e;
+  --accent-teal-border: #a8e3d9;
 
-  --accent-rose: #cf8095;
-  --accent-rose-hover: #da8fa3;
-  --accent-rose-fg: #211318;
-  --accent-rose-border: #f2becb;
+  --accent-rose: #d97e73;
+  --accent-rose-hover: #e28e84;
+  --accent-rose-fg: #241412;
+  --accent-rose-border: #f5c3bd;
 
-  --accent-amber: #d6a467;
+  --accent-amber: #deb05b;
 
-  --canvas-well: #17151f;
+  --canvas-well: #161921;
 }
 
 /* Global Zero-Shadow Rule (Section 3: completely forbid box-shadow, drop-shadow, text-shadow) */
@@ -101,13 +114,30 @@ body,
   padding: 0;
   background-color: var(--bg-app);
   color: var(--text-primary);
-  font-family: "DotGothic16", "Silkscreen", "Apple SD Gothic Neo", "Malgun Gothic",
-    "Hiragino Sans", "Noto Sans JP", monospace, sans-serif;
+  font-family: var(--font-sans);
   font-size: calc(16px * var(--ui-scale));
   line-height: 1.35;
   letter-spacing: 0.02em;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: none;
+}
+
+/* Ensure native form controls, buttons, inputs, selects, and SVG labels never fall back to system UI fonts for numerals */
+button,
+input,
+select,
+textarea,
+optgroup,
+svg text {
+  font-family: inherit;
+}
+
+input[type="number"],
+.pixel-num,
+.tabular-nums,
+.font-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 /*

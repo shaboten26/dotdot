@@ -15,15 +15,15 @@ export function getCheckerboardStyle(checkerDark: boolean, cellPx = 10) {
   return checkerDark
     ? {
         backgroundImage:
-          'linear-gradient(45deg, #272334 25%, transparent 25%), linear-gradient(-45deg, #272334 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #272334 75%), linear-gradient(-45deg, transparent 75%, #272334 75%)',
-        backgroundColor: '#1d1a27',
+          'linear-gradient(45deg, #252a36 25%, transparent 25%), linear-gradient(-45deg, #252a36 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #252a36 75%), linear-gradient(-45deg, transparent 75%, #252a36 75%)',
+        backgroundColor: '#1c2029',
         backgroundSize: `${cellPx}px ${cellPx}px`,
         backgroundPosition: `0 0, 0 ${half}px, ${half}px -${half}px, -${half}px 0px`,
       }
     : {
         backgroundImage:
-          'linear-gradient(45deg, #ddd8cd 25%, transparent 25%), linear-gradient(-45deg, #ddd8cd 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ddd8cd 75%), linear-gradient(-45deg, transparent 75%, #ddd8cd 75%)',
-        backgroundColor: '#f1ede4',
+          'linear-gradient(45deg, #dfd8c7 25%, transparent 25%), linear-gradient(-45deg, #dfd8c7 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #dfd8c7 75%), linear-gradient(-45deg, transparent 75%, #dfd8c7 75%)',
+        backgroundColor: '#f3efe4',
         backgroundSize: `${cellPx}px ${cellPx}px`,
         backgroundPosition: `0 0, 0 ${half}px, ${half}px -${half}px, -${half}px 0px`,
       }

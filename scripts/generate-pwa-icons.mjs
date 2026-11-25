@@ -60,16 +60,16 @@ function encodePng(rgba, width, height) {
   ])
 }
 
-// Retro low-saturation pixel-art studio 16x16 icon palette
+// Retro-cute digital gadget / handheld console 16x16 icon palette
 const PAL = {
-  B: [24, 21, 33, 255],    // #181521 deep plum-slate border
-  D: [39, 35, 53, 255],    // #272335 retro body
-  L: [244, 241, 234, 255], // #F4F1EA warm canvas parchment
-  S: [215, 210, 198, 255], // #D7D2C6 canvas shadow
-  P: [132, 118, 196, 255], // #8476C4 muted lavender
-  T: [87, 155, 145, 255],  // #579B91 calm sage-teal
-  R: [196, 115, 136, 255], // #C47388 dusty rose
-  G: [224, 169, 109, 255], // #E0A96D warm amber
+  B: [28, 32, 41, 255],    // #1C2029 deep slate-console border
+  D: [37, 42, 54, 255],    // #252A36 retro gadget body
+  L: [247, 243, 232, 255], // #F7F3E8 warm ivory canvas
+  S: [221, 213, 195, 255], // #DDD5C3 ivory bezel trim
+  P: [109, 101, 168, 255], // #6D65A8 nostalgic console grape
+  T: [63, 140, 130, 255],  // #3F8C82 calm turquoise-sage
+  R: [194, 100, 90, 255],  // #C2645A warm terracotta-coral
+  G: [222, 176, 91, 255],  // #DEB05B retro mustard-amber
 }
 
 const GRID_16 = [
@@ -93,11 +93,11 @@ const GRID_16 = [
 
 function renderIconToSize(targetSize, maskable = false) {
   const out = new Uint8Array(targetSize * targetSize * 4)
-  // Fill background with #181521 so maskable safe zone & rounded OS masks look seamless
+  // Fill background with #1C2029 so maskable safe zone & rounded OS masks look seamless
   for (let i = 0; i < targetSize * targetSize; i++) {
-    out[i * 4] = 24
-    out[i * 4 + 1] = 21
-    out[i * 4 + 2] = 33
+    out[i * 4] = 28
+    out[i * 4 + 1] = 32
+    out[i * 4 + 2] = 41
     out[i * 4 + 3] = 255
   }
 

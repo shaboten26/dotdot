@@ -1,11 +1,17 @@
 import React, { startTransition, useCallback } from 'react'
 import { useNavigate, type To } from 'react-router'
+import { useApp } from '../../state/AppContext'
 
 export function useViewTransitionNavigate() {
   const navigate = useNavigate()
+  const { reducedMotion } = useApp()
   return useCallback(
     (to: To, options?: { replace?: boolean }) => {
-      if (typeof document !== 'undefined' && 'startViewTransition' in document) {
+      if (
+        !reducedMotion &&
+        typeof document !== 'undefined' &&
+        'startViewTransition' in document
+      ) {
         ;(document as Document & {
           startViewTransition: (cb: () => void) => unknown
         }).startViewTransition(() => {
@@ -19,7 +25,7 @@ export function useViewTransitionNavigate() {
         })
       }
     },
-    [navigate]
+    [navigate, reducedMotion]
   )
 }
 

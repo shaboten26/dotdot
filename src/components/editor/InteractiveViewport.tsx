@@ -66,6 +66,9 @@ interface InteractiveViewportProps {
   cursorSpeed?: number
   cursorSize?: CursorDisplaySize
   activeCustomCursor?: CustomCursorData | null
+  previewFlipX?: boolean
+  previewFlipY?: boolean
+  onResetPreviewFlip?: () => void
   fitTrigger: number
   onModalityChange?: (modality: InputModality) => void
   onMoveCursor: (pt: Point, allowOutOfBounds?: boolean) => void
@@ -248,6 +251,9 @@ export function InteractiveViewport({
   cursorSpeed = 1,
   cursorSize = 'standard',
   activeCustomCursor = null,
+  previewFlipX = false,
+  previewFlipY = false,
+  onResetPreviewFlip,
   fitTrigger,
   onModalityChange,
   onMoveCursor,
@@ -453,8 +459,35 @@ export function InteractiveViewport({
     const devW = Math.max(1, Math.round(width * scale * dpr))
     const devH = Math.max(1, Math.round(height * scale * dpr))
 
-    const colDevX = (cx: number) => devLeft + Math.round((cx * devW) / width)
-    const rowDevY = (cy: number) => devTop + Math.round((cy * devH) / height)
+    const rawColDevX = (cx: number) => devLeft + Math.round((cx * devW) / width)
+    const rawRowDevY = (cy: number) => devTop + Math.round((cy * devH) / height)
+    const pixelSpanX = (cx: number, span = 1): [number, number] => {
+      if (!previewFlipX) {
+        return [rawColDevX(cx), rawColDevX(cx + span)]
+      }
+      const right = devLeft + devW - Math.round((cx * devW) / width)
+      const left = devLeft + devW - Math.round(((cx + span) * devW) / width)
+      return [left, right]
+    }
+    const pixelSpanY = (cy: number, span = 1): [number, number] => {
+      if (!previewFlipY) {
+        return [rawRowDevY(cy), rawRowDevY(cy + span)]
+      }
+      const bottom = devTop + devH - Math.round((cy * devH) / height)
+      const top = devTop + devH - Math.round(((cy + span) * devH) / height)
+      return [top, bottom]
+    }
+    const drawMirroredCanvasImage = (src: HTMLCanvasElement) => {
+      ctx.save()
+      ctx.imageSmoothingEnabled = false
+      ctx.translate(
+        previewFlipX ? devLeft + devW : devLeft,
+        previewFlipY ? devTop + devH : devTop
+      )
+      ctx.scale(previewFlipX ? -1 : 1, previewFlipY ? -1 : 1)
+      ctx.drawImage(src, 0, 0, width, height, 0, 0, devW, devH)
+      ctx.restore()
+    }
 
     // 1. Transparency Checkerboard + Artwork strictly clipped to `[devLeft, devTop, devW, devH]`
     ctx.save()
@@ -466,8 +499,8 @@ export function InteractiveViewport({
       Math.round(4 * dpr),
       Math.min(Math.round(16 * dpr), scale >= 2 ? Math.round(scale * dpr) : Math.round(8 * dpr))
     )
-    const cLight = checkerboardDark ? '#272334' : '#ede9df'
-    const cDark = checkerboardDark ? '#1d1a27' : '#dbd5c7'
+    const cLight = checkerboardDark ? '#252a36' : '#f3efe4'
+    const cDark = checkerboardDark ? '#1c2029' : '#dfd8c7'
     ctx.fillStyle = cLight
     ctx.fillRect(devLeft, devTop, devW, devH)
     ctx.fillStyle = cDark
@@ -513,8 +546,7 @@ export function InteractiveViewport({
         tinted[i + 3] = Math.round(a * alpha)
       }
       octx.putImageData(new ImageData(tinted, width, height), 0, 0)
-      ctx.imageSmoothingEnabled = false
-      ctx.drawImage(oc, 0, 0, width, height, devLeft, devTop, devW, devH)
+      drawMirroredCanvasImage(oc)
     }
     const baseOnionAlpha = Math.max(0.05, Math.min(0.85, onionOpacity / 100))
     drawOnionBuffer(onionPrevBuffer, [216, 108, 130], baseOnionAlpha)
@@ -537,8 +569,7 @@ export function InteractiveViewport({
           height
         )
         offCtx.putImageData(imgData, 0, 0)
-        ctx.imageSmoothingEnabled = false
-        ctx.drawImage(off, 0, 0, width, height, devLeft, devTop, devW, devH)
+        drawMirroredCanvasImage(off)
       }
     }
 
@@ -551,8 +582,9 @@ export function InteractiveViewport({
       const majorInterval = 8
 
       for (let x = 1; x < width; x++) {
-        const gx = colDevX(x)
-        const isMajor = scale >= 6 && x % majorInterval === 0
+        const logicalGridX = previewFlipX ? width - x : x
+        const gx = rawColDevX(x)
+        const isMajor = scale >= 6 && logicalGridX % majorInterval === 0
         ctx.fillStyle = `rgba(24, 21, 33, ${isMajor ? Math.min(0.52, darkAlpha + 0.12) : darkAlpha})`
         ctx.fillRect(gx, devTop, 1, devH)
         if (cellDevSize >= 10) {
@@ -561,8 +593,9 @@ export function InteractiveViewport({
         }
       }
       for (let y = 1; y < height; y++) {
-        const gy = rowDevY(y)
-        const isMajor = scale >= 6 && y % majorInterval === 0
+        const logicalGridY = previewFlipY ? height - y : y
+        const gy = rawRowDevY(y)
+        const isMajor = scale >= 6 && logicalGridY % majorInterval === 0
         ctx.fillStyle = `rgba(24, 21, 33, ${isMajor ? Math.min(0.52, darkAlpha + 0.12) : darkAlpha})`
         ctx.fillRect(devLeft, gy, devW, 1)
         if (cellDevSize >= 10) {
@@ -576,7 +609,7 @@ export function InteractiveViewport({
 
     // 3. Crisp Symmetric 4-Sided Outer Pixel Frame
     const borderPx = Math.max(2, Math.round(2 * dpr))
-    ctx.fillStyle = checkerboardDark ? '#696082' : '#4a4358'
+    ctx.fillStyle = checkerboardDark ? '#646f84' : '#4c5565'
     ctx.fillRect(devLeft - borderPx, devTop - borderPx, devW + borderPx * 2, borderPx)
     ctx.fillRect(devLeft - borderPx, devTop + devH, devW + borderPx * 2, borderPx)
     ctx.fillRect(devLeft - borderPx, devTop, borderPx, devH)
@@ -607,29 +640,32 @@ export function InteractiveViewport({
 
       for (let ly = visMinLy; ly <= visMaxLy; ly++) {
         const wy = originY + ly
-        const py0 = rowDevY(wy)
-        const py1 = rowDevY(wy + 1)
+        const [py0, py1] = pixelSpanY(wy, 1)
         if (py1 < -4 || py0 > devViewportH + 4) continue
         for (let lx = visMinLx; lx <= visMaxLx; lx++) {
           if (sm[ly * sw + lx] === 0) continue
           const wx = originX + lx
-          const px0 = colDevX(wx)
-          const px1 = colDevX(wx + 1)
+          const [px0, px1] = pixelSpanX(wx, 1)
           if (px1 < -4 || px0 > devViewportW + 4) continue
 
-          if (ly === 0 || sm[(ly - 1) * sw + lx] === 0) {
+          const topEmpty = ly === 0 || sm[(ly - 1) * sw + lx] === 0
+          const bottomEmpty = ly === sh - 1 || sm[(ly + 1) * sw + lx] === 0
+          const leftEmpty = lx === 0 || sm[ly * sw + (lx - 1)] === 0
+          const rightEmpty = lx === sw - 1 || sm[ly * sw + (lx + 1)] === 0
+
+          if (previewFlipY ? bottomEmpty : topEmpty) {
             ctx.moveTo(px0, py0)
             ctx.lineTo(px1, py0)
           }
-          if (ly === sh - 1 || sm[(ly + 1) * sw + lx] === 0) {
+          if (previewFlipY ? topEmpty : bottomEmpty) {
             ctx.moveTo(px0, py1)
             ctx.lineTo(px1, py1)
           }
-          if (lx === 0 || sm[ly * sw + (lx - 1)] === 0) {
+          if (previewFlipX ? rightEmpty : leftEmpty) {
             ctx.moveTo(px0, py0)
             ctx.lineTo(px0, py1)
           }
-          if (lx === sw - 1 || sm[ly * sw + (lx + 1)] === 0) {
+          if (previewFlipX ? leftEmpty : rightEmpty) {
             ctx.moveTo(px1, py0)
             ctx.lineTo(px1, py1)
           }
@@ -659,26 +695,31 @@ export function InteractiveViewport({
 
       ctx.beginPath()
       for (let y = 0; y < height; y++) {
-        const py0 = rowDevY(y)
-        const py1 = rowDevY(y + 1)
+        const [py0, py1] = pixelSpanY(y, 1)
         for (let x = 0; x < width; x++) {
           if (selectionMask[y * width + x] === 0) continue
-          const px0 = colDevX(x)
-          const px1 = colDevX(x + 1)
+          const [px0, px1] = pixelSpanX(x, 1)
 
-          if (y === 0 || selectionMask[(y - 1) * width + x] === 0) {
+          const topEmpty = y === 0 || selectionMask[(y - 1) * width + x] === 0
+          const bottomEmpty =
+            y === height - 1 || selectionMask[(y + 1) * width + x] === 0
+          const leftEmpty = x === 0 || selectionMask[y * width + (x - 1)] === 0
+          const rightEmpty =
+            x === width - 1 || selectionMask[y * width + (x + 1)] === 0
+
+          if (previewFlipY ? bottomEmpty : topEmpty) {
             ctx.moveTo(px0, py0)
             ctx.lineTo(px1, py0)
           }
-          if (y === height - 1 || selectionMask[(y + 1) * width + x] === 0) {
+          if (previewFlipY ? topEmpty : bottomEmpty) {
             ctx.moveTo(px0, py1)
             ctx.lineTo(px1, py1)
           }
-          if (x === 0 || selectionMask[y * width + (x - 1)] === 0) {
+          if (previewFlipX ? rightEmpty : leftEmpty) {
             ctx.moveTo(px0, py0)
             ctx.lineTo(px0, py1)
           }
-          if (x === width - 1 || selectionMask[y * width + (x + 1)] === 0) {
+          if (previewFlipX ? leftEmpty : rightEmpty) {
             ctx.moveTo(px1, py0)
             ctx.lineTo(px1, py1)
           }
@@ -705,10 +746,8 @@ export function InteractiveViewport({
     ) {
       const lx = moveSession.initialLayerOffsetX + moveSession.dx
       const ly = moveSession.initialLayerOffsetY + moveSession.dy
-      const bx0 = colDevX(lx)
-      const by0 = rowDevY(ly)
-      const bx1 = colDevX(lx + moveSession.extractedWidth)
-      const by1 = rowDevY(ly + moveSession.extractedHeight)
+      const [bx0, bx1] = pixelSpanX(lx, moveSession.extractedWidth)
+      const [by0, by1] = pixelSpanY(ly, moveSession.extractedHeight)
       const bw = bx1 - bx0
       const bh = by1 - by0
       ctx.save()
@@ -726,10 +765,10 @@ export function InteractiveViewport({
     // 6. Floating Shape Transform Pixel Frame & Square Handles
     if (floatingShape) {
       const tf = rasterizeTransformedShape(floatingShape)
-      const bx = colDevX(tf.left)
-      const by = rowDevY(tf.top)
-      const bw = colDevX(tf.left + tf.width) - bx
-      const bh = rowDevY(tf.top + tf.height) - by
+      const [bx, bx1] = pixelSpanX(tf.left, tf.width)
+      const [by, by1] = pixelSpanY(tf.top, tf.height)
+      const bw = bx1 - bx
+      const bh = by1 - by
 
       ctx.save()
       ctx.strokeStyle = '#181521'
@@ -748,10 +787,14 @@ export function InteractiveViewport({
     }
 
     // 7. Multi-step Control Handles & Guide Lines (also visible outside canvas bounds!)
-    const pixelCenter = (p: Point) => ({
-      sx: (colDevX(p.x) + colDevX(p.x + 1)) / 2,
-      sy: (rowDevY(p.y) + rowDevY(p.y + 1)) / 2,
-    })
+    const pixelCenter = (p: Point) => {
+      const [x0, x1] = pixelSpanX(p.x, 1)
+      const [y0, y1] = pixelSpanY(p.y, 1)
+      return {
+        sx: (x0 + x1) / 2,
+        sy: (y0 + y1) / 2,
+      }
+    }
 
     const drawDashedGuide = (a: Point, b: Point, color: string) => {
       const pA = pixelCenter(a)
@@ -808,16 +851,13 @@ export function InteractiveViewport({
       const maxX = Math.max(stepPhase.start.x, cursor.x)
       const minY = Math.min(stepPhase.start.y, cursor.y)
       const maxY = Math.max(stepPhase.start.y, cursor.y)
+      const [sx0, sx1] = pixelSpanX(minX, maxX - minX + 1)
+      const [sy0, sy1] = pixelSpanY(minY, maxY - minY + 1)
       ctx.save()
       ctx.setLineDash([Math.round(4 * dpr), Math.round(4 * dpr)])
       ctx.lineWidth = Math.max(1.5, Math.round(1.5 * dpr))
       ctx.strokeStyle = '#579b91'
-      ctx.strokeRect(
-        colDevX(minX),
-        rowDevY(minY),
-        colDevX(maxX + 1) - colDevX(minX),
-        rowDevY(maxY + 1) - rowDevY(minY)
-      )
+      ctx.strokeRect(sx0, sy0, sx1 - sx0, sy1 - sy0)
       ctx.restore()
     } else if (stepPhase.kind === 'bezier-p3') {
       const s0 = pixelCenter(stepPhase.p0)
@@ -848,10 +888,10 @@ export function InteractiveViewport({
     // 8. Tool-Specific Virtual Pixel Cursor
     // Section 3-1: On PC (`modality === 'mouse'`), hide the app's custom virtual cursor and draw with OS mouse cursor!
     if (!floatingShape && !moveSession && !isPlaying && modality !== 'mouse') {
-      const cellX0 = colDevX(cursor.x)
-      const cellY0 = rowDevY(cursor.y)
-      const cellW = Math.max(Math.round(2 * dpr), colDevX(cursor.x + 1) - cellX0)
-      const cellH = Math.max(Math.round(2 * dpr), rowDevY(cursor.y + 1) - cellY0)
+      const [cellX0, cellX1] = pixelSpanX(cursor.x, 1)
+      const [cellY0, cellY1] = pixelSpanY(cursor.y, 1)
+      const cellW = Math.max(Math.round(2 * dpr), cellX1 - cellX0)
+      const cellH = Math.max(Math.round(2 * dpr), cellY1 - cellY0)
       const bracketArm = cursorSize === 'small' ? 3 : cursorSize === 'large' ? 8 : 5
       const bracketPad =
         cursorSize === 'small'
@@ -883,23 +923,25 @@ export function InteractiveViewport({
         ctx.save()
         ctx.beginPath()
         for (const o of offsets) {
-          const px0 = colDevX(cursor.x + o.x)
-          const px1 = colDevX(cursor.x + o.x + 1)
-          const py0 = rowDevY(cursor.y + o.y)
-          const py1 = rowDevY(cursor.y + o.y + 1)
-          if (!set.has(`${o.x},${o.y - 1}`)) {
+          const [px0, px1] = pixelSpanX(cursor.x + o.x, 1)
+          const [py0, py1] = pixelSpanY(cursor.y + o.y, 1)
+          const topOpen = !set.has(`${o.x},${o.y - 1}`)
+          const bottomOpen = !set.has(`${o.x},${o.y + 1}`)
+          const leftOpen = !set.has(`${o.x - 1},${o.y}`)
+          const rightOpen = !set.has(`${o.x + 1},${o.y}`)
+          if (previewFlipY ? bottomOpen : topOpen) {
             ctx.moveTo(px0, py0)
             ctx.lineTo(px1, py0)
           }
-          if (!set.has(`${o.x},${o.y + 1}`)) {
+          if (previewFlipY ? topOpen : bottomOpen) {
             ctx.moveTo(px0, py1)
             ctx.lineTo(px1, py1)
           }
-          if (!set.has(`${o.x - 1},${o.y}`)) {
+          if (previewFlipX ? rightOpen : leftOpen) {
             ctx.moveTo(px0, py0)
             ctx.lineTo(px0, py1)
           }
-          if (!set.has(`${o.x + 1},${o.y}`)) {
+          if (previewFlipX ? leftOpen : rightOpen) {
             ctx.moveTo(px1, py0)
             ctx.lineTo(px1, py1)
           }
@@ -916,16 +958,18 @@ export function InteractiveViewport({
         ctx.restore()
 
         if (modality === 'touch' && !activeCustomCursor) {
-          const bx0 = colDevX(cursor.x + minDx) - bracketPad
-          const by0 = rowDevY(cursor.y + minDy) - bracketPad
-          const bw =
-            colDevX(cursor.x + maxDx + 1) -
-            colDevX(cursor.x + minDx) +
-            bracketPad * 2
-          const bh =
-            rowDevY(cursor.y + maxDy + 1) -
-            rowDevY(cursor.y + minDy) +
-            bracketPad * 2
+          const [bLeft, bRight] = pixelSpanX(
+            cursor.x + minDx,
+            maxDx - minDx + 1
+          )
+          const [bTop, bBottom] = pixelSpanY(
+            cursor.y + minDy,
+            maxDy - minDy + 1
+          )
+          const bx0 = bLeft - bracketPad
+          const by0 = bTop - bracketPad
+          const bw = bRight - bLeft + bracketPad * 2
+          const bh = bBottom - bTop + bracketPad * 2
           drawPixelCornerBrackets(ctx, bx0, by0, bw, bh, bracketArm, accentHex, dpr)
         }
       }
@@ -1039,7 +1083,20 @@ export function InteractiveViewport({
     isTransparentColor,
     cursorSize,
     activeCustomCursor,
+    previewFlipX,
+    previewFlipY,
   ])
+
+  const mapScreenToLogicalPixel = useCallback(
+    (vx: number, vy: number): Point => {
+      const raw = screenToCanvasPixel(vx, vy, transform)
+      return {
+        x: previewFlipX ? width - 1 - raw.x : raw.x,
+        y: previewFlipY ? height - 1 - raw.y : raw.y,
+      }
+    },
+    [transform, previewFlipX, previewFlipY, width, height]
+  )
 
   const getLocalCoords = useCallback((clientX: number, clientY: number) => {
     const rect = containerRef.current?.getBoundingClientRect()
@@ -1148,7 +1205,7 @@ export function InteractiveViewport({
         return
       }
 
-      const rawCanvasPt = screenToCanvasPixel(vx, vy, transform)
+      const rawCanvasPt = mapScreenToLogicalPixel(vx, vy)
 
       if (detected === 'touch') {
         singleGestureRef.current = {
@@ -1252,7 +1309,7 @@ export function InteractiveViewport({
       spacePressed,
       moveSession,
       floatingShape,
-      transform,
+      mapScreenToLogicalPixel,
       allowsOutOfBoundsPoint,
       width,
       height,
@@ -1347,10 +1404,13 @@ export function InteractiveViewport({
           return
         }
 
+        const effDxCss = previewFlipX ? -dxCss : dxCss
+        const effDyCss = previewFlipY ? -dyCss : dyCss
+
         if (g.mode === 'move-session-drag') {
           const effScale = Math.max(0.5, transform.scale)
-          g.accumFloatX += dxCss / effScale
-          g.accumFloatY += dyCss / effScale
+          g.accumFloatX += effDxCss / effScale
+          g.accumFloatY += effDyCss / effScale
           const moveX = Math.trunc(g.accumFloatX)
           const moveY = Math.trunc(g.accumFloatY)
           if (moveX !== 0 || moveY !== 0) {
@@ -1363,8 +1423,8 @@ export function InteractiveViewport({
 
         if (g.mode === 'floating-drag') {
           const effScale = Math.max(0.5, transform.scale)
-          g.accumFloatX += dxCss / effScale
-          g.accumFloatY += dyCss / effScale
+          g.accumFloatX += effDxCss / effScale
+          g.accumFloatY += effDyCss / effScale
           const moveX = Math.trunc(g.accumFloatX)
           const moveY = Math.trunc(g.accumFloatY)
           if (moveX !== 0 || moveY !== 0) {
@@ -1388,8 +1448,8 @@ export function InteractiveViewport({
           const speedMult = Number.isFinite(cursorSpeed)
             ? Math.max(0.25, Math.min(3, cursorSpeed))
             : 1
-          const deltaCanvasX = (dxCss / effScale) * speedMult
-          const deltaCanvasY = (dyCss / effScale) * speedMult
+          const deltaCanvasX = (effDxCss / effScale) * speedMult
+          const deltaCanvasY = (effDyCss / effScale) * speedMult
           const nextFloatX = allowsOutOfBoundsPoint
             ? Math.max(-512, Math.min(width + 512, subPixelCursorRef.current.x + deltaCanvasX))
             : Math.max(0, Math.min(width - 1, subPixelCursorRef.current.x + deltaCanvasX))
@@ -1407,7 +1467,7 @@ export function InteractiveViewport({
 
         // Convert deferred tap into immediate continuous stroke once pointer moves across pixels or > 4px!
         if (g.mode === 'mouse-deferred-tap') {
-          const rawPt = screenToCanvasPixel(vx, vy, transform)
+          const rawPt = mapScreenToLogicalPixel(vx, vy)
           if (
             g.moved ||
             rawPt.x !== g.startCanvasPt.x ||
@@ -1429,7 +1489,7 @@ export function InteractiveViewport({
         }
 
         if (g.mode === 'mouse-draw') {
-          const rawPt = screenToCanvasPixel(vx, vy, transform)
+          const rawPt = mapScreenToLogicalPixel(vx, vy)
           const targetPt = allowsOutOfBoundsPoint
             ? rawPt
             : clampCanvasPoint(rawPt, width, height)
@@ -1445,7 +1505,7 @@ export function InteractiveViewport({
         !floatingShape &&
         !moveSession
       ) {
-        const rawPt = screenToCanvasPixel(vx, vy, transform)
+        const rawPt = mapScreenToLogicalPixel(vx, vy)
         if (allowsOutOfBoundsPoint && stepPhase.kind !== 'idle') {
           subPixelCursorRef.current = { x: rawPt.x, y: rawPt.y }
           onMoveCursor(rawPt, true)
@@ -1462,6 +1522,10 @@ export function InteractiveViewport({
       viewportSize.w,
       viewportSize.h,
       transform,
+      mapScreenToLogicalPixel,
+      previewFlipX,
+      previewFlipY,
+      cursorSpeed,
       onUpdateMoveOffset,
       onMoveFloatingShape,
       allowsOutOfBoundsPoint,
@@ -1690,6 +1754,33 @@ export function InteractiveViewport({
           className="pointer-events-none"
         />
       </ViewTransition>
+
+      {(previewFlipX || previewFlipY) && (
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation()
+            onResetPreviewFlip?.()
+          }}
+          title={t('flipPreviewResetBtn')}
+          className="absolute top-2 left-2 z-10 pixel-btn pixel-btn-teal px-2 py-1 text-[11px] font-bold flex items-center gap-1"
+          data-testid="viewport-flip-preview-badge"
+        >
+          <PixelIcon
+            name={previewFlipX ? 'flipH' : 'flipV'}
+            size={12}
+          />
+          <span>
+            {previewFlipX && previewFlipY
+              ? t('flipPreviewActiveBadgeHV')
+              : previewFlipX
+                ? t('flipPreviewActiveBadgeH')
+                : t('flipPreviewActiveBadgeV')}
+          </span>
+          <PixelIcon name="close" size={10} />
+        </button>
+      )}
 
       <div
         className="absolute top-2 right-2 pointer-events-none px-2 py-1 bg-[var(--bg-surface)] border-2 border-[var(--border-pixel)] text-[11px] font-bold text-[var(--text-primary)] flex items-center gap-1.5 max-w-[78%]"

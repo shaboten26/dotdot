@@ -1,5 +1,6 @@
 import { ViewTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router'
+import { motion } from 'motion/react'
 import type { LayerRuntime, ProjectRecord } from '../types'
 import {
   db,
@@ -49,6 +50,7 @@ export function ProjectDetailPage() {
   const {
     projects,
     settings,
+    reducedMotion,
     updateSettings,
     refreshProjects,
     showToast,
@@ -68,6 +70,8 @@ export function ProjectDetailPage() {
   const [exportIntent, setExportIntent] =
     useState<ExportPngInitialIntent>('download')
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  const [swipeDir, setSwipeDir] = useState<-1 | 0 | 1>(0)
+  const [swipeDragX, setSwipeDragX] = useState(0)
 
   // Prefetch cache for neighbor artworks so horizontal swipe transitions feel instant
   const prefetchCacheRef = useRef<Map<string, CachedArtworkPayload>>(new Map())
@@ -161,8 +165,10 @@ export function ProjectDetailPage() {
   }, [prevProject?.id, nextProject?.id])
 
   const goToNeighbor = useCallback(
-    (target: ProjectRecord | null) => {
+    (target: ProjectRecord | null, dir: -1 | 1 = 1) => {
       if (!target) return
+      setSwipeDragX(0)
+      setSwipeDir(dir)
       setEditingName(false)
       setExportOpen(false)
       setExportGifOpen(false)
@@ -181,10 +187,10 @@ export function ProjectDetailPage() {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
       if (e.key === 'ArrowLeft' && prevProject) {
         e.preventDefault()
-        goToNeighbor(prevProject)
+        goToNeighbor(prevProject, -1)
       } else if (e.key === 'ArrowRight' && nextProject) {
         e.preventDefault()
-        goToNeighbor(nextProject)
+        goToNeighbor(nextProject, 1)
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -290,9 +296,18 @@ export function ProjectDetailPage() {
         st.lockedAxis = 'vertical'
         st.aborted = true
         swipeStateRef.current = null
+        setSwipeDragX(0)
         return
       }
       st.lockedAxis = 'horizontal'
+    }
+
+    if (st.lockedAxis === 'horizontal' && !reducedMotion) {
+      const canGoDirection = (dx < 0 && nextProject) || (dx > 0 && prevProject)
+      const damped = canGoDirection
+        ? Math.max(-44, Math.min(44, Math.round(dx * 0.28)))
+        : Math.max(-14, Math.min(14, Math.round(dx * 0.1)))
+      setSwipeDragX(damped)
     }
   }
 
@@ -300,6 +315,7 @@ export function ProjectDetailPage() {
     activePointersRef.current.delete(e.pointerId)
     const st = swipeStateRef.current
     swipeStateRef.current = null
+    setSwipeDragX(0)
 
     if (
       !st ||
@@ -321,16 +337,17 @@ export function ProjectDetailPage() {
 
     if (dx < 0 && nextProject) {
       // Left swipe -> Next artwork in Gallery order
-      goToNeighbor(nextProject)
+      goToNeighbor(nextProject, 1)
     } else if (dx > 0 && prevProject) {
       // Right swipe -> Previous artwork in Gallery order
-      goToNeighbor(prevProject)
+      goToNeighbor(prevProject, -1)
     }
   }
 
   const handleSwipePointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
     activePointersRef.current.delete(e.pointerId)
     swipeStateRef.current = null
+    setSwipeDragX(0)
   }
 
   // Generate crisp preview PNG URL (long-press friendly on iOS Safari / PWA)
@@ -482,8 +499,16 @@ export function ProjectDetailPage() {
         </header>
 
         <main className="flex-1 max-w-2xl w-full mx-auto p-4 pb-12 pb-safe space-y-4">
-          {/* Large Pixel-Art Preview (Long-pressable native <img> + ViewTransition) */}
-          <div
+          {/* Large Pixel-Art Preview (Long-pressable native <img> + ViewTransition + directional swipe motion) */}
+          <motion.div
+            key={project.id}
+            initial={
+              reducedMotion || swipeDir === 0
+                ? { opacity: 1, x: 0 }
+                : { opacity: 0.65, x: swipeDir * 22 }
+            }
+            animate={{ opacity: 1, x: swipeDragX }}
+            transition={{ duration: reducedMotion ? 0 : 0.14, ease: 'easeOut' }}
             style={getCheckerboardStyle(settings.checkerboardDark, 12)}
             className="aspect-square max-h-[50dvh] w-full mx-auto pixel-card overflow-hidden flex items-center justify-center p-4"
             data-testid="detail-preview-card"
@@ -501,7 +526,7 @@ export function ProjectDetailPage() {
                 <div className="w-full h-full" />
               )}
             </ViewTransition>
-          </div>
+          </motion.div>
 
           {/* Neighbor Navigation Indicator (shown when gallery has >= 2 artworks) */}
           {sortedProjects.length > 1 && currentIndex >= 0 && (
@@ -512,7 +537,7 @@ export function ProjectDetailPage() {
               <button
                 type="button"
                 disabled={!prevProject}
-                onClick={() => goToNeighbor(prevProject)}
+                onClick={() => goToNeighbor(prevProject, -1)}
                 className="pixel-btn min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1"
                 data-testid="detail-prev-artwork-btn"
               >
@@ -532,7 +557,7 @@ export function ProjectDetailPage() {
               <button
                 type="button"
                 disabled={!nextProject}
-                onClick={() => goToNeighbor(nextProject)}
+                onClick={() => goToNeighbor(nextProject, 1)}
                 className="pixel-btn min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1"
                 data-testid="detail-next-artwork-btn"
               >

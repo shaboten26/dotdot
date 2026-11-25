@@ -13,6 +13,7 @@ import {
   MultiRowToolGrid,
   PaletteBar,
   SelectionReadyBar,
+  TimelineTransportDock,
   ToolDetailPopover,
 } from '../components/editor/ToolPanels'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
@@ -60,6 +61,8 @@ export function EditorPage() {
   const [exportOpen, setExportOpen] = useState(false)
   const [exportGifOpen, setExportGifOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
+  const [previewFlipX, setPreviewFlipX] = useState(false)
+  const [previewFlipY, setPreviewFlipY] = useState(false)
   const [workspaceTab, setWorkspaceTab] = useState<'tools' | 'frames'>('tools')
   const [inputModality, setInputModality] = useState<InputModality>(() =>
     detectInitialInputModality()
@@ -68,6 +71,11 @@ export function EditorPage() {
   const [fitTrigger, setFitTrigger] = useState(0)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
+
+  useEffect(() => {
+    setPreviewFlipX(false)
+    setPreviewFlipY(false)
+  }, [targetProjectId])
 
   const editor = useEditorController({
     projectId: targetProjectId,
@@ -455,6 +463,12 @@ export function EditorPage() {
                     (c) => c.id === settings.activeCursorId
                   ) ?? null
             }
+            previewFlipX={previewFlipX}
+            previewFlipY={previewFlipY}
+            onResetPreviewFlip={() => {
+              setPreviewFlipX(false)
+              setPreviewFlipY(false)
+            }}
             fitTrigger={fitTrigger}
             onModalityChange={setInputModality}
             onMoveCursor={editor.moveCursorTo}
@@ -475,29 +489,50 @@ export function EditorPage() {
         {/* Lower Dock */}
         <section className="relative flex flex-col shrink-0 z-20">
           {editor.moveSession ? (
-            <ActiveMoveBar
-              moveSession={editor.moveSession}
-              onMoveStep={editor.updateActiveMoveOffset}
-              onCommit={editor.commitActiveMove}
-              onCancel={editor.cancelActiveMove}
-            />
+            <motion.div
+              key="active-move-bar"
+              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: reducedMotion ? 0 : 0.1, ease: 'easeOut' }}
+            >
+              <ActiveMoveBar
+                moveSession={editor.moveSession}
+                onMoveStep={editor.updateActiveMoveOffset}
+                onCommit={editor.commitActiveMove}
+                onCancel={editor.cancelActiveMove}
+              />
+            </motion.div>
           ) : editor.floatingShape ? (
-            <FloatingTransformBar
-              floatingShape={editor.floatingShape}
-              onRotate={editor.rotateFloatingShape}
-              onMove={editor.moveFloatingShape}
-              onCommit={editor.commitFloatingShape}
-              onDiscard={editor.discardFloatingShape}
-            />
+            <motion.div
+              key="floating-transform-bar"
+              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: reducedMotion ? 0 : 0.1, ease: 'easeOut' }}
+            >
+              <FloatingTransformBar
+                floatingShape={editor.floatingShape}
+                onRotate={editor.rotateFloatingShape}
+                onMove={editor.moveFloatingShape}
+                onCommit={editor.commitFloatingShape}
+                onDiscard={editor.discardFloatingShape}
+              />
+            </motion.div>
           ) : (
             <>
               {editor.hasSelection && !optionsOpen && (
-                <SelectionReadyBar
-                  onStartMove={() => {
-                    editor.startSelectionMove()
-                  }}
-                  onClearSelection={editor.clearCurrentSelection}
-                />
+                <motion.div
+                  key="selection-ready-bar"
+                  initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: reducedMotion ? 0 : 0.1, ease: 'easeOut' }}
+                >
+                  <SelectionReadyBar
+                    onStartMove={() => {
+                      editor.startSelectionMove()
+                    }}
+                    onClearSelection={editor.clearCurrentSelection}
+                  />
+                </motion.div>
               )}
               <ToolDetailPopover
                 open={optionsOpen}
@@ -630,12 +665,26 @@ export function EditorPage() {
           </div>
 
           {/* 2. Workspace Content (`ツール` Multi-Row Grid OR `レイヤー` [1 frame, reusing original LayerPanelContent] / `タイムライン` [>=2 frames]) */}
+          <motion.div
+            key={
+              workspaceTab === 'tools'
+                ? 'dock-tools'
+                : editor.timeline.frames.length <= 1
+                  ? 'dock-layers'
+                  : 'dock-timeline'
+            }
+            initial={reducedMotion ? { opacity: 1 } : { opacity: 0.72, y: 3 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: reducedMotion ? 0 : 0.11, ease: 'easeOut' }}
+            className="flex flex-col shrink-0"
+          >
           {workspaceTab === 'tools' ? (
             <MultiRowToolGrid
               tool={editor.tool}
               toolSettings={editor.toolSettings}
               optionsOpen={optionsOpen}
               globalSettingsOpen={globalSettingsOpen}
+              hasActivePreviewFlip={previewFlipX || previewFlipY}
               canUndo={editor.canUndo}
               canRedo={editor.canRedo}
               hasSelection={editor.hasSelection}
@@ -714,67 +763,90 @@ export function EditorPage() {
               />
             </div>
           ) : (
-            <TimelinePanel
-              canvasWidth={editor.project.width}
-              canvasHeight={editor.project.height}
-              checkerDark={settings.checkerboardDark}
-              layers={editor.layers}
-              activeLayerId={editor.activeLayerId}
-              timeline={editor.timeline}
-              selectedCellKeys={editor.selectedCellKeys}
-              celClipboard={editor.celClipboard}
-              isPlaying={editor.isPlaying}
-              playbackSpeed={editor.playbackSpeed}
-              onionSkin={editor.onionSkin}
-              onSelectLayer={editor.setActiveLayerId}
-              onUpdateLayer={editor.updateLayerProps}
-              onAddLayer={() => {
-                if (!editor.addNewLayer()) {
-                  showToast(t('layerMaxReached'), 'warning')
-                }
-              }}
-              onOpenLayerSheet={() => setLayersOpen(true)}
-              onSelectFrame={editor.selectFrame}
-              onStepFrame={editor.stepFrame}
-              onAddEmptyFrame={() => {
-                editor.addEmptyFrame()
-              }}
-              onDuplicateFrame={(mode) => {
-                editor.duplicateFrame(mode)
-              }}
-              onDeleteFrame={(fid) => {
-                if (!editor.deleteFrame(fid)) {
-                  showToast(t('cannotDeleteLastFrame'), 'warning')
-                }
-              }}
-              onSetFrameDuration={editor.setFrameDuration}
-              onSetDefaultFrameDuration={editor.setDefaultFrameDuration}
-              onApplyBatchDuration={editor.applyBatchDuration}
-              onClearCell={editor.clearCell}
-              onUnlinkCell={editor.unlinkCell}
-              onLinkCellToAny={editor.linkCellToAny}
-              onToggleCellSelected={editor.toggleCellSelected}
-              onClearCellSelection={editor.clearCellSelection}
-              onBatchClearCells={editor.batchClearSelectedCells}
-              onBatchUnlinkCells={editor.batchUnlinkSelectedCells}
-              onBatchLinkCells={editor.batchLinkSelectedCells}
-              onCopyActiveCell={() => {
-                if (editor.copyActiveCell()) {
-                  showToast(t('toastCopied'))
-                }
-              }}
-              onPasteToActiveCell={(asLinked) => {
-                if (editor.pasteToActiveCell(asLinked)) {
-                  showToast(t('toastPasted'))
-                }
-              }}
-              onTogglePlay={editor.togglePlay}
-              onSetPlaybackSpeed={editor.setPlaybackSpeed}
-              onSetPlaybackDirection={editor.setPlaybackDirection}
-              onSetLoopPlayback={editor.setLoopPlayback}
-              onUpdateOnionSkin={editor.updateOnionSkin}
-            />
+            <>
+              <TimelinePanel
+                canvasWidth={editor.project.width}
+                canvasHeight={editor.project.height}
+                checkerDark={settings.checkerboardDark}
+                layers={editor.layers}
+                activeLayerId={editor.activeLayerId}
+                timeline={editor.timeline}
+                selectedCellKeys={editor.selectedCellKeys}
+                celClipboard={editor.celClipboard}
+                isPlaying={editor.isPlaying}
+                playbackSpeed={editor.playbackSpeed}
+                onionSkin={editor.onionSkin}
+                onSelectLayer={editor.setActiveLayerId}
+                onUpdateLayer={editor.updateLayerProps}
+                onAddLayer={() => {
+                  if (!editor.addNewLayer()) {
+                    showToast(t('layerMaxReached'), 'warning')
+                  }
+                }}
+                onOpenLayerSheet={() => setLayersOpen(true)}
+                onSelectFrame={editor.selectFrame}
+                onAddEmptyFrame={() => {
+                  editor.addEmptyFrame()
+                }}
+                onDuplicateFrame={(mode) => {
+                  editor.duplicateFrame(mode)
+                }}
+                onDeleteFrame={(fid) => {
+                  if (!editor.deleteFrame(fid)) {
+                    showToast(t('cannotDeleteLastFrame'), 'warning')
+                  }
+                }}
+                onSetFrameDuration={editor.setFrameDuration}
+                onSetDefaultFrameDuration={editor.setDefaultFrameDuration}
+                onApplyBatchDuration={editor.applyBatchDuration}
+                onClearCell={editor.clearCell}
+                onUnlinkCell={editor.unlinkCell}
+                onLinkCellToAny={editor.linkCellToAny}
+                onToggleCellSelected={editor.toggleCellSelected}
+                onClearCellSelection={editor.clearCellSelection}
+                onBatchClearCells={editor.batchClearSelectedCells}
+                onBatchUnlinkCells={editor.batchUnlinkSelectedCells}
+                onBatchLinkCells={editor.batchLinkSelectedCells}
+                onCopyActiveCell={() => {
+                  if (editor.copyActiveCell()) {
+                    showToast(t('toastCopied'))
+                  }
+                }}
+                onPasteToActiveCell={(asLinked) => {
+                  if (editor.pasteToActiveCell(asLinked)) {
+                    showToast(t('toastPasted'))
+                  }
+                }}
+                onSetPlaybackSpeed={editor.setPlaybackSpeed}
+                onSetPlaybackDirection={editor.setPlaybackDirection}
+                onSetLoopPlayback={editor.setLoopPlayback}
+                onUpdateOnionSkin={editor.updateOnionSkin}
+              />
+
+              {/* Frame Transport Controls placed in the Tool Operation Area slot during Timeline View */}
+              <TimelineTransportDock
+                isPlaying={editor.isPlaying}
+                activeFrameIndex={Math.max(
+                  0,
+                  editor.timeline.frames.findIndex(
+                    (f) => f.id === editor.timeline.activeFrameId
+                  )
+                )}
+                totalFrames={editor.timeline.frames.length}
+                globalSettingsOpen={globalSettingsOpen}
+                hasActivePreviewFlip={previewFlipX || previewFlipY}
+                onStepFrame={editor.stepFrame}
+                onTogglePlay={editor.togglePlay}
+                onStopPlay={editor.stopPlay}
+                onOpenGlobalSettings={() => {
+                  setOptionsOpen(false)
+                  setHeaderMenuOpen(false)
+                  setGlobalSettingsOpen((prev) => !prev)
+                }}
+              />
+            </>
           )}
+          </motion.div>
 
           {/* 3. Palette Swatch Strip (with fixed leftmost Transparent Slot & Drag Reorder) */}
           <PaletteBar
@@ -932,6 +1004,14 @@ export function EditorPage() {
         <GlobalEditorSettingsModal
           open={globalSettingsOpen}
           onClose={() => setGlobalSettingsOpen(false)}
+          previewFlipX={previewFlipX}
+          previewFlipY={previewFlipY}
+          onTogglePreviewFlipX={() => setPreviewFlipX((v) => !v)}
+          onTogglePreviewFlipY={() => setPreviewFlipY((v) => !v)}
+          onResetPreviewFlip={() => {
+            setPreviewFlipX(false)
+            setPreviewFlipY(false)
+          }}
         />
       </div>
     </ViewTransition>

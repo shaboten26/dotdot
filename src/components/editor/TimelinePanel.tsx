@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import type { LayerRuntime, PlaybackDirection } from '../../types'
 import {
   getCellStateKind,
@@ -15,6 +16,7 @@ import { PixelIcon } from '../common/PixelIcon'
 import { AnimationSettingsModal } from './AnimationSettingsModal'
 import { LinkCelModal } from './LinkCelModal'
 import { useI18n } from '../../i18n/I18nContext'
+import { useApp } from '../../state/AppContext'
 
 interface TimelinePanelProps {
   canvasWidth?: number
@@ -41,7 +43,6 @@ interface TimelinePanelProps {
   onAddLayer: () => void
   onOpenLayerSheet: () => void
   onSelectFrame: (frameId: string) => void
-  onStepFrame: (delta: -1 | 1) => void
   onAddEmptyFrame: () => void
   onDuplicateFrame: (mode: 'independent' | 'linked') => void
   onDeleteFrame: (frameId?: string) => void
@@ -68,7 +69,6 @@ interface TimelinePanelProps {
   onBatchLinkCells: () => void
   onCopyActiveCell: () => void
   onPasteToActiveCell: (asLinked?: boolean) => void
-  onTogglePlay: () => void
   onSetPlaybackSpeed: (speed: number) => void
   onSetPlaybackDirection: (dir: PlaybackDirection) => void
   onSetLoopPlayback: (loop: boolean) => void
@@ -101,7 +101,6 @@ export function TimelinePanel({
   onAddLayer,
   onOpenLayerSheet,
   onSelectFrame,
-  onStepFrame,
   onAddEmptyFrame,
   onDuplicateFrame,
   onDeleteFrame,
@@ -118,13 +117,13 @@ export function TimelinePanel({
   onBatchLinkCells,
   onCopyActiveCell,
   onPasteToActiveCell,
-  onTogglePlay,
   onSetPlaybackSpeed,
   onSetPlaybackDirection,
   onSetLoopPlayback,
   onUpdateOnionSkin,
 }: TimelinePanelProps) {
   const { t } = useI18n()
+  const { reducedMotion } = useApp()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [celMenuOpen, setCelMenuOpen] = useState(false)
   const [linkModalOpen, setLinkModalOpen] = useState(false)
@@ -244,8 +243,13 @@ export function TimelinePanel({
       )}
 
       {/* Floating Popover 2: Focused Cel & Linked-Cel Detail Menu (opened on demand) */}
+      <AnimatePresence>
       {celMenuOpen && (
-        <div
+        <motion.div
+          initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 4 }}
+          transition={{ duration: reducedMotion ? 0 : 0.11, ease: 'easeOut' }}
           className="absolute bottom-full right-2 left-2 sm:left-auto sm:w-72 mb-1.5 z-30 pixel-popover-translucent p-2.5 space-y-2 text-xs"
           data-testid="cel-actions-popover"
         >
@@ -424,46 +428,27 @@ export function TimelinePanel({
               </div>
             )}
           </div>
-        </div>
+        </motion.div>
       )}
+      </AnimatePresence>
 
-      {/* Main Row 1: Clean Core Controls Only (Transport + Add/Dup/Del + Cel Menu + Settings Icon) */}
+      {/* Main Row 1: Frame Status Indicator + Frame Add/Dup/Del + Cel Menu + Animation Settings (Transport moved to Tool Operation Dock!) */}
       <div className="flex flex-wrap items-center justify-between gap-1.5 text-xs">
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => onStepFrame(-1)}
-            title={t('prevFrameBtn')}
-            className="pixel-btn min-w-[36px] min-h-[36px] flex items-center justify-center"
-            data-testid="timeline-prev-frame-btn"
-          >
-            <PixelIcon name="arrowLeft" size={14} />
-          </button>
-
-          <button
-            type="button"
-            onClick={onTogglePlay}
-            className={`min-h-[36px] px-2.5 flex items-center justify-center gap-1.5 font-bold ${
-              isPlaying ? 'pixel-btn pixel-btn-teal' : 'pixel-btn pixel-btn-active'
-            }`}
-            data-testid="timeline-play-btn"
-          >
-            <PixelIcon name={isPlaying ? 'pause' : 'play'} size={13} />
-            <span>{isPlaying ? t('pauseBtn') : t('playBtn')}</span>
-            <span className="text-[11px] opacity-90">
-              {activeFrameIdx + 1}/{timeline.frames.length}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onStepFrame(1)}
-            title={t('nextFrameBtn')}
-            className="pixel-btn min-w-[36px] min-h-[36px] flex items-center justify-center"
-            data-testid="timeline-next-frame-btn"
-          >
-            <PixelIcon name="arrowRight" size={14} />
-          </button>
+        <div
+          className={`min-h-[34px] px-2.5 border-2 flex items-center gap-1.5 font-bold pixel-num ${
+            isPlaying
+              ? 'bg-[var(--accent-teal)] text-[var(--accent-teal-fg)] border-[var(--border-strong)]'
+              : 'bg-[var(--bg-elevated)] text-[var(--text-primary)] border-[var(--border-subtle)]'
+          }`}
+          data-testid="timeline-active-frame-status"
+        >
+          <PixelIcon name={isPlaying ? 'play' : 'film'} size={12} />
+          <span>
+            #{activeFrameIdx + 1}/{timeline.frames.length}
+          </span>
+          <span className="opacity-80 text-[11px]">
+            {activeFrame.durationMs}ms
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-1">
@@ -542,8 +527,8 @@ export function TimelinePanel({
         </div>
       </div>
 
-      {/* Main Row 2: Easy-to-Read Layer × Frame Cel Matrix */}
-      <div className="border-2 border-[var(--border-pixel)] bg-[var(--bg-elevated)] max-h-40 overflow-auto">
+      {/* Main Row 2: Easy-to-Read Layer × Frame Cel Matrix (compact height so canvas area stays generous) */}
+      <div className="border-2 border-[var(--border-pixel)] bg-[var(--bg-elevated)] max-h-32 overflow-auto">
         <table className="w-full border-collapse text-xs">
           <thead className="sticky top-0 z-10 bg-[var(--bg-surface)] border-b-2 border-[var(--border-pixel)]">
             <tr>
@@ -757,7 +742,7 @@ export function TimelinePanel({
                           />
                         )}
                         <span
-                          className={`relative z-10 text-xs font-bold ${
+                          className={`relative z-10 inline-flex items-center justify-center ${
                             kind === 'linked'
                               ? 'text-[var(--accent-teal)]'
                               : kind === 'empty'
@@ -765,11 +750,16 @@ export function TimelinePanel({
                                 : ''
                           }`}
                         >
-                          {kind === 'empty'
-                            ? '·'
-                            : kind === 'linked'
-                              ? '◆'
-                              : '●'}
+                          <PixelIcon
+                            name={
+                              kind === 'empty'
+                                ? 'celEmpty'
+                                : kind === 'linked'
+                                  ? 'celDiamond'
+                                  : 'celDot'
+                            }
+                            size={11}
+                          />
                         </span>
                       </td>
                     )

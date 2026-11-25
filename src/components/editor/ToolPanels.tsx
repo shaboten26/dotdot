@@ -200,6 +200,7 @@ interface MultiRowToolGridProps {
   toolSettings: ToolSettings
   optionsOpen: boolean
   globalSettingsOpen?: boolean
+  hasActivePreviewFlip?: boolean
   canUndo: boolean
   canRedo: boolean
   hasSelection: boolean
@@ -221,6 +222,7 @@ export function MultiRowToolGrid({
   toolSettings,
   optionsOpen,
   globalSettingsOpen = false,
+  hasActivePreviewFlip = false,
   canUndo,
   canRedo,
   hasSelection,
@@ -374,7 +376,7 @@ export function MultiRowToolGrid({
         onClick={onOpenGlobalSettings}
         aria-pressed={globalSettingsOpen}
         style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
-        className={`px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
+        className={`relative px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
           globalSettingsOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
         }`}
         data-testid="open-global-editor-settings-btn"
@@ -386,6 +388,149 @@ export function MultiRowToolGrid({
         >
           {t('editorGlobalSettingsBtn')}
         </span>
+        {hasActivePreviewFlip && (
+          <span
+            className="absolute top-0.5 right-0.5 w-2.5 h-2.5 bg-[var(--accent-teal)] border border-[var(--border-strong)]"
+            aria-hidden="true"
+          />
+        )}
+      </button>
+    </div>
+  )
+}
+
+interface TimelineTransportDockProps {
+  isPlaying: boolean
+  activeFrameIndex: number
+  totalFrames: number
+  globalSettingsOpen?: boolean
+  hasActivePreviewFlip?: boolean
+  onStepFrame: (delta: -1 | 1) => void
+  onTogglePlay: () => void
+  onStopPlay: () => void
+  onOpenGlobalSettings?: () => void
+}
+
+/**
+ * Contextual Frame Transport Dock shown in the Tool Operation Area when the `タイムライン` tab (`>=2` frames) is active.
+ * Keeps playback & frame-stepping controls in the exact thumb-friendly dock slot occupied by drawing tools in `ツール` mode,
+ * eliminating duplicate play/prev/next buttons inside `TimelinePanel` without shrinking the canvas!
+ */
+export function TimelineTransportDock({
+  isPlaying,
+  activeFrameIndex,
+  totalFrames,
+  globalSettingsOpen = false,
+  hasActivePreviewFlip = false,
+  onStepFrame,
+  onTogglePlay,
+  onStopPlay,
+  onOpenGlobalSettings,
+}: TimelineTransportDockProps) {
+  const { t } = useI18n()
+
+  return (
+    <div
+      style={{ gap: 'var(--ui-gap, 6px)' }}
+      className="grid grid-cols-5 px-2.5 py-1.5 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] shrink-0"
+      data-testid="timeline-transport-dock"
+    >
+      <button
+        type="button"
+        onClick={() => onStepFrame(-1)}
+        title={t('prevFrameBtn')}
+        aria-label={t('prevFrameBtn')}
+        style={{ minHeight: 'max(42px, calc(var(--tool-btn-height, 48px) - 4px))' }}
+        className="pixel-btn px-1 py-1 flex flex-col items-center justify-center gap-0.5"
+        data-testid="dock-prev-frame-btn"
+      >
+        <PixelIcon name="arrowLeft" />
+        <span
+          style={{ fontSize: 'var(--tool-label-size, 11px)' }}
+          className="leading-none truncate max-w-full font-bold"
+        >
+          {t('prevShortBtn')}
+        </span>
+      </button>
+
+      <button
+        type="button"
+        onClick={onTogglePlay}
+        aria-pressed={isPlaying}
+        style={{ minHeight: 'max(42px, calc(var(--tool-btn-height, 48px) - 4px))' }}
+        className={`px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
+          isPlaying ? 'pixel-btn pixel-btn-teal' : 'pixel-btn pixel-btn-active'
+        }`}
+        data-testid="dock-play-toggle-btn"
+      >
+        <PixelIcon name={isPlaying ? 'pause' : 'play'} />
+        <span
+          style={{ fontSize: 'var(--tool-label-size, 11px)' }}
+          className="leading-none truncate max-w-full font-bold pixel-num"
+        >
+          {isPlaying ? t('pauseActionBtn') : t('playBtn')} {activeFrameIndex + 1}/{totalFrames}
+        </span>
+      </button>
+
+      <button
+        type="button"
+        onClick={onStopPlay}
+        title={t('stopActionBtn')}
+        aria-label={t('stopActionBtn')}
+        style={{ minHeight: 'max(42px, calc(var(--tool-btn-height, 48px) - 4px))' }}
+        className="pixel-btn px-1 py-1 flex flex-col items-center justify-center gap-0.5"
+        data-testid="dock-stop-btn"
+      >
+        <PixelIcon name="stop" />
+        <span
+          style={{ fontSize: 'var(--tool-label-size, 11px)' }}
+          className="leading-none truncate max-w-full font-bold"
+        >
+          {t('stopActionBtn')}
+        </span>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => onStepFrame(1)}
+        title={t('nextFrameBtn')}
+        aria-label={t('nextFrameBtn')}
+        style={{ minHeight: 'max(42px, calc(var(--tool-btn-height, 48px) - 4px))' }}
+        className="pixel-btn px-1 py-1 flex flex-col items-center justify-center gap-0.5"
+        data-testid="dock-next-frame-btn"
+      >
+        <PixelIcon name="arrowRight" />
+        <span
+          style={{ fontSize: 'var(--tool-label-size, 11px)' }}
+          className="leading-none truncate max-w-full font-bold"
+        >
+          {t('nextShortBtn')}
+        </span>
+      </button>
+
+      <button
+        type="button"
+        onClick={onOpenGlobalSettings}
+        aria-pressed={globalSettingsOpen}
+        style={{ minHeight: 'max(42px, calc(var(--tool-btn-height, 48px) - 4px))' }}
+        className={`relative px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
+          globalSettingsOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+        }`}
+        data-testid="open-global-editor-settings-btn"
+      >
+        <PixelIcon name="settings" />
+        <span
+          style={{ fontSize: 'var(--tool-label-size, 11px)' }}
+          className="leading-none truncate max-w-full font-bold"
+        >
+          {t('editorGlobalSettingsBtn')}
+        </span>
+        {hasActivePreviewFlip && (
+          <span
+            className="absolute top-0.5 right-0.5 w-2.5 h-2.5 bg-[var(--accent-teal)] border border-[var(--border-strong)]"
+            aria-hidden="true"
+          />
+        )}
       </button>
     </div>
   )
