@@ -351,23 +351,10 @@ describe('Streamlined Timeline, Layer Workspace Separation, GIF Visibility & Vie
     })
     fireEvent.click(screen.getByTestId('cursor-size-large'))
 
-    // Create a Custom Cursor (8x8) with custom Hotspot (3, 4) and save & apply
-    fireEvent.click(screen.getByTestId('new-custom-cursor-btn'))
-    expect(await screen.findByTestId('custom-cursor-editor')).toBeTruthy()
-    fireEvent.click(screen.getByTestId('custom-cursor-grid-8'))
-    const cursorNameInput = screen.getByTestId('custom-cursor-name-input') as HTMLInputElement
-    fireEvent.change(cursorNameInput, { target: { value: 'ドット十字' } })
-    fireEvent.pointerDown(screen.getByTestId('cursor-cell-3-4'))
-    fireEvent.pointerUp(screen.getByTestId('cursor-cell-3-4'))
-    fireEvent.click(screen.getByTestId('custom-cursor-tool-hotspot'))
-    fireEvent.pointerDown(screen.getByTestId('cursor-cell-3-4'))
-    fireEvent.pointerUp(screen.getByTestId('cursor-cell-3-4'))
-    fireEvent.click(screen.getByTestId('save-custom-cursor-btn'))
-
-    await waitFor(() => {
-      expect(globalModal.textContent).toContain('ドット十字')
-      expect(globalModal.textContent).toContain('8×8 · Hotspot (3,4)')
-    })
+    // Verify mouse/custom cursor changing UI is completely removed from Global Settings
+    expect(screen.queryByTestId('new-custom-cursor-btn')).toBeNull()
+    expect(screen.queryByTestId('custom-cursor-editor')).toBeNull()
+    expect(screen.queryByTestId('cursor-design-default-btn')).toBeNull()
 
     // Toggle shared Double-Tap Eyedropper setting OFF in Global Settings, close, and verify Eyedropper tool detail reflects the exact same state!
     const globalDoubleTap = screen.getByTestId('global-toggle-eyedropper-doubletap')

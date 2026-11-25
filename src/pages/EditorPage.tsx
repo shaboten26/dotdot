@@ -13,7 +13,6 @@ import {
   MultiRowToolGrid,
   PaletteBar,
   SelectionReadyBar,
-  TimelineTransportDock,
   ToolDetailPopover,
 } from '../components/editor/ToolPanels'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
@@ -43,6 +42,8 @@ export function EditorPage() {
     settings,
     reducedMotion,
     palettes,
+    sharedClipboard,
+    setSharedClipboard,
     updateSettings,
     refreshProjects,
     addLibraryPalette,
@@ -81,6 +82,8 @@ export function EditorPage() {
     projectId: targetProjectId,
     historyLimit: settings.historyLimit,
     soundEnabled: settings.soundEnabled,
+    sharedClipboard,
+    onUpdateSharedClipboard: setSharedClipboard,
     onSaved: () => {
       void refreshProjects()
     },
@@ -456,13 +459,6 @@ export function EditorPage() {
             eyedropperDoubleTap={settings.eyedropperDoubleTap}
             cursorSpeed={settings.cursorSpeed}
             cursorSize={settings.cursorSize}
-            activeCustomCursor={
-              settings.activeCursorId === 'standard'
-                ? null
-                : settings.customCursors.find(
-                    (c) => c.id === settings.activeCursorId
-                  ) ?? null
-            }
             previewFlipX={previewFlipX}
             previewFlipY={previewFlipY}
             onResetPreviewFlip={() => {
@@ -570,7 +566,7 @@ export function EditorPage() {
             </>
           )}
 
-          {/* Workspace Mode Switcher: `ツール` vs (`レイヤー` [1 frame] / `タイムライン` [>=2 frames]) */}
+          {/* Workspace Mode Switcher: `ツール` vs (`レイヤー` [1 frame] / `タイムライン` [>=2 frames]) + Always-Visible Arrow & Play Controls in the Same Zone */}
           <div
             className="flex items-center justify-between gap-1.5 px-2.5 py-1 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] shrink-0"
             data-testid="workspace-mode-bar"
@@ -579,15 +575,29 @@ export function EditorPage() {
               <button
                 type="button"
                 onClick={() => setWorkspaceTab('tools')}
-                className={`min-h-[32px] px-2.5 text-xs font-bold flex items-center justify-center gap-1 ${
+                className={`relative min-h-[32px] px-2.5 text-xs font-bold flex items-center justify-center gap-1 overflow-hidden ${
                   workspaceTab === 'tools'
-                    ? 'pixel-btn pixel-btn-active'
+                    ? 'text-[var(--accent-primary-fg)] border-2 border-[var(--border-strong)] cursor-pointer'
                     : 'pixel-btn'
                 }`}
                 data-testid="workspace-tab-tools"
               >
-                <PixelIcon name="pen" size={13} />
-                <span>{t('tabTools')}</span>
+                {workspaceTab === 'tools' && (
+                  <motion.span
+                    layoutId="workspace-active-tab-pill"
+                    transition={
+                      reducedMotion
+                        ? { duration: 0 }
+                        : { type: 'spring', stiffness: 520, damping: 38 }
+                    }
+                    className="absolute inset-0 bg-[var(--accent-primary)] z-0"
+                    aria-hidden="true"
+                  />
+                )}
+                <span className="relative z-10 flex items-center gap-1">
+                  <PixelIcon name="pen" size={13} />
+                  <span>{t('tabTools')}</span>
+                </span>
               </button>
               <button
                 type="button"
@@ -595,9 +605,9 @@ export function EditorPage() {
                   setOptionsOpen(false)
                   setWorkspaceTab('frames')
                 }}
-                className={`min-h-[32px] px-2.5 text-xs font-bold flex items-center justify-center gap-1 ${
+                className={`relative min-h-[32px] px-2.5 text-xs font-bold flex items-center justify-center gap-1 overflow-hidden ${
                   workspaceTab === 'frames'
-                    ? 'pixel-btn pixel-btn-active'
+                    ? 'text-[var(--accent-primary-fg)] border-2 border-[var(--border-strong)] cursor-pointer'
                     : 'pixel-btn'
                 }`}
                 data-testid={
@@ -606,31 +616,50 @@ export function EditorPage() {
                     : 'workspace-tab-layers'
                 }
               >
-                <PixelIcon
-                  name={editor.timeline.frames.length >= 2 ? 'film' : 'layers'}
-                  size={13}
-                />
-                <span>
-                  {editor.timeline.frames.length >= 2
-                    ? `${t('tabTimeline')} (${editor.timeline.frames.length})`
-                    : `${t('tabLayers')} (${editor.layers.length})`}
+                {workspaceTab === 'frames' && (
+                  <motion.span
+                    layoutId="workspace-active-tab-pill"
+                    transition={
+                      reducedMotion
+                        ? { duration: 0 }
+                        : { type: 'spring', stiffness: 520, damping: 38 }
+                    }
+                    className="absolute inset-0 bg-[var(--accent-primary)] z-0"
+                    aria-hidden="true"
+                  />
+                )}
+                <span className="relative z-10 flex items-center gap-1">
+                  <PixelIcon
+                    name={editor.timeline.frames.length >= 2 ? 'film' : 'layers'}
+                    size={13}
+                  />
+                  <span>
+                    {editor.timeline.frames.length >= 2
+                      ? `${t('tabTimeline')} (${editor.timeline.frames.length})`
+                      : `${t('tabLayers')} (${editor.layers.length})`}
+                  </span>
                 </span>
               </button>
             </div>
 
-            {editor.timeline.frames.length >= 2 && workspaceTab === 'tools' && (
-              <div className="flex items-center gap-1 shrink-0">
+            {editor.timeline.frames.length >= 2 && (
+              <div
+                className="flex items-center gap-1 shrink-0"
+                data-testid="tabbar-frame-controls"
+              >
                 <button
                   type="button"
                   onClick={() => editor.stepFrame(-1)}
                   className="pixel-btn min-w-[30px] min-h-[30px] flex items-center justify-center"
                   title={t('prevFrameBtn')}
+                  data-testid="quick-prev-frame-btn"
                 >
                   <PixelIcon name="arrowLeft" size={12} />
                 </button>
                 <button
                   type="button"
                   onClick={editor.togglePlay}
+                  aria-pressed={editor.isPlaying}
                   className={`min-h-[30px] px-2 text-[11px] font-bold flex items-center gap-1 ${
                     editor.isPlaying
                       ? 'pixel-btn pixel-btn-teal'
@@ -657,6 +686,7 @@ export function EditorPage() {
                   onClick={() => editor.stepFrame(1)}
                   className="pixel-btn min-w-[30px] min-h-[30px] flex items-center justify-center"
                   title={t('nextFrameBtn')}
+                  data-testid="quick-next-frame-btn"
                 >
                   <PixelIcon name="arrowRight" size={12} />
                 </button>
@@ -763,88 +793,64 @@ export function EditorPage() {
               />
             </div>
           ) : (
-            <>
-              <TimelinePanel
-                canvasWidth={editor.project.width}
-                canvasHeight={editor.project.height}
-                checkerDark={settings.checkerboardDark}
-                layers={editor.layers}
-                activeLayerId={editor.activeLayerId}
-                timeline={editor.timeline}
-                selectedCellKeys={editor.selectedCellKeys}
-                celClipboard={editor.celClipboard}
-                isPlaying={editor.isPlaying}
-                playbackSpeed={editor.playbackSpeed}
-                onionSkin={editor.onionSkin}
-                onSelectLayer={editor.setActiveLayerId}
-                onUpdateLayer={editor.updateLayerProps}
-                onAddLayer={() => {
-                  if (!editor.addNewLayer()) {
-                    showToast(t('layerMaxReached'), 'warning')
-                  }
-                }}
-                onOpenLayerSheet={() => setLayersOpen(true)}
-                onSelectFrame={editor.selectFrame}
-                onAddEmptyFrame={() => {
-                  editor.addEmptyFrame()
-                }}
-                onDuplicateFrame={(mode) => {
-                  editor.duplicateFrame(mode)
-                }}
-                onDeleteFrame={(fid) => {
-                  if (!editor.deleteFrame(fid)) {
-                    showToast(t('cannotDeleteLastFrame'), 'warning')
-                  }
-                }}
-                onSetFrameDuration={editor.setFrameDuration}
-                onSetDefaultFrameDuration={editor.setDefaultFrameDuration}
-                onApplyBatchDuration={editor.applyBatchDuration}
-                onClearCell={editor.clearCell}
-                onUnlinkCell={editor.unlinkCell}
-                onLinkCellToAny={editor.linkCellToAny}
-                onToggleCellSelected={editor.toggleCellSelected}
-                onClearCellSelection={editor.clearCellSelection}
-                onBatchClearCells={editor.batchClearSelectedCells}
-                onBatchUnlinkCells={editor.batchUnlinkSelectedCells}
-                onBatchLinkCells={editor.batchLinkSelectedCells}
-                onCopyActiveCell={() => {
-                  if (editor.copyActiveCell()) {
-                    showToast(t('toastCopied'))
-                  }
-                }}
-                onPasteToActiveCell={(asLinked) => {
-                  if (editor.pasteToActiveCell(asLinked)) {
-                    showToast(t('toastPasted'))
-                  }
-                }}
-                onSetPlaybackSpeed={editor.setPlaybackSpeed}
-                onSetPlaybackDirection={editor.setPlaybackDirection}
-                onSetLoopPlayback={editor.setLoopPlayback}
-                onUpdateOnionSkin={editor.updateOnionSkin}
-              />
-
-              {/* Frame Transport Controls placed in the Tool Operation Area slot during Timeline View */}
-              <TimelineTransportDock
-                isPlaying={editor.isPlaying}
-                activeFrameIndex={Math.max(
-                  0,
-                  editor.timeline.frames.findIndex(
-                    (f) => f.id === editor.timeline.activeFrameId
-                  )
-                )}
-                totalFrames={editor.timeline.frames.length}
-                globalSettingsOpen={globalSettingsOpen}
-                hasActivePreviewFlip={previewFlipX || previewFlipY}
-                onStepFrame={editor.stepFrame}
-                onTogglePlay={editor.togglePlay}
-                onStopPlay={editor.stopPlay}
-                onOpenGlobalSettings={() => {
-                  setOptionsOpen(false)
-                  setHeaderMenuOpen(false)
-                  setGlobalSettingsOpen((prev) => !prev)
-                }}
-              />
-            </>
+            <TimelinePanel
+              canvasWidth={editor.project.width}
+              canvasHeight={editor.project.height}
+              checkerDark={settings.checkerboardDark}
+              layers={editor.layers}
+              activeLayerId={editor.activeLayerId}
+              timeline={editor.timeline}
+              selectedCellKeys={editor.selectedCellKeys}
+              celClipboard={editor.celClipboard}
+              isPlaying={editor.isPlaying}
+              playbackSpeed={editor.playbackSpeed}
+              onionSkin={editor.onionSkin}
+              onSelectLayer={editor.setActiveLayerId}
+              onUpdateLayer={editor.updateLayerProps}
+              onAddLayer={() => {
+                if (!editor.addNewLayer()) {
+                  showToast(t('layerMaxReached'), 'warning')
+                }
+              }}
+              onOpenLayerSheet={() => setLayersOpen(true)}
+              onSelectFrame={editor.selectFrame}
+              onAddEmptyFrame={() => {
+                editor.addEmptyFrame()
+              }}
+              onDuplicateFrame={(mode) => {
+                editor.duplicateFrame(mode)
+              }}
+              onDeleteFrame={(fid) => {
+                if (!editor.deleteFrame(fid)) {
+                  showToast(t('cannotDeleteLastFrame'), 'warning')
+                }
+              }}
+              onSetFrameDuration={editor.setFrameDuration}
+              onSetDefaultFrameDuration={editor.setDefaultFrameDuration}
+              onApplyBatchDuration={editor.applyBatchDuration}
+              onClearCell={editor.clearCell}
+              onUnlinkCell={editor.unlinkCell}
+              onLinkCellToAny={editor.linkCellToAny}
+              onToggleCellSelected={editor.toggleCellSelected}
+              onClearCellSelection={editor.clearCellSelection}
+              onBatchClearCells={editor.batchClearSelectedCells}
+              onBatchUnlinkCells={editor.batchUnlinkSelectedCells}
+              onBatchLinkCells={editor.batchLinkSelectedCells}
+              onCopyActiveCell={() => {
+                if (editor.copyActiveCell()) {
+                  showToast(t('toastCopied'))
+                }
+              }}
+              onPasteToActiveCell={(asLinked) => {
+                if (editor.pasteToActiveCell(asLinked)) {
+                  showToast(t('toastPasted'))
+                }
+              }}
+              onSetPlaybackSpeed={editor.setPlaybackSpeed}
+              onSetPlaybackDirection={editor.setPlaybackDirection}
+              onSetLoopPlayback={editor.setLoopPlayback}
+              onUpdateOnionSkin={editor.updateOnionSkin}
+            />
           )}
           </motion.div>
 

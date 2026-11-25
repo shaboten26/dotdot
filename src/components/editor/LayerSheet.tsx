@@ -571,10 +571,22 @@ export function LayerPanelContent({
                     <motion.div
                       data-no-reorder="true"
                       onClick={(e) => e.stopPropagation()}
-                      initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: -4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                      transition={{ duration: reducedMotion ? 0 : 0.1 }}
+                      initial={
+                        reducedMotion
+                          ? { opacity: 1 }
+                          : { opacity: 0, y: -8, scale: 0.98 }
+                      }
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={
+                        reducedMotion
+                          ? { opacity: 0 }
+                          : { opacity: 0, y: -6, scale: 0.98 }
+                      }
+                      transition={
+                        reducedMotion
+                          ? { duration: 0 }
+                          : { type: 'spring', stiffness: 480, damping: 34 }
+                      }
                       className="px-3 py-3 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] space-y-3"
                       data-testid={`layer-menu-${layer.id}`}
                     >

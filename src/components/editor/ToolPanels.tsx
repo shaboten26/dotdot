@@ -232,6 +232,7 @@ export function MultiRowToolGrid({
   onOpenGlobalSettings,
 }: MultiRowToolGridProps) {
   const { t } = useI18n()
+  const { reducedMotion } = useApp()
 
   const toolItems: Array<{
     id: ToolId
@@ -301,22 +302,32 @@ export function MultiRowToolGrid({
             onClick={() => onTapTool(item.id)}
             aria-pressed={active}
             style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
-            className={`relative px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
+            className={`relative px-1 py-1 flex flex-col items-center justify-center gap-0.5 overflow-hidden ${
               active ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
             }`}
             data-testid={`tool-${item.id}`}
           >
-            <PixelIcon name={item.icon} />
-            <span
-              style={{ fontSize: 'var(--tool-label-size, 11px)' }}
-              className="leading-none truncate max-w-full font-bold"
-            >
-              {item.label}
+            {active && !reducedMotion && (
+              <motion.span
+                layoutId="active-tool-grid-pill"
+                transition={{ type: 'spring', stiffness: 520, damping: 36 }}
+                className="absolute inset-0 bg-[var(--accent-primary)] pointer-events-none"
+                aria-hidden="true"
+              />
+            )}
+            <span className="relative z-10 flex flex-col items-center justify-center gap-0.5 max-w-full">
+              <PixelIcon name={item.icon} />
+              <span
+                style={{ fontSize: 'var(--tool-label-size, 11px)' }}
+                className="leading-none truncate max-w-full font-bold"
+              >
+                {item.label}
+              </span>
             </span>
 
             {active && item.hasDetail && (
               <span
-                className="absolute top-0.5 right-0.5 w-3 h-3 flex items-center justify-center opacity-90"
+                className="absolute top-0.5 right-0.5 z-10 w-3 h-3 flex items-center justify-center opacity-90"
                 aria-hidden="true"
               >
                 <PixelIcon
@@ -328,7 +339,7 @@ export function MultiRowToolGrid({
 
             {item.id === 'select' && hasSelection && !active && (
               <span
-                className="absolute top-0.5 right-0.5 w-2.5 h-2.5 bg-[var(--accent-teal)] border border-[var(--border-strong)]"
+                className="absolute top-0.5 right-0.5 z-10 w-2.5 h-2.5 bg-[var(--accent-teal)] border border-[var(--border-strong)]"
                 aria-hidden="true"
               />
             )}
@@ -376,143 +387,6 @@ export function MultiRowToolGrid({
         onClick={onOpenGlobalSettings}
         aria-pressed={globalSettingsOpen}
         style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
-        className={`relative px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
-          globalSettingsOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-        }`}
-        data-testid="open-global-editor-settings-btn"
-      >
-        <PixelIcon name="settings" />
-        <span
-          style={{ fontSize: 'var(--tool-label-size, 11px)' }}
-          className="leading-none truncate max-w-full font-bold"
-        >
-          {t('editorGlobalSettingsBtn')}
-        </span>
-        {hasActivePreviewFlip && (
-          <span
-            className="absolute top-0.5 right-0.5 w-2.5 h-2.5 bg-[var(--accent-teal)] border border-[var(--border-strong)]"
-            aria-hidden="true"
-          />
-        )}
-      </button>
-    </div>
-  )
-}
-
-interface TimelineTransportDockProps {
-  isPlaying: boolean
-  activeFrameIndex: number
-  totalFrames: number
-  globalSettingsOpen?: boolean
-  hasActivePreviewFlip?: boolean
-  onStepFrame: (delta: -1 | 1) => void
-  onTogglePlay: () => void
-  onStopPlay: () => void
-  onOpenGlobalSettings?: () => void
-}
-
-/**
- * Contextual Frame Transport Dock shown in the Tool Operation Area when the `タイムライン` tab (`>=2` frames) is active.
- * Keeps playback & frame-stepping controls in the exact thumb-friendly dock slot occupied by drawing tools in `ツール` mode,
- * eliminating duplicate play/prev/next buttons inside `TimelinePanel` without shrinking the canvas!
- */
-export function TimelineTransportDock({
-  isPlaying,
-  activeFrameIndex,
-  totalFrames,
-  globalSettingsOpen = false,
-  hasActivePreviewFlip = false,
-  onStepFrame,
-  onTogglePlay,
-  onStopPlay,
-  onOpenGlobalSettings,
-}: TimelineTransportDockProps) {
-  const { t } = useI18n()
-
-  return (
-    <div
-      style={{ gap: 'var(--ui-gap, 6px)' }}
-      className="grid grid-cols-5 px-2.5 py-1.5 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] shrink-0"
-      data-testid="timeline-transport-dock"
-    >
-      <button
-        type="button"
-        onClick={() => onStepFrame(-1)}
-        title={t('prevFrameBtn')}
-        aria-label={t('prevFrameBtn')}
-        style={{ minHeight: 'max(42px, calc(var(--tool-btn-height, 48px) - 4px))' }}
-        className="pixel-btn px-1 py-1 flex flex-col items-center justify-center gap-0.5"
-        data-testid="dock-prev-frame-btn"
-      >
-        <PixelIcon name="arrowLeft" />
-        <span
-          style={{ fontSize: 'var(--tool-label-size, 11px)' }}
-          className="leading-none truncate max-w-full font-bold"
-        >
-          {t('prevShortBtn')}
-        </span>
-      </button>
-
-      <button
-        type="button"
-        onClick={onTogglePlay}
-        aria-pressed={isPlaying}
-        style={{ minHeight: 'max(42px, calc(var(--tool-btn-height, 48px) - 4px))' }}
-        className={`px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
-          isPlaying ? 'pixel-btn pixel-btn-teal' : 'pixel-btn pixel-btn-active'
-        }`}
-        data-testid="dock-play-toggle-btn"
-      >
-        <PixelIcon name={isPlaying ? 'pause' : 'play'} />
-        <span
-          style={{ fontSize: 'var(--tool-label-size, 11px)' }}
-          className="leading-none truncate max-w-full font-bold pixel-num"
-        >
-          {isPlaying ? t('pauseActionBtn') : t('playBtn')} {activeFrameIndex + 1}/{totalFrames}
-        </span>
-      </button>
-
-      <button
-        type="button"
-        onClick={onStopPlay}
-        title={t('stopActionBtn')}
-        aria-label={t('stopActionBtn')}
-        style={{ minHeight: 'max(42px, calc(var(--tool-btn-height, 48px) - 4px))' }}
-        className="pixel-btn px-1 py-1 flex flex-col items-center justify-center gap-0.5"
-        data-testid="dock-stop-btn"
-      >
-        <PixelIcon name="stop" />
-        <span
-          style={{ fontSize: 'var(--tool-label-size, 11px)' }}
-          className="leading-none truncate max-w-full font-bold"
-        >
-          {t('stopActionBtn')}
-        </span>
-      </button>
-
-      <button
-        type="button"
-        onClick={() => onStepFrame(1)}
-        title={t('nextFrameBtn')}
-        aria-label={t('nextFrameBtn')}
-        style={{ minHeight: 'max(42px, calc(var(--tool-btn-height, 48px) - 4px))' }}
-        className="pixel-btn px-1 py-1 flex flex-col items-center justify-center gap-0.5"
-        data-testid="dock-next-frame-btn"
-      >
-        <PixelIcon name="arrowRight" />
-        <span
-          style={{ fontSize: 'var(--tool-label-size, 11px)' }}
-          className="leading-none truncate max-w-full font-bold"
-        >
-          {t('nextShortBtn')}
-        </span>
-      </button>
-
-      <button
-        type="button"
-        onClick={onOpenGlobalSettings}
-        aria-pressed={globalSettingsOpen}
-        style={{ minHeight: 'max(42px, calc(var(--tool-btn-height, 48px) - 4px))' }}
         className={`relative px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
           globalSettingsOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
         }`}
@@ -964,10 +838,22 @@ export function ToolDetailPopover({
     <AnimatePresence>
       {open && (
         <motion.div
-          initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 6 }}
-          transition={{ duration: reducedMotion ? 0 : 0.12 }}
+          initial={
+            reducedMotion
+              ? { opacity: 1 }
+              : { opacity: 0, y: 12, scale: 0.97 }
+          }
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={
+            reducedMotion
+              ? { opacity: 0 }
+              : { opacity: 0, y: 8, scale: 0.98 }
+          }
+          transition={
+            reducedMotion
+              ? { duration: 0 }
+              : { type: 'spring', stiffness: 500, damping: 34, mass: 0.8 }
+          }
           className="absolute bottom-full left-2 right-2 sm:left-auto sm:right-2.5 sm:w-[360px] mb-1.5 z-30 pixel-popover-translucent p-2.5 space-y-2 max-h-[42dvh] overflow-y-auto"
           data-testid="tool-detail-panel"
         >
@@ -1437,6 +1323,7 @@ export function ToolDetailPopover({
                           ? 'pixel-btn pixel-btn-active'
                           : 'pixel-btn'
                       }`}
+                      data-testid="select-type-wand"
                     >
                       <PixelIcon name="wand" size={14} />
                       {t('selectWand')}
@@ -1556,6 +1443,7 @@ export function ToolDetailPopover({
                   disabled={!hasSelection}
                   onClick={onCut}
                   className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
+                  data-testid="select-cut-btn"
                 >
                   <PixelIcon name="cut" size={13} />
                   {t('cut')}
@@ -1565,6 +1453,7 @@ export function ToolDetailPopover({
                   disabled={!hasSelection}
                   onClick={onCopy}
                   className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
+                  data-testid="select-copy-btn"
                 >
                   <PixelIcon name="copy" size={13} />
                   {t('copy')}
@@ -1574,6 +1463,7 @@ export function ToolDetailPopover({
                   disabled={!hasClipboard}
                   onClick={onPaste}
                   className="pixel-btn min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
+                  data-testid="select-paste-btn"
                 >
                   <PixelIcon name="paste" size={13} />
                   {t('paste')}

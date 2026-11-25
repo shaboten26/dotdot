@@ -19,7 +19,6 @@ import { useApp } from '../state/AppContext'
 import { useI18n } from '../i18n/I18nContext'
 import { ConfirmDialog } from '../components/common/Modal'
 import { PixelIcon, PixelLoadingIndicator } from '../components/common/PixelIcon'
-import { getCheckerboardStyle } from '../components/common/PixelThumbnail'
 import {
   ExportPngModal,
   type ExportPngInitialIntent,
@@ -499,18 +498,21 @@ export function ProjectDetailPage() {
         </header>
 
         <main className="flex-1 max-w-2xl w-full mx-auto p-4 pb-12 pb-safe space-y-4">
-          {/* Large Pixel-Art Preview (Long-pressable native <img> + ViewTransition + directional swipe motion) */}
+          {/* Large Pixel-Art Preview (Long-pressable native <img> + ViewTransition + directional swipe motion, solid background matching page --bg-app) */}
           <motion.div
             key={project.id}
             initial={
               reducedMotion || swipeDir === 0
                 ? { opacity: 1, x: 0 }
-                : { opacity: 0.65, x: swipeDir * 22 }
+                : { opacity: 0.65, x: swipeDir * 28 }
             }
             animate={{ opacity: 1, x: swipeDragX }}
-            transition={{ duration: reducedMotion ? 0 : 0.14, ease: 'easeOut' }}
-            style={getCheckerboardStyle(settings.checkerboardDark, 12)}
-            className="aspect-square max-h-[50dvh] w-full mx-auto pixel-card overflow-hidden flex items-center justify-center p-4"
+            transition={
+              reducedMotion
+                ? { duration: 0 }
+                : { type: 'spring', stiffness: 460, damping: 36, mass: 0.8 }
+            }
+            className="aspect-square max-h-[50dvh] w-full mx-auto border-2 border-[var(--border-pixel)] bg-[var(--bg-app)] overflow-hidden flex items-center justify-center p-4"
             data-testid="detail-preview-card"
           >
             <ViewTransition name={`artwork-${project.id}`}>

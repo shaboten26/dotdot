@@ -44,15 +44,27 @@ export function Modal({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: reducedMotion ? 0 : 0.12 }}
+            transition={{ duration: reducedMotion ? 0 : 0.16, ease: 'easeOut' }}
             onClick={onClose}
             className="fixed inset-0 bg-black/55"
           />
           <motion.div
-            initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 14 }}
-            transition={{ duration: reducedMotion ? 0 : 0.14, ease: 'easeOut' }}
+            initial={
+              reducedMotion
+                ? { opacity: 1 }
+                : { opacity: 0, y: 26, scale: 0.97 }
+            }
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={
+              reducedMotion
+                ? { opacity: 0 }
+                : { opacity: 0, y: 18, scale: 0.98 }
+            }
+            transition={
+              reducedMotion
+                ? { duration: 0 }
+                : { type: 'spring', stiffness: 460, damping: 34, mass: 0.85 }
+            }
             className={`relative z-10 w-full ${maxWidthClass} max-h-[88dvh] flex flex-col pixel-panel pb-safe overflow-hidden`}
           >
             {/* Retro Pixel Title Bar with Decorative Corner Pixels */}

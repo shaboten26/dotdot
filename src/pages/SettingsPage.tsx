@@ -1,4 +1,5 @@
 import React, { ViewTransition, useCallback, useEffect, useRef, useState } from 'react'
+import { motion } from 'motion/react'
 import type {
   LanguageCode,
   PaletteData,
@@ -45,6 +46,7 @@ function formatBytes(bytes: number | null): string | null {
 export function SettingsPage() {
   const {
     settings,
+    reducedMotion,
     palettes,
     projects,
     originStorageStatus,
@@ -263,13 +265,27 @@ export function SettingsPage() {
                       type="button"
                       onClick={() => void updateSettings({ theme: item.id })}
                       aria-pressed={active}
-                      className={`min-h-[44px] px-2 text-xs font-bold flex items-center justify-center gap-1.5 ${
+                      className={`relative min-h-[44px] px-2 text-xs font-bold flex items-center justify-center gap-1.5 overflow-hidden ${
                         active ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
                       }`}
                       data-testid={`theme-btn-${item.id}`}
                     >
-                      {active && <PixelIcon name="check" size={12} />}
-                      <span>{item.label}</span>
+                      {active && !reducedMotion && (
+                        <motion.span
+                          layoutId="settings-theme-pill"
+                          transition={{
+                            type: 'spring',
+                            stiffness: 520,
+                            damping: 36,
+                          }}
+                          className="absolute inset-0 bg-[var(--accent-primary)] pointer-events-none"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span className="relative z-10 flex items-center justify-center gap-1.5">
+                        {active && <PixelIcon name="check" size={12} />}
+                        <span>{item.label}</span>
+                      </span>
                     </button>
                   )
                 })}
@@ -295,13 +311,27 @@ export function SettingsPage() {
                       type="button"
                       onClick={() => void updateSettings({ language: item.id })}
                       aria-pressed={active}
-                      className={`min-h-[44px] px-2 text-xs font-bold flex items-center justify-center gap-1.5 ${
+                      className={`relative min-h-[44px] px-2 text-xs font-bold flex items-center justify-center gap-1.5 overflow-hidden ${
                         active ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
                       }`}
                       data-testid={`lang-btn-${item.id}`}
                     >
-                      {active && <PixelIcon name="check" size={12} />}
-                      <span>{item.label}</span>
+                      {active && !reducedMotion && (
+                        <motion.span
+                          layoutId="settings-lang-pill"
+                          transition={{
+                            type: 'spring',
+                            stiffness: 520,
+                            damping: 36,
+                          }}
+                          className="absolute inset-0 bg-[var(--accent-primary)] pointer-events-none"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span className="relative z-10 flex items-center justify-center gap-1.5">
+                        {active && <PixelIcon name="check" size={12} />}
+                        <span>{item.label}</span>
+                      </span>
                     </button>
                   )
                 })}
@@ -415,13 +445,27 @@ export function SettingsPage() {
                     type="button"
                     onClick={() => applyUiPreset(p.id)}
                     aria-pressed={active}
-                    className={`min-h-[44px] px-2 text-xs font-bold flex items-center justify-center gap-1.5 ${
+                    className={`relative min-h-[44px] px-2 text-xs font-bold flex items-center justify-center gap-1.5 overflow-hidden ${
                       active ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
                     }`}
                     data-testid={`ui-preset-${p.id}`}
                   >
-                    {active && <PixelIcon name="check" size={12} />}
-                    <span>{p.label}</span>
+                    {active && !reducedMotion && (
+                      <motion.span
+                        layoutId="settings-ui-preset-pill"
+                        transition={{
+                          type: 'spring',
+                          stiffness: 520,
+                          damping: 36,
+                        }}
+                        className="absolute inset-0 bg-[var(--accent-primary)] pointer-events-none"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span className="relative z-10 flex items-center justify-center gap-1.5">
+                      {active && <PixelIcon name="check" size={12} />}
+                      <span>{p.label}</span>
+                    </span>
                   </button>
                 )
               })}

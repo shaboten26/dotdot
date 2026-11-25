@@ -3,7 +3,6 @@ import type {
   ActiveMoveSession,
   BrushShape,
   CursorDisplaySize,
-  CustomCursorData,
   FloatingShapeState,
   Point,
   ToolId,
@@ -65,7 +64,6 @@ interface InteractiveViewportProps {
   eyedropperDoubleTap: boolean
   cursorSpeed?: number
   cursorSize?: CursorDisplaySize
-  activeCustomCursor?: CustomCursorData | null
   previewFlipX?: boolean
   previewFlipY?: boolean
   onResetPreviewFlip?: () => void
@@ -149,80 +147,106 @@ function drawPixelCornerBrackets(
   drawPass(innerColor, 1, 1)
 }
 
-function drawCustomCursorSprite(
+interface HEdge {
+  y: number
+  x0: number
+  x1: number
+  /** +1 along top edge (clockwise right), -1 along bottom edge (clockwise left) */
+  dir: 1 | -1
+}
+
+interface VEdge {
+  x: number
+  y0: number
+  y1: number
+  /** +1 along right edge (clockwise down), -1 along left edge (clockwise up) */
+  dir: 1 | -1
+}
+
+/**
+ * Draws true pixel-crisp animated marching ants along orthogonal selection boundary edges.
+ * Unlike Canvas `setLineDash` (which resets its dash phase on every 1-pixel `moveTo` subpath and appears frozen!),
+ * this merges collinear edges and steps screen-space dashes using `(coord * dir - phasePx) % period`,
+ * guaranteeing unmistakable smooth marching animation at ANY zoom level and on ANY selection shape (even 1x1)!
+ */
+function drawAnimatedMarchingAntsEdges(
   ctx: CanvasRenderingContext2D,
-  customCursor: CustomCursorData,
-  targetDevX: number,
-  targetDevY: number,
-  cursorSize: CursorDisplaySize,
+  hEdges: HEdge[],
+  vEdges: VEdge[],
+  antsStep: number,
   dpr: number
 ) {
-  const basePx = cursorSize === 'small' ? 1.5 : cursorSize === 'large' ? 3 : 2.2
-  const unit = Math.max(1, Math.round(basePx * dpr))
-  const g = customCursor.gridSize
-  const originX = Math.round(targetDevX - (customCursor.hotspotX + 0.5) * unit)
-  const originY = Math.round(targetDevY - (customCursor.hotspotY + 0.5) * unit)
+  if (hEdges.length === 0 && vEdges.length === 0) return
+  const dashLen = Math.max(4, Math.round(4 * dpr))
+  const period = dashLen * 2
+  const thickness = Math.max(2, Math.round(2 * dpr))
+  const halfT = Math.floor(thickness / 2)
+  const phasePx = Math.round((antsStep / 8) * period)
+  const mod = (n: number, m: number) => ((n % m) + m) % m
 
-  ctx.save()
+  // Merge collinear horizontal edges sharing `(y, dir)`
+  hEdges.sort((a, b) => a.y - b.y || a.dir - b.dir || a.x0 - b.x0)
+  const mergedH: HEdge[] = []
+  for (const e of hEdges) {
+    if (e.x1 <= e.x0) continue
+    const last = mergedH[mergedH.length - 1]
+    if (last && last.y === e.y && last.dir === e.dir && e.x0 <= last.x1 + 1) {
+      last.x1 = Math.max(last.x1, e.x1)
+    } else {
+      mergedH.push({ ...e })
+    }
+  }
 
-  // High-visibility 1px outer contrast halo so custom cursor never blends into dark or light canvas pixels
-  const dirs = [
-    [-1, 0],
-    [1, 0],
-    [0, -1],
-    [0, 1],
-    [-1, -1],
-    [1, -1],
-    [-1, 1],
-    [1, 1],
-  ] as const
+  // Merge collinear vertical edges sharing `(x, dir)`
+  vEdges.sort((a, b) => a.x - b.x || a.dir - b.dir || a.y0 - b.y0)
+  const mergedV: VEdge[] = []
+  for (const e of vEdges) {
+    if (e.y1 <= e.y0) continue
+    const last = mergedV[mergedV.length - 1]
+    if (last && last.x === e.x && last.dir === e.dir && e.y0 <= last.y1 + 1) {
+      last.y1 = Math.max(last.y1, e.y1)
+    } else {
+      mergedV.push({ ...e })
+    }
+  }
 
-  let hasAnyPixel = false
-  for (let y = 0; y < g; y++) {
-    for (let x = 0; x < g; x++) {
-      const hex = customCursor.pixels[y * g + x]
-      if (!hex) continue
-      hasAnyPixel = true
-      for (const [dx, dy] of dirs) {
-        const nx = x + dx
-        const ny = y + dy
-        const neighborHex =
-          nx >= 0 && nx < g && ny >= 0 && ny < g
-            ? customCursor.pixels[ny * g + nx]
-            : ''
-        if (!neighborHex) {
-          const px = originX + x * unit + dx * Math.max(1, Math.round(dpr))
-          const py = originY + y * unit + dy * Math.max(1, Math.round(dpr))
-          ctx.fillStyle = '#181521'
-          ctx.fillRect(px, py, unit, unit)
-        }
+  // Base dark backing strip + animated bright marching dashes
+  ctx.fillStyle = '#262b34'
+  for (const e of mergedH) {
+    ctx.fillRect(e.x0, e.y - halfT, e.x1 - e.x0, thickness)
+  }
+  for (const e of mergedV) {
+    ctx.fillRect(e.x - halfT, e.y0, thickness, e.y1 - e.y0)
+  }
+
+  ctx.fillStyle = '#fbf8f1'
+  for (const e of mergedH) {
+    let x = e.x0
+    while (x < e.x1) {
+      const p = mod(e.dir === 1 ? x - phasePx : -x - phasePx, period)
+      const isLight = p < dashLen
+      const remInPhase = isLight ? dashLen - p : period - p
+      const span = Math.max(1, Math.min(e.x1 - x, remInPhase))
+      if (isLight) {
+        ctx.fillRect(x, e.y - halfT, span, thickness)
       }
+      x += span
     }
   }
 
-  for (let y = 0; y < g; y++) {
-    for (let x = 0; x < g; x++) {
-      const hex = customCursor.pixels[y * g + x]
-      if (!hex) continue
-      ctx.fillStyle = hex
-      ctx.fillRect(originX + x * unit, originY + y * unit, unit, unit)
+  for (const e of mergedV) {
+    let y = e.y0
+    while (y < e.y1) {
+      const p = mod(e.dir === 1 ? y - phasePx : -y - phasePx, period)
+      const isLight = p < dashLen
+      const remInPhase = isLight ? dashLen - p : period - p
+      const span = Math.max(1, Math.min(e.y1 - y, remInPhase))
+      if (isLight) {
+        ctx.fillRect(e.x - halfT, y, thickness, span)
+      }
+      y += span
     }
   }
-
-  // Fallback crosshair at exact hotspot if user saved an all-transparent custom cursor
-  if (!hasAnyPixel) {
-    const r = Math.round(targetDevX)
-    const c = Math.round(targetDevY)
-    const s = Math.max(1, Math.round(dpr))
-    ctx.fillStyle = '#181521'
-    ctx.fillRect(r - 4 * s, c - s, 8 * s, 2 * s)
-    ctx.fillRect(r - s, c - 4 * s, 2 * s, 8 * s)
-    ctx.fillStyle = '#f8f6f2'
-    ctx.fillRect(r - 3 * s, c, 6 * s, s)
-    ctx.fillRect(r, c - 3 * s, s, 6 * s)
-  }
-
-  ctx.restore()
 }
 
 export function InteractiveViewport({
@@ -250,7 +274,6 @@ export function InteractiveViewport({
   eyedropperDoubleTap,
   cursorSpeed = 1,
   cursorSize = 'standard',
-  activeCustomCursor = null,
   previewFlipX = false,
   previewFlipY = false,
   onResetPreviewFlip,
@@ -304,16 +327,19 @@ export function InteractiveViewport({
     (tool === 'fill' && toolSettings.fillMode === 'gradient' && stepPhase.kind === 'gradient-end') ||
     (tool === 'select' && toolSettings.selectType !== 'wand')
 
+  const needsAntsAnimation =
+    hasSelection || Boolean(moveSession) || stepPhase.kind === 'select-end'
+
   useEffect(() => {
-    if (!hasSelection || reducedMotion) {
+    if (!needsAntsAnimation || reducedMotion) {
       setAntsOffset(0)
       return
     }
     const id = window.setInterval(() => {
       setAntsOffset((prev) => (prev + 1) % 8)
-    }, 140)
+    }, 85)
     return () => window.clearInterval(id)
-  }, [hasSelection, reducedMotion])
+  }, [needsAntsAnimation, reducedMotion])
 
   const subPixelCursorRef = useRef<{ x: number; y: number }>({
     x: cursor.x,
@@ -619,7 +645,7 @@ export function InteractiveViewport({
     // - Strictly an overlay (NEVER baked into layer pixel data).
     // - Keeps full internal `worldSelection` even when moved off-canvas, while clipping rendered boundary
     //   cleanly to the visible canvas area `[devLeft, devTop, devW, devH]`.
-    // - High-contrast dual-tone dashes stay crisp on both dark & light themes and follow zoom/pan/move offsets.
+    // - Uses merged screen-space phase marching (`drawAnimatedMarchingAntsEdges`) so dashes visibly march at ALL zoom levels!
     if (
       hasSelection &&
       worldSelection &&
@@ -631,7 +657,8 @@ export function InteractiveViewport({
       ctx.rect(devLeft, devTop, devW, devH)
       ctx.clip()
 
-      ctx.beginPath()
+      const hEdges: HEdge[] = []
+      const vEdges: VEdge[] = []
       const { originX, originY, width: sw, height: sh, mask: sm } = worldSelection
       const visMinLx = Math.max(0, -originX)
       const visMaxLx = Math.min(sw - 1, width - 1 - originX)
@@ -654,34 +681,20 @@ export function InteractiveViewport({
           const rightEmpty = lx === sw - 1 || sm[ly * sw + (lx + 1)] === 0
 
           if (previewFlipY ? bottomEmpty : topEmpty) {
-            ctx.moveTo(px0, py0)
-            ctx.lineTo(px1, py0)
+            hEdges.push({ y: py0, x0: px0, x1: px1, dir: 1 })
           }
           if (previewFlipY ? topEmpty : bottomEmpty) {
-            ctx.moveTo(px0, py1)
-            ctx.lineTo(px1, py1)
+            hEdges.push({ y: py1, x0: px0, x1: px1, dir: -1 })
           }
           if (previewFlipX ? rightEmpty : leftEmpty) {
-            ctx.moveTo(px0, py0)
-            ctx.lineTo(px0, py1)
+            vEdges.push({ x: px0, y0: py0, y1: py1, dir: -1 })
           }
           if (previewFlipX ? leftEmpty : rightEmpty) {
-            ctx.moveTo(px1, py0)
-            ctx.lineTo(px1, py1)
+            vEdges.push({ x: px1, y0: py0, y1: py1, dir: 1 })
           }
         }
       }
-      const dashLen = Math.max(4, Math.round(4 * dpr))
-      const lineW = Math.max(1.5, Math.round(1.75 * dpr))
-      ctx.lineWidth = lineW
-      ctx.strokeStyle = '#252131'
-      ctx.setLineDash([])
-      ctx.stroke()
-
-      ctx.strokeStyle = '#fcfaf7'
-      ctx.setLineDash([dashLen, dashLen])
-      ctx.lineDashOffset = -Math.round((antsOffset / 8) * dashLen * 2)
-      ctx.stroke()
+      drawAnimatedMarchingAntsEdges(ctx, hEdges, vEdges, antsOffset, dpr)
       ctx.restore()
     } else if (
       hasSelection &&
@@ -693,7 +706,8 @@ export function InteractiveViewport({
       ctx.rect(devLeft, devTop, devW, devH)
       ctx.clip()
 
-      ctx.beginPath()
+      const hEdges: HEdge[] = []
+      const vEdges: VEdge[] = []
       for (let y = 0; y < height; y++) {
         const [py0, py1] = pixelSpanY(y, 1)
         for (let x = 0; x < width; x++) {
@@ -708,34 +722,20 @@ export function InteractiveViewport({
             x === width - 1 || selectionMask[y * width + (x + 1)] === 0
 
           if (previewFlipY ? bottomEmpty : topEmpty) {
-            ctx.moveTo(px0, py0)
-            ctx.lineTo(px1, py0)
+            hEdges.push({ y: py0, x0: px0, x1: px1, dir: 1 })
           }
           if (previewFlipY ? topEmpty : bottomEmpty) {
-            ctx.moveTo(px0, py1)
-            ctx.lineTo(px1, py1)
+            hEdges.push({ y: py1, x0: px0, x1: px1, dir: -1 })
           }
           if (previewFlipX ? rightEmpty : leftEmpty) {
-            ctx.moveTo(px0, py0)
-            ctx.lineTo(px0, py1)
+            vEdges.push({ x: px0, y0: py0, y1: py1, dir: -1 })
           }
           if (previewFlipX ? leftEmpty : rightEmpty) {
-            ctx.moveTo(px1, py0)
-            ctx.lineTo(px1, py1)
+            vEdges.push({ x: px1, y0: py0, y1: py1, dir: 1 })
           }
         }
       }
-      const dashLen = Math.max(4, Math.round(4 * dpr))
-      const lineW = Math.max(1.5, Math.round(1.75 * dpr))
-      ctx.lineWidth = lineW
-      ctx.strokeStyle = '#252131'
-      ctx.setLineDash([])
-      ctx.stroke()
-
-      ctx.strokeStyle = '#fcfaf7'
-      ctx.setLineDash([dashLen, dashLen])
-      ctx.lineDashOffset = -Math.round((antsOffset / 8) * dashLen * 2)
-      ctx.stroke()
+      drawAnimatedMarchingAntsEdges(ctx, hEdges, vEdges, antsOffset, dpr)
       ctx.restore()
     }
 
@@ -853,12 +853,19 @@ export function InteractiveViewport({
       const maxY = Math.max(stepPhase.start.y, cursor.y)
       const [sx0, sx1] = pixelSpanX(minX, maxX - minX + 1)
       const [sy0, sy1] = pixelSpanY(minY, maxY - minY + 1)
-      ctx.save()
-      ctx.setLineDash([Math.round(4 * dpr), Math.round(4 * dpr)])
-      ctx.lineWidth = Math.max(1.5, Math.round(1.5 * dpr))
-      ctx.strokeStyle = '#579b91'
-      ctx.strokeRect(sx0, sy0, sx1 - sx0, sy1 - sy0)
-      ctx.restore()
+      drawAnimatedMarchingAntsEdges(
+        ctx,
+        [
+          { y: sy0, x0: sx0, x1: sx1, dir: 1 },
+          { y: sy1, x0: sx0, x1: sx1, dir: -1 },
+        ],
+        [
+          { x: sx0, y0: sy0, y1: sy1, dir: -1 },
+          { x: sx1, y0: sy0, y1: sy1, dir: 1 },
+        ],
+        antsOffset,
+        dpr
+      )
     } else if (stepPhase.kind === 'bezier-p3') {
       const s0 = pixelCenter(stepPhase.p0)
       const s3 = pixelCenter(cursor)
@@ -957,7 +964,7 @@ export function InteractiveViewport({
         ctx.stroke()
         ctx.restore()
 
-        if (modality === 'touch' && !activeCustomCursor) {
+        if (modality === 'touch') {
           const [bLeft, bRight] = pixelSpanX(
             cursor.x + minDx,
             maxDx - minDx + 1
@@ -996,7 +1003,7 @@ export function InteractiveViewport({
           isTransparentColor ? '#c47388' : '#8476c4',
           isTransparentColor
         )
-      } else if (!activeCustomCursor) {
+      } else {
         if (tool === 'fill') {
           drawPixelCornerBrackets(
             ctx,
@@ -1043,18 +1050,6 @@ export function InteractiveViewport({
           )
         }
       }
-
-      if (activeCustomCursor) {
-        const targetCenter = pixelCenter(cursor)
-        drawCustomCursorSprite(
-          ctx,
-          activeCustomCursor,
-          targetCenter.sx,
-          targetCenter.sy,
-          cursorSize,
-          dpr
-        )
-      }
     }
 
     ctx.restore()
@@ -1072,6 +1067,8 @@ export function InteractiveViewport({
     toolSettings,
     showGrid,
     checkerboardDark,
+    hasSelection,
+    worldSelection,
     selectionMask,
     antsOffset,
     floatingShape,
@@ -1082,7 +1079,6 @@ export function InteractiveViewport({
     activeHexColor,
     isTransparentColor,
     cursorSize,
-    activeCustomCursor,
     previewFlipX,
     previewFlipY,
   ])
