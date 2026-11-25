@@ -221,7 +221,7 @@ export function InteractiveViewport({
     }
     const id = window.setInterval(() => {
       setAntsOffset((prev) => (prev + 1) % 8)
-    }, 110)
+    }, 140)
     return () => window.clearInterval(id)
   }, [hasSelection, reducedMotion])
 
@@ -498,17 +498,35 @@ export function InteractiveViewport({
     ctx.fillRect(devLeft - borderPx, devTop, borderPx, devH)
     ctx.fillRect(devLeft + devW, devTop, borderPx, devH)
 
-    // 4. Animated Marching Ants Selection Boundary (renders in full world space so off-canvas selections remain visible in viewport!)
-    if (worldSelection && worldSelection.width > 0 && worldSelection.height > 0) {
+    // 4. Animated Marching Ants Selection Boundary Overlay
+    // - Strictly an overlay (NEVER baked into layer pixel data).
+    // - Keeps full internal `worldSelection` even when moved off-canvas, while clipping rendered boundary
+    //   cleanly to the visible canvas area `[devLeft, devTop, devW, devH]`.
+    // - High-contrast dual-tone dashes stay crisp on both dark & light themes and follow zoom/pan/move offsets.
+    if (
+      hasSelection &&
+      worldSelection &&
+      worldSelection.width > 0 &&
+      worldSelection.height > 0
+    ) {
       ctx.save()
       ctx.beginPath()
+      ctx.rect(devLeft, devTop, devW, devH)
+      ctx.clip()
+
+      ctx.beginPath()
       const { originX, originY, width: sw, height: sh, mask: sm } = worldSelection
-      for (let ly = 0; ly < sh; ly++) {
+      const visMinLx = Math.max(0, -originX)
+      const visMaxLx = Math.min(sw - 1, width - 1 - originX)
+      const visMinLy = Math.max(0, -originY)
+      const visMaxLy = Math.min(sh - 1, height - 1 - originY)
+
+      for (let ly = visMinLy; ly <= visMaxLy; ly++) {
         const wy = originY + ly
         const py0 = rowDevY(wy)
         const py1 = rowDevY(wy + 1)
         if (py1 < -4 || py0 > devViewportH + 4) continue
-        for (let lx = 0; lx < sw; lx++) {
+        for (let lx = visMinLx; lx <= visMaxLx; lx++) {
           if (sm[ly * sw + lx] === 0) continue
           const wx = originX + lx
           const px0 = colDevX(wx)
@@ -534,18 +552,27 @@ export function InteractiveViewport({
         }
       }
       const dashLen = Math.max(4, Math.round(4 * dpr))
-      ctx.lineWidth = Math.max(2, Math.round(2 * dpr))
-      ctx.strokeStyle = '#181521'
+      const lineW = Math.max(1.5, Math.round(1.75 * dpr))
+      ctx.lineWidth = lineW
+      ctx.strokeStyle = '#252131'
       ctx.setLineDash([])
       ctx.stroke()
 
-      ctx.strokeStyle = '#f8f6f2'
+      ctx.strokeStyle = '#fcfaf7'
       ctx.setLineDash([dashLen, dashLen])
       ctx.lineDashOffset = -Math.round((antsOffset / 8) * dashLen * 2)
       ctx.stroke()
       ctx.restore()
-    } else if (selectionMask && selectionMask.length === width * height) {
+    } else if (
+      hasSelection &&
+      selectionMask &&
+      selectionMask.length === width * height
+    ) {
       ctx.save()
+      ctx.beginPath()
+      ctx.rect(devLeft, devTop, devW, devH)
+      ctx.clip()
+
       ctx.beginPath()
       for (let y = 0; y < height; y++) {
         const py0 = rowDevY(y)
@@ -574,12 +601,13 @@ export function InteractiveViewport({
         }
       }
       const dashLen = Math.max(4, Math.round(4 * dpr))
-      ctx.lineWidth = Math.max(2, Math.round(2 * dpr))
-      ctx.strokeStyle = '#181521'
+      const lineW = Math.max(1.5, Math.round(1.75 * dpr))
+      ctx.lineWidth = lineW
+      ctx.strokeStyle = '#252131'
       ctx.setLineDash([])
       ctx.stroke()
 
-      ctx.strokeStyle = '#f8f6f2'
+      ctx.strokeStyle = '#fcfaf7'
       ctx.setLineDash([dashLen, dashLen])
       ctx.lineDashOffset = -Math.round((antsOffset / 8) * dashLen * 2)
       ctx.stroke()

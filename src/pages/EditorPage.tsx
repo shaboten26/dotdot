@@ -12,6 +12,7 @@ import {
   FloatingTransformBar,
   MultiRowToolGrid,
   PaletteBar,
+  SelectionReadyBar,
   ToolDetailPopover,
 } from '../components/editor/ToolPanels'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
@@ -478,39 +479,49 @@ export function EditorPage() {
               onDiscard={editor.discardFloatingShape}
             />
           ) : (
-            <ToolDetailPopover
-              open={optionsOpen}
-              onClose={() => setOptionsOpen(false)}
-              tool={editor.tool}
-              settings={editor.toolSettings}
-              paletteColors={editor.palette.colors}
-              eyedropperDoubleTap={settings.eyedropperDoubleTap}
-              onToggleEyedropperDoubleTap={(next) =>
-                void updateSettings({ eyedropperDoubleTap: next })
-              }
-              hasSelection={editor.hasSelection}
-              hasClipboard={editor.clipboard !== null}
-              onChange={(patch) =>
-                editor.setToolSettings((prev) => ({ ...prev, ...patch }))
-              }
-              onStartSelectionMove={() => {
-                editor.startSelectionMove()
-              }}
-              onNudgeSelection={editor.nudgeSelection}
-              onApplyOutline={editor.outlineSelection}
-              onCut={() => {
-                if (editor.cutSelectedPixels()) showToast(t('toastCut'))
-              }}
-              onCopy={() => {
-                if (editor.copySelectedPixels()) showToast(t('toastCopied'))
-              }}
-              onPaste={() => {
-                if (editor.pasteClipboardPixels()) showToast(t('toastPasted'))
-              }}
-              onFlipSelection={editor.flipSelectedPixels}
-              onInvertSelection={editor.invertCurrentSelection}
-              onClearSelection={editor.clearCurrentSelection}
-            />
+            <>
+              {editor.hasSelection && !optionsOpen && (
+                <SelectionReadyBar
+                  onStartMove={() => {
+                    editor.startSelectionMove()
+                  }}
+                  onClearSelection={editor.clearCurrentSelection}
+                />
+              )}
+              <ToolDetailPopover
+                open={optionsOpen}
+                onClose={() => setOptionsOpen(false)}
+                tool={editor.tool}
+                settings={editor.toolSettings}
+                paletteColors={editor.palette.colors}
+                eyedropperDoubleTap={settings.eyedropperDoubleTap}
+                onToggleEyedropperDoubleTap={(next) =>
+                  void updateSettings({ eyedropperDoubleTap: next })
+                }
+                hasSelection={editor.hasSelection}
+                hasClipboard={editor.clipboard !== null}
+                onChange={(patch) =>
+                  editor.setToolSettings((prev) => ({ ...prev, ...patch }))
+                }
+                onStartSelectionMove={() => {
+                  editor.startSelectionMove()
+                }}
+                onNudgeSelection={editor.nudgeSelection}
+                onApplyOutline={editor.outlineSelection}
+                onCut={() => {
+                  if (editor.cutSelectedPixels()) showToast(t('toastCut'))
+                }}
+                onCopy={() => {
+                  if (editor.copySelectedPixels()) showToast(t('toastCopied'))
+                }}
+                onPaste={() => {
+                  if (editor.pasteClipboardPixels()) showToast(t('toastPasted'))
+                }}
+                onFlipSelection={editor.flipSelectedPixels}
+                onInvertSelection={editor.invertCurrentSelection}
+                onClearSelection={editor.clearCurrentSelection}
+              />
+            </>
           )}
 
           {/* Workspace Mode Switcher: `ツール` vs (`レイヤー` [1 frame] / `タイムライン` [>=2 frames]) */}

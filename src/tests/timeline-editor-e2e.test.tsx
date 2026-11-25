@@ -275,5 +275,52 @@ describe('Streamlined Timeline, Layer Workspace Separation, GIF Visibility & Vie
       expect(screen.getByTestId('detail-header-title').textContent).toBe('Still Tree')
     })
     expect(screen.queryByTestId('detail-export-gif-btn')).toBeNull()
+
+    // 8. Open "Still Tree" in Editor and verify SelectionReadyBar -> Compact ActiveMoveBar 1px directional buttons + Marching Ants overlay purity!
+    fireEvent.click(screen.getByTestId('detail-open-editor-btn'))
+    const stillDrawBtn = await screen.findByTestId('draw-button')
+
+    // Paint 1 pixel at center (16, 16) with color #1
+    fireEvent.click(screen.getByTestId('quick-color-1'))
+    fireEvent.pointerDown(stillDrawBtn, { pointerId: 30, pointerType: 'touch' })
+    fireEvent.pointerUp(stillDrawBtn, { pointerId: 30, pointerType: 'touch' })
+
+    // Select 1x1 rect at (16, 16) (Step 1 start + Step 2 end) -> `selection-ready-bar` appears BEFORE move starts
+    fireEvent.click(screen.getByTestId('tool-select'))
+    fireEvent.pointerDown(stillDrawBtn, { pointerId: 31, pointerType: 'touch' })
+    fireEvent.pointerUp(stillDrawBtn, { pointerId: 31, pointerType: 'touch' })
+    fireEvent.pointerDown(stillDrawBtn, { pointerId: 32, pointerType: 'touch' })
+    fireEvent.pointerUp(stillDrawBtn, { pointerId: 32, pointerType: 'touch' })
+
+    expect(await screen.findByTestId('selection-ready-bar')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('quick-start-selection-move-btn'))
+
+    // Now in Move mode -> `selection-ready-bar` switches to compact `active-move-bar` with 1px directional buttons!
+    expect(screen.queryByTestId('selection-ready-bar')).toBeNull()
+    expect(await screen.findByTestId('active-move-bar')).toBeTruthy()
+    expect(screen.getByTestId('active-move-offset-badge').textContent).toContain('+0,+0px')
+
+    fireEvent.click(screen.getByTestId('move-step-right'))
+    fireEvent.click(screen.getByTestId('move-step-right'))
+    fireEvent.click(screen.getByTestId('move-step-down'))
+    expect(screen.getByTestId('active-move-offset-badge').textContent).toContain('+2,+1px')
+
+    fireEvent.click(screen.getByTestId('move-step-left'))
+    fireEvent.click(screen.getByTestId('move-step-up'))
+    expect(screen.getByTestId('active-move-offset-badge').textContent).toContain('+1,+0px')
+
+    // Cancel restores original state without modifying pixel data
+    fireEvent.click(screen.getByTestId('cancel-move-btn'))
+    expect(await screen.findByTestId('selection-ready-bar')).toBeTruthy()
+
+    // Start move again, move (+1, +1), and commit -> verify pixel moved cleanly and marching ants NEVER baked into cel buffer!
+    fireEvent.click(screen.getByTestId('quick-start-selection-move-btn'))
+    fireEvent.click(await screen.findByTestId('move-step-right'))
+    fireEvent.click(screen.getByTestId('move-step-down'))
+    fireEvent.click(screen.getByTestId('commit-move-btn'))
+
+    // Clear selection -> selection-ready-bar disappears cleanly
+    fireEvent.click(await screen.findByTestId('quick-clear-selection-btn'))
+    expect(screen.queryByTestId('selection-ready-bar')).toBeNull()
   })
 })
