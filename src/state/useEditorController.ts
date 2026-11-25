@@ -88,6 +88,7 @@ import {
   DEFAULT_FRAME_DURATION_MS,
   deleteFrameFromTimeline,
   insertNewFrame,
+  linkCellToAnySourceCell,
   linkCellToSourceCell,
   makeCellKey,
   projectFrameLayers,
@@ -3483,6 +3484,38 @@ export function useEditorController(options: UseEditorOptions) {
     [executeStructuralChange]
   )
 
+  const linkCellToAny = useCallback(
+    (
+      sourceLayerId: string,
+      sourceFrameId: string,
+      targetLayerId: string,
+      targetFrameId: string
+    ): boolean => {
+      return executeStructuralChange(
+        'Change to Linked Cel',
+        (curr, currActive, w, h, curTl) => {
+          const res = linkCellToAnySourceCell(
+            curTl.cels,
+            curTl.celBuffers,
+            sourceLayerId,
+            sourceFrameId,
+            targetLayerId,
+            targetFrameId
+          )
+          if (!res.changed) return null
+          return {
+            width: w,
+            height: h,
+            layers: curr,
+            activeLayerId: currActive,
+            timeline: { ...curTl, cels: res.cels, celBuffers: res.celBuffers },
+          }
+        }
+      )
+    },
+    [executeStructuralChange]
+  )
+
   const copyCellTo = useCallback(
     (layerId: string, sourceFrameId: string, targetFrameId: string): boolean => {
       return executeStructuralChange(
@@ -4125,6 +4158,7 @@ export function useEditorController(options: UseEditorOptions) {
     clearCell,
     unlinkCell,
     linkCellTo,
+    linkCellToAny,
     copyCellTo,
     moveCellTo,
     selectedCellKeys,

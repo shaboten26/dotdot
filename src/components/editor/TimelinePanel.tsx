@@ -3,6 +3,7 @@ import type { LayerRuntime, PlaybackDirection } from '../../types'
 import {
   getCellStateKind,
   getCelReferenceCountMap,
+  getCellsSharingCelId,
   makeCellKey,
   type TimelineState,
 } from '../../engine/animation'
@@ -12,9 +13,13 @@ import type {
 } from '../../state/useEditorController'
 import { PixelIcon } from '../common/PixelIcon'
 import { AnimationSettingsModal } from './AnimationSettingsModal'
+import { LinkCelModal } from './LinkCelModal'
 import { useI18n } from '../../i18n/I18nContext'
 
 interface TimelinePanelProps {
+  canvasWidth?: number
+  canvasHeight?: number
+  checkerDark?: boolean
   layers: readonly LayerRuntime[]
   activeLayerId: string
   timeline: TimelineState
@@ -50,6 +55,12 @@ interface TimelinePanelProps {
   ) => void
   onClearCell: (layerId?: string, frameId?: string) => void
   onUnlinkCell: (layerId?: string, frameId?: string) => void
+  onLinkCellToAny?: (
+    sourceLayerId: string,
+    sourceFrameId: string,
+    targetLayerId: string,
+    targetFrameId: string
+  ) => void
   onToggleCellSelected: (cellKey: string) => void
   onClearCellSelection: () => void
   onBatchClearCells: () => void
@@ -74,6 +85,9 @@ interface TimelinePanelProps {
  * - GIF Export button is intentionally omitted from the timeline (available in Viewer & Export menu when >=2 frames).
  */
 export function TimelinePanel({
+  canvasWidth = 32,
+  canvasHeight = 32,
+  checkerDark = false,
   layers,
   activeLayerId,
   timeline,
@@ -96,6 +110,7 @@ export function TimelinePanel({
   onApplyBatchDuration,
   onClearCell,
   onUnlinkCell,
+  onLinkCellToAny,
   onToggleCellSelected,
   onClearCellSelection,
   onBatchClearCells,
@@ -112,6 +127,7 @@ export function TimelinePanel({
   const { t } = useI18n()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [celMenuOpen, setCelMenuOpen] = useState(false)
+  const [linkModalOpen, setLinkModalOpen] = useState(false)
   const [multiSelectMode, setMultiSelectMode] = useState(false)
 
   const activeFrame =
@@ -146,6 +162,36 @@ export function TimelinePanel({
     return Array.from(s)
   }, [selectedCellKeys])
 
+  const activeCellKey = makeCellKey(activeLayerId, activeFrame.id)
+  const activeCelRef = timeline.cels[activeCellKey]
+  const activeCelId = activeCelRef?.kind === 'cel' ? activeCelRef.celId : null
+
+  const activeSharedCells = useMemo(() => {
+    if (!activeCelId) return []
+    return getCellsSharingCelId(timeline.cels, activeCelId)
+  }, [timeline.cels, activeCelId])
+
+  const activeSharedCellKeySet = useMemo(
+    () => new Set(activeSharedCells.map((c) => c.cellKey)),
+    [activeSharedCells]
+  )
+
+  const activeSharedFramesSummary = useMemo(() => {
+    if (activeSharedCells.length <= 1) return null
+    const frameIndexById = new Map<string, number>()
+    timeline.frames.forEach((f, idx) => frameIndexById.set(f.id, idx))
+    const layerNameById = new Map<string, string>()
+    layers.forEach((l) => layerNameById.set(l.id, l.name))
+    return activeSharedCells
+      .map((s) => {
+        const fNo = (frameIndexById.get(s.frameId) ?? 0) + 1
+        return s.layerId === activeLayerId
+          ? `#${fNo}`
+          : `${layerNameById.get(s.layerId) ?? ''}#${fNo}`
+      })
+      .join(', ')
+  }, [activeSharedCells, timeline.frames, layers, activeLayerId])
+
   const activeCellKindLabel =
     activeCellState === 'empty'
       ? t('celEmptyLabel')
@@ -175,7 +221,27 @@ export function TimelinePanel({
         onSetDefaultFrameDuration={onSetDefaultFrameDuration}
         onApplyBatchDuration={onApplyBatchDuration}
         onUpdateOnionSkin={onUpdateOnionSkin}
+        onOpenLinkCelModal={
+          onLinkCellToAny ? () => setLinkModalOpen(true) : undefined
+        }
       />
+
+      {/* Retroactive Link-Cel Creation & Source Switching Modal */}
+      {onLinkCellToAny && (
+        <LinkCelModal
+          open={linkModalOpen}
+          onClose={() => setLinkModalOpen(false)}
+          canvasWidth={canvasWidth}
+          canvasHeight={canvasHeight}
+          checkerDark={checkerDark}
+          layers={layers}
+          targetLayerId={activeLayerId}
+          targetFrameId={activeFrame.id}
+          timeline={timeline}
+          onConfirmLink={onLinkCellToAny}
+          onUnlinkTarget={onUnlinkCell}
+        />
+      )}
 
       {/* Floating Popover 2: Focused Cel & Linked-Cel Detail Menu (opened on demand) */}
       {celMenuOpen && (
@@ -200,7 +266,38 @@ export function TimelinePanel({
             </button>
           </div>
 
+          {activeSharedFramesSummary && (
+            <div
+              className="px-2 py-1 bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-[11px] text-[var(--text-secondary)]"
+              data-testid="active-cel-shared-frames"
+            >
+              {t('linkCelReferencedByLabel')}:{' '}
+              <strong className="text-[var(--accent-teal)]">
+                {activeSharedFramesSummary}
+              </strong>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 gap-1.5">
+            {onLinkCellToAny && (
+              <button
+                type="button"
+                onClick={() => {
+                  setCelMenuOpen(false)
+                  setLinkModalOpen(true)
+                }}
+                className="pixel-btn pixel-btn-primary min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1.5"
+                data-testid="open-link-cel-modal-btn"
+              >
+                <PixelIcon name="link" size={13} />
+                <span>
+                  {activeCellState === 'linked'
+                    ? t('changeLinkTargetBtn')
+                    : t('changeToLinkedCelBtn')}
+                </span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => {
@@ -581,6 +678,34 @@ export function TimelinePanel({
                     const isCurFrame = f.id === activeFrame.id
                     const isActiveCell = isCurLayer && isCurFrame
                     const isMultiSelected = selectedCellKeys.includes(ck)
+                    const isSharedSiblingWithActive =
+                      !isActiveCell &&
+                      activeSharedCells.length > 1 &&
+                      activeSharedCellKeySet.has(ck)
+
+                    // Check if active link group spans across this cell on the same layer (for non-adjacent visual connector line)
+                    let activeSpanBridge = false
+                    if (
+                      isCurLayer &&
+                      activeCelId &&
+                      activeSharedCells.length > 1
+                    ) {
+                      const sameLayerIndices: number[] = []
+                      timeline.frames.forEach((fr, idx) => {
+                        const r = timeline.cels[makeCellKey(layer.id, fr.id)]
+                        if (r?.kind === 'cel' && r.celId === activeCelId) {
+                          sameLayerIndices.push(idx)
+                        }
+                      })
+                      if (sameLayerIndices.length >= 2) {
+                        const minIdx = sameLayerIndices[0]!
+                        const maxIdx =
+                          sameLayerIndices[sameLayerIndices.length - 1]!
+                        if (fIdx > minIdx && fIdx < maxIdx) {
+                          activeSpanBridge = true
+                        }
+                      }
+                    }
 
                     return (
                       <td
@@ -601,13 +726,24 @@ export function TimelinePanel({
                             ? 'bg-[var(--accent-teal)] text-[var(--accent-teal-fg)]'
                             : isActiveCell
                               ? 'bg-[var(--bg-panel)] outline-2 -outline-offset-2 outline-[var(--accent-primary)]'
-                              : isCurFrame
-                                ? 'bg-[var(--bg-surface)]/80'
-                                : ''
+                              : isSharedSiblingWithActive
+                                ? 'bg-[var(--bg-panel)]/75 outline-2 -outline-offset-2 outline-dashed outline-[var(--accent-teal)]'
+                                : isCurFrame
+                                  ? 'bg-[var(--bg-surface)]/80'
+                                  : ''
                         }`}
                         data-testid={`cel-${layer.id}-${fIdx}`}
                         data-cel-kind={kind}
+                        data-shared-with-active={
+                          isSharedSiblingWithActive ? 'true' : undefined
+                        }
                       >
+                        {activeSpanBridge && !linkedLeft && !linkedRight && (
+                          <span
+                            className="absolute inset-x-0 top-1/2 -translate-y-1/2 border-t border-dashed border-[var(--accent-teal)] pointer-events-none"
+                            aria-hidden="true"
+                          />
+                        )}
                         {linkedLeft && (
                           <span
                             className="absolute left-0 top-1/2 -translate-y-1/2 w-1/2 h-0.5 bg-[var(--accent-teal)]"

@@ -715,6 +715,9 @@ export function EditorPage() {
             </div>
           ) : (
             <TimelinePanel
+              canvasWidth={editor.project.width}
+              canvasHeight={editor.project.height}
+              checkerDark={settings.checkerboardDark}
               layers={editor.layers}
               activeLayerId={editor.activeLayerId}
               timeline={editor.timeline}
@@ -749,6 +752,7 @@ export function EditorPage() {
               onApplyBatchDuration={editor.applyBatchDuration}
               onClearCell={editor.clearCell}
               onUnlinkCell={editor.unlinkCell}
+              onLinkCellToAny={editor.linkCellToAny}
               onToggleCellSelected={editor.toggleCellSelected}
               onClearCellSelection={editor.clearCellSelection}
               onBatchClearCells={editor.batchClearSelectedCells}
