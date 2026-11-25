@@ -215,7 +215,7 @@ describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Expo
     expect(Array.from(merged.data)).toEqual(Array.from(comp))
   })
 
-  it('computes valid export scales <= 4000px, defaults to ~2000px long edge, and encodes/decodes transparent PNG losslessly', () => {
+  it('computes valid export scales <= 4000px, defaults to floor(2000 / L) <= 2000px long edge, and encodes/decodes transparent PNG losslessly', () => {
     expect(MAX_EXPORT_DIMENSION).toBe(4000)
 
     const scales32 = getExportScaleOptions(32, 32)
@@ -224,9 +224,14 @@ describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Expo
     expect(last32.scale).toBe(125) // 32 * 125 = 4000 <= 4000
     expect(last32.width).toBeLessThanOrEqual(4000)
 
-    // Section 16 examples: 256x256 -> 8x (2048x2048); 80x80 -> 25x (2000x2000)
-    expect(getDefaultExportScale(256, 256)).toBe(8)
-    expect(getDefaultExportScale(80, 80)).toBe(25)
+    // Initial scale MUST be floor(2000 / L) (minimum 1x) so output long edge NEVER exceeds 2000px by default
+    expect(getDefaultExportScale(256, 256)).toBe(7)  // 1792x1792px
+    expect(getDefaultExportScale(128, 128)).toBe(15) // 1920x1920px
+    expect(getDefaultExportScale(96, 96)).toBe(20)   // 1920x1920px
+    expect(getDefaultExportScale(80, 80)).toBe(25)   // 2000x2000px
+    expect(getDefaultExportScale(64, 64)).toBe(31)   // 1984x1984px
+    expect(getDefaultExportScale(32, 32)).toBe(62)   // 1984x1984px
+    expect(getDefaultExportScale(128, 64)).toBe(15)  // rectangular L=128 -> 15x (1920x960px)
 
     const layerData = createPixelBuffer(2, 2)
     setPixel(layerData, 2, 2, 0, 0, RED)
