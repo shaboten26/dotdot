@@ -199,12 +199,14 @@ interface MultiRowToolGridProps {
   tool: ToolId
   toolSettings: ToolSettings
   optionsOpen: boolean
+  globalSettingsOpen?: boolean
   canUndo: boolean
   canRedo: boolean
   hasSelection: boolean
   onTapTool: (t: ToolId) => void
   onUndo: () => void
   onRedo: () => void
+  onOpenGlobalSettings?: () => void
 }
 
 /**
@@ -218,12 +220,14 @@ export function MultiRowToolGrid({
   tool,
   toolSettings,
   optionsOpen,
+  globalSettingsOpen = false,
   canUndo,
   canRedo,
   hasSelection,
   onTapTool,
   onUndo,
   onRedo,
+  onOpenGlobalSettings,
 }: MultiRowToolGridProps) {
   const { t } = useI18n()
 
@@ -361,6 +365,26 @@ export function MultiRowToolGrid({
           className="leading-none truncate max-w-full font-bold"
         >
           {t('redo')}
+        </span>
+      </button>
+
+      {/* Vacated 10th slot (formerly duplicate Layer button) repurposed for Global Workspace/Input Settings (`設定`) */}
+      <button
+        type="button"
+        onClick={onOpenGlobalSettings}
+        aria-pressed={globalSettingsOpen}
+        style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
+        className={`px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
+          globalSettingsOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+        }`}
+        data-testid="open-global-editor-settings-btn"
+      >
+        <PixelIcon name="settings" />
+        <span
+          style={{ fontSize: 'var(--tool-label-size, 11px)' }}
+          className="leading-none truncate max-w-full font-bold"
+        >
+          {t('editorGlobalSettingsBtn')}
         </span>
       </button>
     </div>

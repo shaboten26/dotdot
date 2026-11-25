@@ -213,6 +213,20 @@ export type LanguageCode = 'ja' | 'en' | 'ko'
 
 export type UiSizePreset = 'compact' | 'standard' | 'large' | 'custom'
 
+export type CursorDisplaySize = 'small' | 'standard' | 'large'
+
+export type CustomCursorGridSize = 8 | 16
+
+export interface CustomCursorData {
+  id: string
+  name: string
+  gridSize: CustomCursorGridSize
+  hotspotX: number
+  hotspotY: number
+  /** Row-major length `gridSize * gridSize` array (`''` = transparent, `'#rrggbb'` = pixel color) */
+  pixels: string[]
+}
+
 export interface UiSizeConfig {
   preset: UiSizePreset
   overallScale: number
@@ -246,6 +260,11 @@ export interface AppSettings {
   confirmDestructive: boolean
   soundEnabled: boolean
   eyedropperDoubleTap: boolean
+  cursorSpeed: number
+  cursorSize: CursorDisplaySize
+  /** `'standard'` for built-in tool-aware pixel cursor, or a saved `CustomCursorData.id` */
+  activeCursorId: string
+  customCursors: CustomCursorData[]
   activeProjectId: string | null
   gallerySortMode: 'manual' | 'newest' | 'oldest' | 'updated' | 'name'
   uiSize: UiSizeConfig

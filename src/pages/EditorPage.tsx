@@ -19,6 +19,7 @@ import { PaletteSheet } from '../components/editor/PaletteSheet'
 import { LayerPanelContent, LayerSheet } from '../components/editor/LayerSheet'
 import { TimelinePanel } from '../components/editor/TimelinePanel'
 import { ExportGifModal } from '../components/editor/ExportGifModal'
+import { GlobalEditorSettingsModal } from '../components/editor/GlobalEditorSettingsModal'
 import {
   CanvasResizeModal,
   ExportPngModal,
@@ -58,6 +59,7 @@ export function EditorPage() {
   const [resizeOpen, setResizeOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [exportGifOpen, setExportGifOpen] = useState(false)
+  const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   const [workspaceTab, setWorkspaceTab] = useState<'tools' | 'frames'>('tools')
   const [inputModality, setInputModality] = useState<InputModality>(() =>
     detectInitialInputModality()
@@ -444,6 +446,15 @@ export function EditorPage() {
             activeHexColor={editor.activeHexColor}
             isTransparentColor={editor.isTransparentColorSelected}
             eyedropperDoubleTap={settings.eyedropperDoubleTap}
+            cursorSpeed={settings.cursorSpeed}
+            cursorSize={settings.cursorSize}
+            activeCustomCursor={
+              settings.activeCursorId === 'standard'
+                ? null
+                : settings.customCursors.find(
+                    (c) => c.id === settings.activeCursorId
+                  ) ?? null
+            }
             fitTrigger={fitTrigger}
             onModalityChange={setInputModality}
             onMoveCursor={editor.moveCursorTo}
@@ -624,12 +635,18 @@ export function EditorPage() {
               tool={editor.tool}
               toolSettings={editor.toolSettings}
               optionsOpen={optionsOpen}
+              globalSettingsOpen={globalSettingsOpen}
               canUndo={editor.canUndo}
               canRedo={editor.canRedo}
               hasSelection={editor.hasSelection}
               onTapTool={handleTapTool}
               onUndo={editor.undo}
               onRedo={editor.redo}
+              onOpenGlobalSettings={() => {
+                setOptionsOpen(false)
+                setHeaderMenuOpen(false)
+                setGlobalSettingsOpen((prev) => !prev)
+              }}
             />
           ) : editor.timeline.frames.length <= 1 ? (
             <div
@@ -906,6 +923,11 @@ export function EditorPage() {
           onDownloaded={() => showToast(t('toastExportedGif'), 'success')}
           onShared={() => showToast(t('toastSharedGif'), 'success')}
           onCancelled={() => showToast(t('toastGifCancelled'), 'info')}
+        />
+
+        <GlobalEditorSettingsModal
+          open={globalSettingsOpen}
+          onClose={() => setGlobalSettingsOpen(false)}
         />
       </div>
     </ViewTransition>

@@ -2,6 +2,8 @@ import React, { ViewTransition, useCallback, useEffect, useRef, useState } from 
 import type {
   ActiveMoveSession,
   BrushShape,
+  CursorDisplaySize,
+  CustomCursorData,
   FloatingShapeState,
   Point,
   ToolId,
@@ -61,6 +63,9 @@ interface InteractiveViewportProps {
   activeHexColor: string
   isTransparentColor: boolean
   eyedropperDoubleTap: boolean
+  cursorSpeed?: number
+  cursorSize?: CursorDisplaySize
+  activeCustomCursor?: CustomCursorData | null
   fitTrigger: number
   onModalityChange?: (modality: InputModality) => void
   onMoveCursor: (pt: Point, allowOutOfBounds?: boolean) => void
@@ -141,6 +146,82 @@ function drawPixelCornerBrackets(
   drawPass(innerColor, 1, 1)
 }
 
+function drawCustomCursorSprite(
+  ctx: CanvasRenderingContext2D,
+  customCursor: CustomCursorData,
+  targetDevX: number,
+  targetDevY: number,
+  cursorSize: CursorDisplaySize,
+  dpr: number
+) {
+  const basePx = cursorSize === 'small' ? 1.5 : cursorSize === 'large' ? 3 : 2.2
+  const unit = Math.max(1, Math.round(basePx * dpr))
+  const g = customCursor.gridSize
+  const originX = Math.round(targetDevX - (customCursor.hotspotX + 0.5) * unit)
+  const originY = Math.round(targetDevY - (customCursor.hotspotY + 0.5) * unit)
+
+  ctx.save()
+
+  // High-visibility 1px outer contrast halo so custom cursor never blends into dark or light canvas pixels
+  const dirs = [
+    [-1, 0],
+    [1, 0],
+    [0, -1],
+    [0, 1],
+    [-1, -1],
+    [1, -1],
+    [-1, 1],
+    [1, 1],
+  ] as const
+
+  let hasAnyPixel = false
+  for (let y = 0; y < g; y++) {
+    for (let x = 0; x < g; x++) {
+      const hex = customCursor.pixels[y * g + x]
+      if (!hex) continue
+      hasAnyPixel = true
+      for (const [dx, dy] of dirs) {
+        const nx = x + dx
+        const ny = y + dy
+        const neighborHex =
+          nx >= 0 && nx < g && ny >= 0 && ny < g
+            ? customCursor.pixels[ny * g + nx]
+            : ''
+        if (!neighborHex) {
+          const px = originX + x * unit + dx * Math.max(1, Math.round(dpr))
+          const py = originY + y * unit + dy * Math.max(1, Math.round(dpr))
+          ctx.fillStyle = '#181521'
+          ctx.fillRect(px, py, unit, unit)
+        }
+      }
+    }
+  }
+
+  for (let y = 0; y < g; y++) {
+    for (let x = 0; x < g; x++) {
+      const hex = customCursor.pixels[y * g + x]
+      if (!hex) continue
+      ctx.fillStyle = hex
+      ctx.fillRect(originX + x * unit, originY + y * unit, unit, unit)
+    }
+  }
+
+  // Fallback crosshair at exact hotspot if user saved an all-transparent custom cursor
+  if (!hasAnyPixel) {
+    const r = Math.round(targetDevX)
+    const c = Math.round(targetDevY)
+    const s = Math.max(1, Math.round(dpr))
+    ctx.fillStyle = '#181521'
+    ctx.fillRect(r - 4 * s, c - s, 8 * s, 2 * s)
+    ctx.fillRect(r - s, c - 4 * s, 2 * s, 8 * s)
+    ctx.fillStyle = '#f8f6f2'
+    ctx.fillRect(r - 3 * s, c, 6 * s, s)
+    ctx.fillRect(r, c - 3 * s, s, 6 * s)
+  }
+
+  ctx.restore()
+}
+
 export function InteractiveViewport({
   projectId,
   width,
@@ -164,6 +245,9 @@ export function InteractiveViewport({
   activeHexColor,
   isTransparentColor,
   eyedropperDoubleTap,
+  cursorSpeed = 1,
+  cursorSize = 'standard',
+  activeCustomCursor = null,
   fitTrigger,
   onModalityChange,
   onMoveCursor,
@@ -768,6 +852,13 @@ export function InteractiveViewport({
       const cellY0 = rowDevY(cursor.y)
       const cellW = Math.max(Math.round(2 * dpr), colDevX(cursor.x + 1) - cellX0)
       const cellH = Math.max(Math.round(2 * dpr), rowDevY(cursor.y + 1) - cellY0)
+      const bracketArm = cursorSize === 'small' ? 3 : cursorSize === 'large' ? 8 : 5
+      const bracketPad =
+        cursorSize === 'small'
+          ? Math.round(1.5 * dpr)
+          : cursorSize === 'large'
+            ? Math.round(6 * dpr)
+            : Math.round(3 * dpr)
 
       const drawBrushBoundary = (
         size: number,
@@ -824,18 +915,18 @@ export function InteractiveViewport({
         ctx.stroke()
         ctx.restore()
 
-        if (modality === 'touch') {
-          const bx0 = colDevX(cursor.x + minDx) - Math.round(3 * dpr)
-          const by0 = rowDevY(cursor.y + minDy) - Math.round(3 * dpr)
+        if (modality === 'touch' && !activeCustomCursor) {
+          const bx0 = colDevX(cursor.x + minDx) - bracketPad
+          const by0 = rowDevY(cursor.y + minDy) - bracketPad
           const bw =
             colDevX(cursor.x + maxDx + 1) -
             colDevX(cursor.x + minDx) +
-            Math.round(6 * dpr)
+            bracketPad * 2
           const bh =
             rowDevY(cursor.y + maxDy + 1) -
             rowDevY(cursor.y + minDy) +
-            Math.round(6 * dpr)
-          drawPixelCornerBrackets(ctx, bx0, by0, bw, bh, 5, accentHex, dpr)
+            bracketPad * 2
+          drawPixelCornerBrackets(ctx, bx0, by0, bw, bh, bracketArm, accentHex, dpr)
         }
       }
 
@@ -861,32 +952,64 @@ export function InteractiveViewport({
           isTransparentColor ? '#c47388' : '#8476c4',
           isTransparentColor
         )
-      } else if (tool === 'fill') {
-        drawPixelCornerBrackets(ctx, cellX0, cellY0, cellW, cellH, 5, '#579b91', dpr)
-      } else if (tool === 'eyedropper') {
-        drawPixelCornerBrackets(
+      } else if (!activeCustomCursor) {
+        if (tool === 'fill') {
+          drawPixelCornerBrackets(
+            ctx,
+            cellX0 - (bracketPad - Math.round(3 * dpr)),
+            cellY0 - (bracketPad - Math.round(3 * dpr)),
+            cellW + (bracketPad - Math.round(3 * dpr)) * 2,
+            cellH + (bracketPad - Math.round(3 * dpr)) * 2,
+            bracketArm,
+            '#579b91',
+            dpr
+          )
+        } else if (tool === 'eyedropper') {
+          drawPixelCornerBrackets(
+            ctx,
+            cellX0 - bracketPad,
+            cellY0 - bracketPad,
+            cellW + bracketPad * 2,
+            cellH + bracketPad * 2,
+            bracketArm,
+            '#f8f6f2',
+            dpr
+          )
+        } else if (tool === 'select') {
+          drawPixelCornerBrackets(
+            ctx,
+            cellX0 - bracketPad,
+            cellY0 - bracketPad,
+            cellW + bracketPad * 2,
+            cellH + bracketPad * 2,
+            bracketArm,
+            '#579b91',
+            dpr
+          )
+        } else {
+          drawPixelCornerBrackets(
+            ctx,
+            cellX0 - (bracketPad - Math.round(3 * dpr)),
+            cellY0 - (bracketPad - Math.round(3 * dpr)),
+            cellW + (bracketPad - Math.round(3 * dpr)) * 2,
+            cellH + (bracketPad - Math.round(3 * dpr)) * 2,
+            bracketArm,
+            '#8476c4',
+            dpr
+          )
+        }
+      }
+
+      if (activeCustomCursor) {
+        const targetCenter = pixelCenter(cursor)
+        drawCustomCursorSprite(
           ctx,
-          cellX0 - dpr,
-          cellY0 - dpr,
-          cellW + 2 * dpr,
-          cellH + 2 * dpr,
-          5,
-          '#f8f6f2',
+          activeCustomCursor,
+          targetCenter.sx,
+          targetCenter.sy,
+          cursorSize,
           dpr
         )
-      } else if (tool === 'select') {
-        drawPixelCornerBrackets(
-          ctx,
-          cellX0 - dpr,
-          cellY0 - dpr,
-          cellW + 2 * dpr,
-          cellH + 2 * dpr,
-          5,
-          '#579b91',
-          dpr
-        )
-      } else {
-        drawPixelCornerBrackets(ctx, cellX0, cellY0, cellW, cellH, 5, '#8476c4', dpr)
       }
     }
 
@@ -914,6 +1037,8 @@ export function InteractiveViewport({
     modality,
     activeHexColor,
     isTransparentColor,
+    cursorSize,
+    activeCustomCursor,
   ])
 
   const getLocalCoords = useCallback((clientX: number, clientY: number) => {
@@ -1260,12 +1385,17 @@ export function InteractiveViewport({
           // Sliding cancels any pending double-tap gesture so slides are NEVER misrecognized as double-taps!
           lastTouchTapRef.current = null
           const effScale = Math.max(0.5, transform.scale)
+          const speedMult = Number.isFinite(cursorSpeed)
+            ? Math.max(0.25, Math.min(3, cursorSpeed))
+            : 1
+          const deltaCanvasX = (dxCss / effScale) * speedMult
+          const deltaCanvasY = (dyCss / effScale) * speedMult
           const nextFloatX = allowsOutOfBoundsPoint
-            ? Math.max(-512, Math.min(width + 512, subPixelCursorRef.current.x + dxCss / effScale))
-            : Math.max(0, Math.min(width - 1, subPixelCursorRef.current.x + dxCss / effScale))
+            ? Math.max(-512, Math.min(width + 512, subPixelCursorRef.current.x + deltaCanvasX))
+            : Math.max(0, Math.min(width - 1, subPixelCursorRef.current.x + deltaCanvasX))
           const nextFloatY = allowsOutOfBoundsPoint
-            ? Math.max(-512, Math.min(height + 512, subPixelCursorRef.current.y + dyCss / effScale))
-            : Math.max(0, Math.min(height - 1, subPixelCursorRef.current.y + dyCss / effScale))
+            ? Math.max(-512, Math.min(height + 512, subPixelCursorRef.current.y + deltaCanvasY))
+            : Math.max(0, Math.min(height - 1, subPixelCursorRef.current.y + deltaCanvasY))
 
           subPixelCursorRef.current = { x: nextFloatX, y: nextFloatY }
 

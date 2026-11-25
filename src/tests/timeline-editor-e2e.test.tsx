@@ -322,5 +322,67 @@ describe('Streamlined Timeline, Layer Workspace Separation, GIF Visibility & Vie
     // Clear selection -> selection-ready-bar disappears cleanly
     fireEvent.click(await screen.findByTestId('quick-clear-selection-btn'))
     expect(screen.queryByTestId('selection-ready-bar')).toBeNull()
+
+    // 9. Global Workspace/Input Settings (`設定`) in Tool Tab's vacated 10th slot:
+    // - No extra workspace tab was added (only `ツール` and `レイヤー`/`タイムライン` exist)
+    expect(screen.queryByTestId('workspace-tab-settings')).toBeNull()
+    const globalSettingsBtn = screen.getByTestId('open-global-editor-settings-btn')
+    expect(globalSettingsBtn.textContent).toContain('設定')
+    fireEvent.click(globalSettingsBtn)
+
+    const globalModal = await screen.findByTestId('global-editor-settings-modal')
+    expect(globalModal).toBeTruthy()
+    // Ensure animation settings & tool-specific settings are NOT mixed into Global Settings
+    expect(globalModal.textContent).not.toContain('オニオンスキン')
+    expect(globalModal.textContent).not.toContain('ピクセルパーフェクト')
+
+    // Change Cursor Speed via preset (`高速 1.8x`) and Cursor Size (`大`)
+    fireEvent.click(screen.getByTestId('cursor-speed-preset-1.8'))
+    await waitFor(() => {
+      expect(screen.getByTestId('cursor-speed-value').textContent).toContain('1.80x')
+    })
+    fireEvent.click(screen.getByTestId('cursor-size-large'))
+
+    // Create a Custom Cursor (8x8) with custom Hotspot (3, 4) and save & apply
+    fireEvent.click(screen.getByTestId('new-custom-cursor-btn'))
+    expect(await screen.findByTestId('custom-cursor-editor')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('custom-cursor-grid-8'))
+    const cursorNameInput = screen.getByTestId('custom-cursor-name-input') as HTMLInputElement
+    fireEvent.change(cursorNameInput, { target: { value: 'ドット十字' } })
+    fireEvent.pointerDown(screen.getByTestId('cursor-cell-3-4'))
+    fireEvent.pointerUp(screen.getByTestId('cursor-cell-3-4'))
+    fireEvent.click(screen.getByTestId('custom-cursor-tool-hotspot'))
+    fireEvent.pointerDown(screen.getByTestId('cursor-cell-3-4'))
+    fireEvent.pointerUp(screen.getByTestId('cursor-cell-3-4'))
+    fireEvent.click(screen.getByTestId('save-custom-cursor-btn'))
+
+    await waitFor(() => {
+      expect(globalModal.textContent).toContain('ドット十字')
+      expect(globalModal.textContent).toContain('8×8 · Hotspot (3,4)')
+    })
+
+    // Toggle shared Double-Tap Eyedropper setting OFF in Global Settings, close, and verify Eyedropper tool detail reflects the exact same state!
+    const globalDoubleTap = screen.getByTestId('global-toggle-eyedropper-doubletap')
+    expect(globalDoubleTap.getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(globalDoubleTap)
+    await waitFor(() => {
+      expect(globalDoubleTap.getAttribute('aria-checked')).toBe('false')
+    })
+
+    fireEvent.click(screen.getByTestId('close-global-editor-settings-btn'))
+    await waitFor(() => {
+      expect(screen.queryByTestId('global-editor-settings-modal')).toBeNull()
+    })
+
+    // Open Eyedropper tool options -> same `eyedropperDoubleTap` state is `false`!
+    fireEvent.click(screen.getByTestId('tool-eyedropper'))
+    fireEvent.click(screen.getByTestId('tool-eyedropper'))
+    const toolDoubleTap = await screen.findByTestId('toggle-eyedropper-doubletap')
+    expect(toolDoubleTap.getAttribute('aria-checked')).toBe('false')
+    // Restore back to true via tool detail and verify bidirectional sync
+    fireEvent.click(toolDoubleTap)
+    await waitFor(() => {
+      expect(toolDoubleTap.getAttribute('aria-checked')).toBe('true')
+    })
   })
 })
