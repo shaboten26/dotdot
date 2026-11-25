@@ -160,11 +160,17 @@ export function CustomCursorMiniPreview({
 interface GlobalEditorSettingsModalProps {
   open: boolean
   onClose: () => void
+  previewFlipX?: boolean
+  previewFlipY?: boolean
+  onTogglePreviewFlipX?: () => void
+  onTogglePreviewFlipY?: () => void
+  onResetPreviewFlip?: () => void
 }
 
 /**
- * Global Editor & Input Settings Modal opened from the Tool Tab's vacated slot (`設定`).
- * Strictly contains ONLY workspace-wide / input-wide settings:
+ * Global Editor, View & Input Settings Modal opened from the Tool Tab's vacated slot (`設定`).
+ * Strictly contains ONLY workspace-wide / view-wide / input-wide settings:
+ * - Non-Destructive View Flip Preview (Horizontal / Vertical mirror display without mutating pixel buffers)
  * - Cursor Speed (slider + presets + live readout, pixel-accurate sub-pixel accumulation)
  * - Cursor Display Size (Small / Standard / Large for touch virtual cursor)
  * - Cursor Design (Standard vs saved Custom Cursors) + Custom Cursor Pixel & Hotspot Editor (`8x8` / `16x16`)
@@ -174,6 +180,11 @@ interface GlobalEditorSettingsModalProps {
 export function GlobalEditorSettingsModal({
   open,
   onClose,
+  previewFlipX = false,
+  previewFlipY = false,
+  onTogglePreviewFlipX,
+  onTogglePreviewFlipY,
+  onResetPreviewFlip,
 }: GlobalEditorSettingsModalProps) {
   const { settings, updateSettings, reducedMotion } = useApp()
   const { t } = useI18n()
@@ -366,6 +377,68 @@ export function GlobalEditorSettingsModal({
               }}
               data-testid="global-editor-settings-scroll"
             >
+              {/* 0. Non-Destructive View Flip Preview (Horizontal / Vertical) */}
+              {(onTogglePreviewFlipX || onTogglePreviewFlipY) && (
+                <section
+                  className="pixel-card p-3 space-y-2.5"
+                  data-testid="global-flip-preview-section"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-[var(--text-primary)]">
+                      <PixelIcon
+                        name="flipH"
+                        size={13}
+                        className="text-[var(--accent-teal)]"
+                      />
+                      <span>{t('flipPreviewSection')}</span>
+                    </div>
+                    {(previewFlipX || previewFlipY) && onResetPreviewFlip && (
+                      <button
+                        type="button"
+                        onClick={onResetPreviewFlip}
+                        className="pixel-btn min-h-[28px] px-2 text-[11px] font-bold flex items-center gap-1"
+                        data-testid="global-flip-preview-reset-btn"
+                      >
+                        <PixelIcon name="undo" size={11} />
+                        <span>{t('flipPreviewResetBtn')}</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={onTogglePreviewFlipX}
+                      aria-pressed={previewFlipX}
+                      className={`min-h-[38px] px-2.5 text-xs font-bold flex items-center justify-center gap-1.5 ${
+                        previewFlipX ? 'pixel-btn pixel-btn-teal' : 'pixel-btn'
+                      }`}
+                      data-testid="global-flip-preview-h-btn"
+                    >
+                      <PixelIcon name="flipH" size={14} />
+                      <span>{t('flipPreviewHorizontal')}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={onTogglePreviewFlipY}
+                      aria-pressed={previewFlipY}
+                      className={`min-h-[38px] px-2.5 text-xs font-bold flex items-center justify-center gap-1.5 ${
+                        previewFlipY ? 'pixel-btn pixel-btn-teal' : 'pixel-btn'
+                      }`}
+                      data-testid="global-flip-preview-v-btn"
+                    >
+                      <PixelIcon name="flipV" size={14} />
+                      <span>{t('flipPreviewVertical')}</span>
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">
+                    {t('flipPreviewHint')}
+                  </p>
+                </section>
+              )}
+
               {/* 1. Cursor Speed */}
               <section className="pixel-card p-3 space-y-2.5">
                 <div className="flex items-center justify-between gap-2">

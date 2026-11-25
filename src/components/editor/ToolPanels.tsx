@@ -200,6 +200,7 @@ interface MultiRowToolGridProps {
   toolSettings: ToolSettings
   optionsOpen: boolean
   globalSettingsOpen?: boolean
+  hasActivePreviewFlip?: boolean
   canUndo: boolean
   canRedo: boolean
   hasSelection: boolean
@@ -221,6 +222,7 @@ export function MultiRowToolGrid({
   toolSettings,
   optionsOpen,
   globalSettingsOpen = false,
+  hasActivePreviewFlip = false,
   canUndo,
   canRedo,
   hasSelection,
@@ -374,7 +376,7 @@ export function MultiRowToolGrid({
         onClick={onOpenGlobalSettings}
         aria-pressed={globalSettingsOpen}
         style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
-        className={`px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
+        className={`relative px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
           globalSettingsOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
         }`}
         data-testid="open-global-editor-settings-btn"
@@ -386,6 +388,12 @@ export function MultiRowToolGrid({
         >
           {t('editorGlobalSettingsBtn')}
         </span>
+        {hasActivePreviewFlip && (
+          <span
+            className="absolute top-0.5 right-0.5 w-2.5 h-2.5 bg-[var(--accent-teal)] border border-[var(--border-strong)]"
+            aria-hidden="true"
+          />
+        )}
       </button>
     </div>
   )
@@ -396,6 +404,7 @@ interface TimelineTransportDockProps {
   activeFrameIndex: number
   totalFrames: number
   globalSettingsOpen?: boolean
+  hasActivePreviewFlip?: boolean
   onStepFrame: (delta: -1 | 1) => void
   onTogglePlay: () => void
   onStopPlay: () => void
@@ -412,6 +421,7 @@ export function TimelineTransportDock({
   activeFrameIndex,
   totalFrames,
   globalSettingsOpen = false,
+  hasActivePreviewFlip = false,
   onStepFrame,
   onTogglePlay,
   onStopPlay,
@@ -503,7 +513,7 @@ export function TimelineTransportDock({
         onClick={onOpenGlobalSettings}
         aria-pressed={globalSettingsOpen}
         style={{ minHeight: 'max(42px, calc(var(--tool-btn-height, 48px) - 4px))' }}
-        className={`px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
+        className={`relative px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
           globalSettingsOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
         }`}
         data-testid="open-global-editor-settings-btn"
@@ -515,6 +525,12 @@ export function TimelineTransportDock({
         >
           {t('editorGlobalSettingsBtn')}
         </span>
+        {hasActivePreviewFlip && (
+          <span
+            className="absolute top-0.5 right-0.5 w-2.5 h-2.5 bg-[var(--accent-teal)] border border-[var(--border-strong)]"
+            aria-hidden="true"
+          />
+        )}
       </button>
     </div>
   )

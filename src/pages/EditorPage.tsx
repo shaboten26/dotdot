@@ -61,6 +61,8 @@ export function EditorPage() {
   const [exportOpen, setExportOpen] = useState(false)
   const [exportGifOpen, setExportGifOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
+  const [previewFlipX, setPreviewFlipX] = useState(false)
+  const [previewFlipY, setPreviewFlipY] = useState(false)
   const [workspaceTab, setWorkspaceTab] = useState<'tools' | 'frames'>('tools')
   const [inputModality, setInputModality] = useState<InputModality>(() =>
     detectInitialInputModality()
@@ -69,6 +71,11 @@ export function EditorPage() {
   const [fitTrigger, setFitTrigger] = useState(0)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
+
+  useEffect(() => {
+    setPreviewFlipX(false)
+    setPreviewFlipY(false)
+  }, [targetProjectId])
 
   const editor = useEditorController({
     projectId: targetProjectId,
@@ -456,6 +463,12 @@ export function EditorPage() {
                     (c) => c.id === settings.activeCursorId
                   ) ?? null
             }
+            previewFlipX={previewFlipX}
+            previewFlipY={previewFlipY}
+            onResetPreviewFlip={() => {
+              setPreviewFlipX(false)
+              setPreviewFlipY(false)
+            }}
             fitTrigger={fitTrigger}
             onModalityChange={setInputModality}
             onMoveCursor={editor.moveCursorTo}
@@ -637,6 +650,7 @@ export function EditorPage() {
               toolSettings={editor.toolSettings}
               optionsOpen={optionsOpen}
               globalSettingsOpen={globalSettingsOpen}
+              hasActivePreviewFlip={previewFlipX || previewFlipY}
               canUndo={editor.canUndo}
               canRedo={editor.canRedo}
               hasSelection={editor.hasSelection}
@@ -786,6 +800,7 @@ export function EditorPage() {
                 )}
                 totalFrames={editor.timeline.frames.length}
                 globalSettingsOpen={globalSettingsOpen}
+                hasActivePreviewFlip={previewFlipX || previewFlipY}
                 onStepFrame={editor.stepFrame}
                 onTogglePlay={editor.togglePlay}
                 onStopPlay={editor.stopPlay}
@@ -954,6 +969,14 @@ export function EditorPage() {
         <GlobalEditorSettingsModal
           open={globalSettingsOpen}
           onClose={() => setGlobalSettingsOpen(false)}
+          previewFlipX={previewFlipX}
+          previewFlipY={previewFlipY}
+          onTogglePreviewFlipX={() => setPreviewFlipX((v) => !v)}
+          onTogglePreviewFlipY={() => setPreviewFlipY((v) => !v)}
+          onResetPreviewFlip={() => {
+            setPreviewFlipX(false)
+            setPreviewFlipY(false)
+          }}
         />
       </div>
     </ViewTransition>
