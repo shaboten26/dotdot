@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { describe, expect, it, afterEach, vi } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import {
@@ -104,5 +106,25 @@ describe('Stage 2: iPhone Home-Screen Standalone PWA Top Blur Suppression', () =
     expect(document.documentElement.getAttribute('data-ios-standalone')).toBe(
       'true'
     )
+
+    // 4. Verify index.html & manifest.webmanifest status-bar / theme-color sync with retro-cute --bg-surface
+    const indexHtml = fs.readFileSync(
+      path.resolve(process.cwd(), 'index.html'),
+      'utf8'
+    )
+    expect(indexHtml).toContain(
+      '<meta name="apple-mobile-web-app-status-bar-style" content="default" />'
+    )
+    expect(indexHtml).toContain('content="#f7f3e8"')
+    expect(indexHtml).toContain('content="#252a36"')
+
+    const manifest = JSON.parse(
+      fs.readFileSync(
+        path.resolve(process.cwd(), 'public/manifest.webmanifest'),
+        'utf8'
+      )
+    ) as { background_color: string; theme_color: string }
+    expect(manifest.background_color).toBe('#1c2029')
+    expect(manifest.theme_color).toBe('#252a36')
   })
 })

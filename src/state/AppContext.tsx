@@ -170,7 +170,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     root.lang = settings.language
 
     const metaThemes = document.querySelectorAll('meta[name="theme-color"]')
-    const headerHex = isDark ? '#262332' : '#f6f3ee'
+    const headerHex = isDark ? '#252a36' : '#f7f3e8'
     metaThemes.forEach((meta) => {
       meta.setAttribute('content', headerHex)
     })
