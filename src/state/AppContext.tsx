@@ -7,22 +7,20 @@ import React, {
   useRef,
   useState,
 } from 'react'
-import type {
-  AppSettings,
-  CanvasSizePreset,
-  ClipboardBuffer,
-  PaletteData,
-  ProjectRecord,
-  StampAsset,
-  UiSizeConfig,
+import {
+  MAX_OPAQUE_PALETTE_COLORS,
+  type AppSettings,
+  type CanvasSizePreset,
+  type ClipboardBuffer,
+  type PaletteData,
+  type ProjectRecord,
+  type UiSizeConfig,
 } from '../types'
 import {
-  addStampAsset,
   BACKUP_SNOOZE_INTERVAL_MS,
   DEFAULT_APP_SETTINGS,
   db,
   deleteLibraryPalette,
-  deleteStampAsset,
   evaluateOriginLowStorage,
   generateId,
   getStorageStatus,
@@ -30,12 +28,15 @@ import {
   initializeDatabase,
   LOW_STORAGE_SNOOZE_INTERVAL_MS,
   normalizeAppSettings,
-  renameStampAsset,
-  reorderStampAssets,
   shouldShowBackupReminder,
   type OriginLowStorageStatus,
 } from '../db/database'
+import type {
+  DatabaseMigrationSummary,
+  MigrationProgressInfo,
+} from '../db/indexedMigration'
 import { MAX_CANVAS_SIZE, MIN_CANVAS_SIZE } from '../engine/pixelBuffer'
+import { resolveActiveThemeTokens } from '../theme/themes'
 import { I18nContext } from '../i18n/I18nContext'
 import { translate, type TranslationKey } from '../i18n/translations'
 
@@ -49,10 +50,12 @@ export interface AppContextValue {
   ready: boolean
   settings: AppSettings
   isDark: boolean
+  activeThemeVariant: string
   reducedMotion: boolean
   palettes: PaletteData[]
-  stamps: StampAsset[]
   projects: ProjectRecord[]
+  migrationProgress: MigrationProgressInfo | null
+  migrationSummary: DatabaseMigrationSummary | null
   sharedClipboard: ClipboardBuffer | null
   setSharedClipboard: (clip: ClipboardBuffer | null) => void
   toasts: ToastMessage[]
@@ -78,16 +81,6 @@ export interface AppContextValue {
   refreshOriginStorage: () => Promise<OriginLowStorageStatus>
   refreshProjects: () => Promise<void>
   refreshPalettes: () => Promise<void>
-  refreshStamps: () => Promise<void>
-  addStamp: (
-    name: string,
-    width: number,
-    height: number,
-    data: Uint8Array | Uint8ClampedArray
-  ) => Promise<StampAsset>
-  renameStamp: (id: string, nextName: string) => Promise<boolean>
-  removeStamp: (id: string) => Promise<boolean>
-  reorderStamps: (orderedIds: string[]) => Promise<void>
   addLibraryPalette: (
     name: string,
     colors: string[],
@@ -112,10 +105,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false)
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS)
   const [palettes, setPalettes] = useState<PaletteData[]>([])
-  const [stamps, setStamps] = useState<StampAsset[]>([])
   const [projects, setProjects] = useState<ProjectRecord[]>([])
+  const [migrationProgress, setMigrationProgress] =
+    useState<MigrationProgressInfo | null>(null)
+  const [migrationSummary, setMigrationSummary] =
+    useState<DatabaseMigrationSummary | null>(null)
   const [sharedClipboardState, setSharedClipboardState] =
     useState<ClipboardBuffer | null>(null)
+
   const setSharedClipboard = useCallback((clip: ClipboardBuffer | null) => {
     if (!clip) {
       setSharedClipboardState(null)
@@ -126,9 +123,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       height: clip.height,
       offsetX: clip.offsetX,
       offsetY: clip.offsetY,
-      data: new Uint8ClampedArray(clip.data),
+      data: new Uint8Array(clip.data),
+      ...(clip.sourceColorMap ? { sourceColorMap: { ...clip.sourceColorMap } } : {}),
     })
   }, [])
+
   const [toasts, setToasts] = useState<ToastMessage[]>([])
   const [backupCheckTick, setBackupCheckTick] = useState<number>(() => Date.now())
   const [originStorageStatus, setOriginStorageStatus] = useState<OriginLowStorageStatus>(() =>
@@ -176,7 +175,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return status
   }, [])
 
-  // Re-evaluate backup reminder and Origin storage upon window focus or visibility return (Sections 11-2 & 12)
   useEffect(() => {
     if (typeof window === 'undefined') return
     const checkNow = () => {
@@ -196,16 +194,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const isDark =
     settings.theme === 'dark' || (settings.theme === 'system' && systemDark)
 
-  // Apply theme class, language attribute, theme-color meta (matches top header --bg-surface), and UI Size CSS variables
+  const activeThemeVariant = isDark
+    ? settings.darkThemeVariant ?? 'dusk-plum'
+    : settings.lightThemeVariant ?? 'lavender-cream'
+
+  // Apply theme class, active sub-theme CSS tokens, language attribute, theme-color meta, and UI Size CSS variables
   useEffect(() => {
     if (typeof document === 'undefined') return
     const root = document.documentElement
     root.classList.toggle('dark', isDark)
+    root.setAttribute('data-theme-variant', activeThemeVariant)
     root.style.colorScheme = isDark ? 'dark' : 'light'
     root.lang = settings.language
 
+    const tokens = resolveActiveThemeTokens(
+      isDark,
+      settings.lightThemeVariant ?? 'lavender-cream',
+      settings.darkThemeVariant ?? 'dusk-plum'
+    )
+    for (const [varName, hexVal] of Object.entries(tokens)) {
+      root.style.setProperty(varName, hexVal)
+    }
+
     const metaThemes = document.querySelectorAll('meta[name="theme-color"]')
-    const headerHex = isDark ? '#252a36' : '#f7f3e8'
+    const headerHex = tokens['--bg-surface']
     metaThemes.forEach((meta) => {
       meta.setAttribute('content', headerHex)
     })
@@ -219,7 +231,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     root.style.setProperty('--checkbox-size', `${u.checkboxSize}px`)
     root.style.setProperty('--ui-gap', `${u.uiGap}px`)
     root.style.setProperty('--draw-btn-vh', `${u.drawButtonVh}dvh`)
-  }, [isDark, settings.language, settings.uiSize])
+  }, [
+    isDark,
+    activeThemeVariant,
+    settings.lightThemeVariant,
+    settings.darkThemeVariant,
+    settings.language,
+    settings.uiSize,
+  ])
 
   const refreshPalettes = useCallback(async () => {
     const list = await db.palettes.orderBy('order').toArray()
@@ -227,17 +246,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setPalettes(list)
   }, [])
 
-  const refreshStamps = useCallback(async () => {
-    const list = await db.stamps.orderBy('order').toArray()
-    if (!mountedRef.current) return
-    setStamps(list)
-  }, [])
-
   const refreshProjects = useCallback(async () => {
     const list = await db.projects.orderBy('order').toArray()
     if (!mountedRef.current) return
     setProjects(list)
-    // Also sync settings if firstProjectCreatedAt was set by createNewProject
     const latestSettings = await db.settings.get('app-settings')
     if (!mountedRef.current) return
     if (latestSettings) {
@@ -248,11 +260,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [refreshOriginStorage])
 
   const reloadWorkspaceState = useCallback(async () => {
-    const init = await initializeDatabase(db)
+    const init = await initializeDatabase(db, {
+      onMigrationProgress: (info) => {
+        if (mountedRef.current) {
+          setMigrationProgress(info)
+        }
+      },
+      yieldBetweenProjects: true,
+    })
     if (!mountedRef.current) return
+    setMigrationProgress(null)
+    setMigrationSummary(init.migrationSummary)
     setSettings(init.settings)
     setPalettes(init.palettes)
-    setStamps(init.stamps)
     const projs = await db.projects.orderBy('order').toArray()
     if (!mountedRef.current) return
     setProjects(projs)
@@ -408,9 +428,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setSettings(next)
   }, [])
 
-  /**
-   * Section 11: Update `lastExportAt` ONLY when an Environment Pack ZIP has been successfully generated.
-   */
   const markEnvPackExported = useCallback(async (exportedAt = Date.now()) => {
     const stored = normalizeAppSettings(await db.settings.get('app-settings'))
     const next = normalizeAppSettings({
@@ -427,9 +444,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setBackupCheckTick(Date.now())
   }, [])
 
-  /**
-   * Section 11: "後で通知 / Remind Later" schedules next notification 7 days from `now`.
-   */
   const snoozeBackupReminder = useCallback(async (now = Date.now()) => {
     const stored = normalizeAppSettings(await db.settings.get('app-settings'))
     const next = normalizeAppSettings({
@@ -489,7 +503,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const record: PaletteData = {
         id: generateId('pal'),
         name: name.trim() || 'Palette',
-        colors: colors.length > 0 ? colors.slice(0, 256) : ['#000000', '#FFFFFF'],
+        colors:
+          colors.length > 0
+            ? colors.slice(0, MAX_OPAQUE_PALETTE_COLORS)
+            : ['#000000', '#FFFFFF'],
         order: nextOrder,
         createdAt: now,
         updatedAt: now,
@@ -513,7 +530,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         ...existing,
         ...(patch.name !== undefined ? { name: patch.name } : {}),
         ...(patch.colors !== undefined
-          ? { colors: patch.colors.slice(0, 256) }
+          ? { colors: patch.colors.slice(0, MAX_OPAQUE_PALETTE_COLORS) }
           : {}),
         updatedAt: Date.now(),
       }
@@ -548,7 +565,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (orderedIds: string[]) => {
       await db.transaction('rw', db.palettes, async () => {
         for (let i = 0; i < orderedIds.length; i++) {
-          await db.palettes.update(orderedIds[i], { order: i })
+          await db.palettes.update(orderedIds[i]!, { order: i })
         }
       })
       await refreshPalettes()
@@ -560,56 +577,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (orderedIds: string[]) => {
       await db.transaction('rw', db.projects, async () => {
         for (let i = 0; i < orderedIds.length; i++) {
-          await db.projects.update(orderedIds[i], { order: i })
+          await db.projects.update(orderedIds[i]!, { order: i })
         }
       })
       await refreshProjects()
     },
     [refreshProjects]
-  )
-
-  const addStamp = useCallback(
-    async (
-      name: string,
-      width: number,
-      height: number,
-      data: Uint8Array | Uint8ClampedArray
-    ): Promise<StampAsset> => {
-      const created = await addStampAsset({ name, width, height, data }, db)
-      await refreshStamps()
-      return created
-    },
-    [refreshStamps]
-  )
-
-  const renameStamp = useCallback(
-    async (id: string, nextName: string): Promise<boolean> => {
-      const ok = await renameStampAsset(id, nextName, db)
-      if (ok) {
-        await refreshStamps()
-      }
-      return ok
-    },
-    [refreshStamps]
-  )
-
-  const removeStamp = useCallback(
-    async (id: string): Promise<boolean> => {
-      const ok = await deleteStampAsset(id, db)
-      if (ok) {
-        await refreshStamps()
-      }
-      return ok
-    },
-    [refreshStamps]
-  )
-
-  const reorderStamps = useCallback(
-    async (orderedIds: string[]): Promise<void> => {
-      await reorderStampAssets(orderedIds, db)
-      await refreshStamps()
-    },
-    [refreshStamps]
   )
 
   const t = useCallback(
@@ -627,10 +600,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ready,
       settings,
       isDark,
+      activeThemeVariant,
       reducedMotion,
       palettes,
-      stamps,
       projects,
+      migrationProgress,
+      migrationSummary,
       sharedClipboard: sharedClipboardState,
       setSharedClipboard,
       toasts,
@@ -649,11 +624,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       refreshOriginStorage,
       refreshProjects,
       refreshPalettes,
-      refreshStamps,
-      addStamp,
-      renameStamp,
-      removeStamp,
-      reorderStamps,
       addLibraryPalette,
       updateLibraryPalette,
       duplicateLibraryPalette,
@@ -668,10 +638,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ready,
       settings,
       isDark,
+      activeThemeVariant,
       reducedMotion,
       palettes,
-      stamps,
       projects,
+      migrationProgress,
+      migrationSummary,
       sharedClipboardState,
       setSharedClipboard,
       toasts,
@@ -690,11 +662,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       refreshOriginStorage,
       refreshProjects,
       refreshPalettes,
-      refreshStamps,
-      addStamp,
-      renameStamp,
-      removeStamp,
-      reorderStamps,
       addLibraryPalette,
       updateLibraryPalette,
       duplicateLibraryPalette,
@@ -708,14 +675,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   )
 
   return (
-    <AppContext.Provider value={appValue}>
-      <I18nContext.Provider value={i18nValue}>{children}</I18nContext.Provider>
-    </AppContext.Provider>
+    <I18nContext.Provider value={i18nValue}>
+      <AppContext.Provider value={appValue}>{children}</AppContext.Provider>
+    </I18nContext.Provider>
   )
 }
 
 export function useApp(): AppContextValue {
   const ctx = useContext(AppContext)
-  if (!ctx) throw new Error('useApp must be used inside AppProvider')
+  if (!ctx) {
+    throw new Error('useApp must be used inside <AppProvider>')
+  }
   return ctx
 }

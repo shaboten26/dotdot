@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  MAX_OPAQUE_PALETTE_COLORS,
   TRANSPARENT_COLOR_INDEX,
+  TRANSPARENT_INDEX,
   type ActiveMoveSession,
   type BlendMode,
   type CelBufferRuntime,
@@ -14,10 +16,7 @@ import {
   type ProjectPalette,
   type ProjectRecord,
   type ResizeAnchor,
-  type RGBA,
   type SeamlessWrapMode,
-  type StampAsset,
-  type StampPlacementSession,
   type SymmetryMode,
   type TilePreviewGrid,
   type ToolId,
@@ -30,12 +29,25 @@ import {
   loadProjectFull,
   saveProjectFull,
 } from '../db/database'
-import { hexToRgba, rgbaToHex } from '../engine/color'
+import { hexToRgba, normalizeHex, rgbaToHex } from '../engine/color'
+import {
+  addColorToIndexedPalette,
+  convertRgbaBuffersToIndexed,
+  displaySlotToPixelIndex,
+  extractUsedColorMap,
+  findExactFixedIndex,
+  findNearestFixedIndex,
+  getHexForPixelIndex,
+  normalizeProjectPalette,
+  pixelIndexToDisplaySlot,
+  remapClipboardToTargetPalette,
+  updateIndexedPaletteSlotColor,
+} from '../engine/indexedPalette'
 import {
   createPixelBuffer,
   extractLayerCanvasView,
   flipLayerAroundCanvas,
-  getPixel,
+  getPixelIndex,
   isInBounds,
   MAX_CANVAS_SIZE,
   MIN_CANVAS_SIZE,
@@ -43,7 +55,7 @@ import {
   stampBufferIntoLayerWorld,
   writeLayerCanvasView,
 } from '../engine/pixelBuffer'
-import { stampPoints } from '../engine/brush'
+import { shouldDrawWithDither, stampPoints } from '../engine/brush'
 import { expandStrokePoints, filterPixelPerfectPoints } from '../engine/pixelPerfect'
 import { applyFloodFill, applyGradientFloodFill } from '../engine/floodFill'
 import {
@@ -83,6 +95,7 @@ import {
   captureCanvasSnapshot,
   createLayerPixelPatch,
   HistoryManager,
+  type PixelPatch,
 } from '../engine/history'
 import {
   applyBatchFrameDuration,
@@ -105,9 +118,12 @@ import {
   type TimelineState,
 } from '../engine/animation'
 import { estimateProjectLoad } from '../engine/loadEstimator'
-import { applyStampToBuffer, extractStampFromSelection } from '../engine/stamp'
 import { resolveCanvasPoint } from '../engine/symmetry'
-import { replaceColorAcrossTimeline } from '../engine/paletteTools'
+import {
+  countFixedIndexUsageAcrossProject,
+  deletePaletteSlotWithReplacement,
+  replaceColorAcrossTimeline,
+} from '../engine/paletteTools'
 import { clampCanvasPoint } from '../utils/coordinates'
 import { playUiTick } from '../utils/sound'
 
@@ -125,7 +141,7 @@ export interface CelClipboardItem {
   offsetY: number
   dataWidth: number
   dataHeight: number
-  data: Uint8ClampedArray
+  data: Uint8Array
   isEmpty: boolean
   sourceLayerId: string
   sourceFrameId: string
@@ -157,7 +173,6 @@ const DEFAULT_TOOL_SETTINGS: ToolSettings = {
   penShape: 'square',
   penDither: 1,
   pixelPerfect: true,
-  patternStampId: null,
 
   eraserSize: 1,
   eraserShape: 'square',
@@ -188,10 +203,6 @@ const DEFAULT_TOOL_SETTINGS: ToolSettings = {
   outlineColor: '#000000',
 }
 
-/**
- * Clamp arbitrary integer coordinates within generous world bounds (`[-2048 .. 2304]`)
- * so out-of-canvas line/bezier/shape/gradient endpoints preserve exact slope & curvature (Section 12).
- */
 function normalizeWorldPoint(pt: Point): Point {
   return {
     x: Math.max(-2048, Math.min(2304, Math.round(pt.x))),
@@ -203,7 +214,6 @@ export interface UseEditorOptions {
   projectId: string | null
   historyLimit: number | 'unlimited'
   soundEnabled: boolean
-  stamps?: readonly StampAsset[]
   defaultSymmetryMode?: SymmetryMode
   defaultTilePreviewGrid?: TilePreviewGrid
   defaultSeamlessWrapMode?: SeamlessWrapMode
@@ -213,6 +223,7 @@ export interface UseEditorOptions {
   onQuotaTrimmed?: () => void
   onSaveError?: () => void
   onColorPicked?: (isTransparent: boolean) => void
+  onPaletteLimitReached?: () => void
 }
 
 export function useEditorController(options: UseEditorOptions) {
@@ -220,7 +231,6 @@ export function useEditorController(options: UseEditorOptions) {
     projectId,
     historyLimit,
     soundEnabled,
-    stamps = [],
     defaultSymmetryMode = 'none',
     defaultTilePreviewGrid = 'off',
     defaultSeamlessWrapMode = 'none',
@@ -230,6 +240,7 @@ export function useEditorController(options: UseEditorOptions) {
     onQuotaTrimmed,
     onSaveError,
     onColorPicked,
+    onPaletteLimitReached,
   } = options
 
   const [loading, setLoading] = useState(true)
@@ -262,32 +273,29 @@ export function useEditorController(options: UseEditorOptions) {
   })
 
   const [activeLayerId, setActiveLayerId] = useState<string>('')
-  /** Section 8: Multi-layer checkbox selection IDs (independent of `activeLayerId`) */
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([])
 
-  const [palette, setPalette] = useState<ProjectPalette>({
-    name: 'Standard',
-    colors: ['#000000', '#FFFFFF'],
-  })
+  const [palette, setPalette] = useState<ProjectPalette>(() =>
+    normalizeProjectPalette({
+      name: 'Standard',
+      colors: ['#000000', '#FFFFFF'],
+    })
+  )
   const [selectedColorIndex, setSelectedColorIndex] = useState<number>(0)
 
   const [tool, setTool] = useState<ToolId>('pen')
   const toolRef = useRef<ToolId>('pen')
   toolRef.current = tool
-  /** Remember previous drawing tool before manual eyedropper selection so picking returns to it */
   const prevToolBeforeEyedropperRef = useRef<ToolId>('pen')
   const [toolSettings, setToolSettings] = useState<ToolSettings>(DEFAULT_TOOL_SETTINGS)
-  /** Track whether the user has explicitly picked an outline palette color yet */
   const outlineColorExplicitRef = useRef<boolean>(false)
 
   const [cursor, setCursor] = useState<Point>({ x: 0, y: 0 })
-  /** Always-fresh cursor ref so double-tap eyedropper NEVER reads a stale React closure coordinate! */
   const cursorRef = useRef<Point>({ x: 0, y: 0 })
   cursorRef.current = cursor
   const [stepPhase, setStepPhase] = useState<MultiStepPhase>({ kind: 'idle' })
   const [floatingShape, setFloatingShape] = useState<FloatingShapeState | null>(null)
   const [moveSession, setMoveSession] = useState<ActiveMoveSession | null>(null)
-  const [stampSession, setStampSession] = useState<StampPlacementSession | null>(null)
   const [symmetryMode, setSymmetryMode] = useState<SymmetryMode>(defaultSymmetryMode)
   const [tilePreviewGrid, setTilePreviewGrid] =
     useState<TilePreviewGrid>(defaultTilePreviewGrid)
@@ -314,14 +322,14 @@ export function useEditorController(options: UseEditorOptions) {
     active: boolean
     tool: 'pen' | 'eraser'
     layerId: string
-    baseCanvasView: Uint8ClampedArray
+    baseCanvasView: Uint8Array
     rawPoints: Point[]
-    latestPreview: Uint8ClampedArray
+    latestPreview: Uint8Array
   } | null>(null)
 
   const [liveStrokeBuffer, setLiveStrokeBuffer] = useState<{
     layerId: string
-    data: Uint8ClampedArray
+    data: Uint8Array
   } | null>(null)
 
   const historyRef = useRef<HistoryManager>(new HistoryManager(historyLimit))
@@ -350,6 +358,19 @@ export function useEditorController(options: UseEditorOptions) {
     setRedoCount(historyRef.current.getRedoCount())
   }, [historyLimit])
 
+  // Sync editor canvas assist modes when user updates defaults in `/settings`
+  useEffect(() => {
+    setSymmetryMode(defaultSymmetryMode)
+  }, [defaultSymmetryMode])
+
+  useEffect(() => {
+    setTilePreviewGrid(defaultTilePreviewGrid)
+  }, [defaultTilePreviewGrid])
+
+  useEffect(() => {
+    setSeamlessWrapMode(defaultSeamlessWrapMode)
+  }, [defaultSeamlessWrapMode])
+
   // Load project from IndexedDB
   useEffect(() => {
     let cancelled = false
@@ -365,10 +386,8 @@ export function useEditorController(options: UseEditorOptions) {
         setLoading(false)
         return
       }
-      const loadedColors =
-        loaded.project.palette.colors.length > 0
-          ? [...loaded.project.palette.colors]
-          : ['#000000', '#FFFFFF']
+      const normalizedPal = normalizeProjectPalette(loaded.project.palette)
+      const loadedColors = normalizedPal.colors
       const initialColorIdx =
         loaded.project.selectedColorIndex === TRANSPARENT_COLOR_INDEX
           ? TRANSPARENT_COLOR_INDEX
@@ -378,8 +397,8 @@ export function useEditorController(options: UseEditorOptions) {
             )
       const initialOpaqueHex =
         initialColorIdx >= 0 && loadedColors[initialColorIdx]
-          ? loadedColors[initialColorIdx]
-          : loadedColors[0]
+          ? loadedColors[initialColorIdx]!
+          : loadedColors[0] ?? '#000000'
 
       setProject(loaded.project)
       setLayers(loaded.layers)
@@ -389,16 +408,7 @@ export function useEditorController(options: UseEditorOptions) {
       setIsPlaying(false)
       setActiveLayerId(loaded.project.activeLayerId || loaded.layers[0]?.id || '')
       setSelectedLayerIds([])
-      setPalette({
-        name: loaded.project.palette.name,
-        colors: loadedColors,
-        ...(loaded.project.palette.originalColors
-          ? { originalColors: [...loaded.project.palette.originalColors] }
-          : {}),
-        sourcePaletteId: loaded.project.palette.sourcePaletteId,
-        author: loaded.project.palette.author,
-        sourceUrl: loaded.project.palette.sourceUrl,
-      })
+      setPalette(normalizedPal)
       setSelectedColorIndex(initialColorIdx)
       outlineColorExplicitRef.current = false
       setToolSettings((prev) => ({
@@ -412,7 +422,6 @@ export function useEditorController(options: UseEditorOptions) {
       setStepPhase({ kind: 'idle' })
       setFloatingShape(null)
       setMoveSession(null)
-      setStampSession(null)
       setSymmetryMode(defaultSymmetryMode)
       setTilePreviewGrid(defaultTilePreviewGrid)
       setSeamlessWrapMode(defaultSeamlessWrapMode)
@@ -454,28 +463,19 @@ export function useEditorController(options: UseEditorOptions) {
   }, [palette.colors, selectedColorIndex])
 
   /**
-   * Section 1: When Transparent Slot (`TRANSPARENT_COLOR_INDEX`) is selected,
-   * `activeRgba` has `a: 0` so Pen, Fill, Gradient, Line, Bezier, Shape, and Dithered tools all clear `#` mask pixels to transparent!
+   * 1-byte Fixed Pixel Index (`0..254` for registered opaque palette slots, `255` for Transparent Slot)
    */
-  const activeRgba = useMemo((): RGBA => {
-    if (selectedColorIndex === TRANSPARENT_COLOR_INDEX) {
-      return { r: 0, g: 0, b: 0, a: 0 }
-    }
-    return hexToRgba(activeHexColor, 255)
-  }, [selectedColorIndex, activeHexColor])
+  const activePixelIndex = useMemo((): number => {
+    return displaySlotToPixelIndex(palette, selectedColorIndex)
+  }, [palette, selectedColorIndex])
 
-  /**
-   * Section 3: Selection Outline Color Restriction
-   * - Outline color MUST always be a valid opaque color inside `palette.colors` (Transparent Slot is excluded).
-   * - Defaults to the current drawing color (or `palette.colors[0]` if Transparent is selected).
-   * - Automatically heals if the palette is switched or a color is deleted!
-   */
+  // Keep Selection Outline color synced with registered palette colors
   useEffect(() => {
     if (palette.colors.length === 0) return
     const fallbackColor =
       selectedColorIndex >= 0 && palette.colors[selectedColorIndex]
-        ? palette.colors[selectedColorIndex]
-        : palette.colors[0]
+        ? palette.colors[selectedColorIndex]!
+        : palette.colors[0]!
 
     setToolSettings((prev) => {
       if (!outlineColorExplicitRef.current) {
@@ -525,8 +525,10 @@ export function useEditorController(options: UseEditorOptions) {
         window.clearTimeout(saveTimerRef.current)
       }
       const tlToSave = explicitTimeline ?? timelineRef.current
+      const normalizedPal = normalizeProjectPalette(nextPalette)
       const projToSave: ProjectRecord = {
         ...nextProj,
+        pixelFormat: 'indexed-v1',
         activeLayerId: nextActiveLayerId,
         frames: tlToSave.frames,
         cels: tlToSave.cels,
@@ -534,16 +536,7 @@ export function useEditorController(options: UseEditorOptions) {
         defaultFrameDurationMs: tlToSave.defaultFrameDurationMs,
         playbackDirection: tlToSave.playbackDirection,
         loopPlayback: tlToSave.loopPlayback,
-        palette: {
-          name: nextPalette.name,
-          colors: [...nextPalette.colors],
-          ...(nextPalette.originalColors
-            ? { originalColors: [...nextPalette.originalColors] }
-            : {}),
-          sourcePaletteId: nextPalette.sourcePaletteId,
-          author: nextPalette.author,
-          sourceUrl: nextPalette.sourceUrl,
-        },
+        palette: normalizedPal,
         selectedColorIndex: nextSelectedColorIdx,
       }
       const layersSnapshot = [...nextLayers]
@@ -611,10 +604,6 @@ export function useEditorController(options: UseEditorOptions) {
     return hasAnySelectedPixel(selectionMask) ? selectionMask : null
   }, [project, effectiveWorldSelection, selectionMask])
 
-  /**
-   * World-space selection mask including any live Selection Move `(dx, dy)` offset,
-   * so marching ants render cleanly in world coordinates (both inside and outside canvas!).
-   */
   const displayWorldSelection = useMemo((): WorldSelectionMask | null => {
     if (
       moveSession &&
@@ -652,6 +641,10 @@ export function useEditorController(options: UseEditorOptions) {
         after: Uint8Array | null
         beforeWorld?: WorldSelectionMask | null
         afterWorld?: WorldSelectionMask | null
+      },
+      paletteTransition?: {
+        beforePalette: ProjectPalette
+        afterPalette: ProjectPalette
       }
     ) => {
       if (!project) return
@@ -661,7 +654,7 @@ export function useEditorController(options: UseEditorOptions) {
       const existingRef = curTl.cels[cellKey]
 
       const baseDiff = createLayerPixelPatch(beforeLayer, afterLayer)
-      if (!baseDiff && !selectionTransition) return
+      if (!baseDiff && !selectionTransition && !paletteTransition) return
 
       let targetCelId: string | undefined
       let celAllocation:
@@ -686,7 +679,7 @@ export function useEditorController(options: UseEditorOptions) {
           offsetY: afterLayer.offsetY,
           dataWidth: afterLayer.dataWidth,
           dataHeight: afterLayer.dataHeight,
-          data: new Uint8ClampedArray(afterLayer.data),
+          data: new Uint8Array(afterLayer.data),
         }
       }
 
@@ -719,7 +712,7 @@ export function useEditorController(options: UseEditorOptions) {
         id: generateId('hist'),
         label,
         timestamp: Date.now(),
-        kind: patch ? 'pixel-diff' : 'selection',
+        kind: patch ? 'pixel-diff' : paletteTransition ? 'palette' : 'selection',
         frameId: activeFrameId,
         celAllocation,
         pixelPatches: patch ? [patch] : undefined,
@@ -731,6 +724,12 @@ export function useEditorController(options: UseEditorOptions) {
         afterWorldSelection: selectionTransition
           ? cloneWorldSelectionMask(resolvedAfterWorld)
           : undefined,
+        ...(paletteTransition
+          ? {
+              beforePalette: normalizeProjectPalette(paletteTransition.beforePalette),
+              afterPalette: normalizeProjectPalette(paletteTransition.afterPalette),
+            }
+          : {}),
       })
       syncHistoryCounts()
 
@@ -748,6 +747,10 @@ export function useEditorController(options: UseEditorOptions) {
 
       const nextLayers = layers.map((l) => (l.id === beforeLayer.id ? afterLayer : l))
       setLayers(nextLayers)
+      const effectivePalette = paletteTransition ? paletteTransition.afterPalette : palette
+      if (paletteTransition) {
+        setPalette(effectivePalette)
+      }
       if (selectionTransition) {
         if (resolvedAfterWorld !== undefined) {
           setWorldSelection(cloneWorldSelectionMask(resolvedAfterWorld))
@@ -772,7 +775,7 @@ export function useEditorController(options: UseEditorOptions) {
       persistCommittedState(
         project,
         nextLayers,
-        palette,
+        effectivePalette,
         selectedColorIndex,
         activeLayerId,
         nextTl
@@ -792,7 +795,7 @@ export function useEditorController(options: UseEditorOptions) {
   const commitLayerCanvasViewChange = useCallback(
     (
       layerId: string,
-      afterCanvasView: Uint8ClampedArray,
+      afterCanvasView: Uint8Array,
       label: string,
       selectionTransition?: {
         before: Uint8Array | null
@@ -814,22 +817,6 @@ export function useEditorController(options: UseEditorOptions) {
     },
     [project, layers, commitUpdatedLayer]
   )
-
-  /**
-   * Commit floating shape onto active layer.
-   * Note: If Transparent Color is selected, `floatingShape` stores a mask (`a = 255, r=g=b=0`) with a dedicated erase flag
-   * or we apply `compositeFloatingShapeOntoLayer` directly; for transparent shapes we commit directly on placement!
-   */
-  const activePatternTile = useMemo(() => {
-    if (!toolSettings.patternStampId) return null
-    const found = stamps.find((s) => s.id === toolSettings.patternStampId)
-    if (!found || found.width <= 0 || found.height <= 0) return null
-    return {
-      width: found.width,
-      height: found.height,
-      data: found.data,
-    }
-  }, [toolSettings.patternStampId, stamps])
 
   const commitFloatingShape = useCallback(() => {
     if (!floatingShape || !project || !activeLayer || !activeLayerCanvasView) return
@@ -861,102 +848,6 @@ export function useEditorController(options: UseEditorOptions) {
     setFloatingShape(null)
   }, [])
 
-  const startStampPlacement = useCallback(
-    (stamp: StampAsset): boolean => {
-      if (!project || !activeLayer || activeLayer.locked || !activeLayer.visible) {
-        return false
-      }
-      if (isPlaying) {
-        setIsPlaying(false)
-      }
-      setStepPhase({ kind: 'idle' })
-      setFloatingShape(null)
-      setMoveSession(null)
-      const startX = Math.round(cursorRef.current.x - Math.floor(stamp.width / 2))
-      const startY = Math.round(cursorRef.current.y - Math.floor(stamp.height / 2))
-      setStampSession({
-        stampId: stamp.id,
-        name: stamp.name,
-        width: stamp.width,
-        height: stamp.height,
-        data: new Uint8ClampedArray(stamp.data),
-        x: startX,
-        y: startY,
-        flipX: false,
-        flipY: false,
-      })
-      playUiTick('step', soundEnabled)
-      return true
-    },
-    [project, activeLayer, isPlaying, soundEnabled]
-  )
-
-  const moveStampSession = useCallback((dx: number, dy: number) => {
-    const sx = Math.trunc(dx)
-    const sy = Math.trunc(dy)
-    if (sx === 0 && sy === 0) return
-    setStampSession((prev) =>
-      prev ? { ...prev, x: prev.x + sx, y: prev.y + sy } : null
-    )
-  }, [])
-
-  const flipStampSession = useCallback((axis: 'horizontal' | 'vertical') => {
-    setStampSession((prev) => {
-      if (!prev) return null
-      return axis === 'horizontal'
-        ? { ...prev, flipX: !prev.flipX }
-        : { ...prev, flipY: !prev.flipY }
-    })
-  }, [])
-
-  const commitStampSession = useCallback((): boolean => {
-    if (!stampSession || !project || !activeLayer || !activeLayerCanvasView) {
-      return false
-    }
-    const afterView = new Uint8ClampedArray(activeLayerCanvasView)
-    applyStampToBuffer(afterView, {
-      canvasWidth: project.width,
-      canvasHeight: project.height,
-      stampWidth: stampSession.width,
-      stampHeight: stampSession.height,
-      stampData: stampSession.data,
-      topLeftX: stampSession.x,
-      topLeftY: stampSession.y,
-      flipX: stampSession.flipX,
-      flipY: stampSession.flipY,
-      symmetry: symmetryMode,
-      seamlessWrap: seamlessWrapMode,
-      selectionMask: effectiveSelectionMask,
-    })
-    setStampSession(null)
-    playUiTick('draw', soundEnabled)
-    commitLayerCanvasViewChange(activeLayer.id, afterView, 'Stamp')
-    return true
-  }, [
-    stampSession,
-    project,
-    activeLayer,
-    activeLayerCanvasView,
-    symmetryMode,
-    seamlessWrapMode,
-    effectiveSelectionMask,
-    soundEnabled,
-    commitLayerCanvasViewChange,
-  ])
-
-  const cancelStampSession = useCallback(() => {
-    setStampSession(null)
-  }, [])
-
-  const extractActiveSelectionAsStamp = useCallback(() => {
-    if (!activeLayer || !effectiveWorldSelection) return null
-    return extractStampFromSelection(activeLayer, effectiveWorldSelection)
-  }, [activeLayer, effectiveWorldSelection])
-
-  /**
-   * Start interactive Selection Move mode (Section 7 + Off-Canvas World Preservation)
-   * Works seamlessly even when the selection is already partially or completely outside `[0..width-1, 0..height-1]`!
-   */
   const startSelectionMove = useCallback((): boolean => {
     if (!project || !activeLayer || activeLayer.locked || !effectiveWorldSelection) {
       return false
@@ -1001,9 +892,6 @@ export function useEditorController(options: UseEditorOptions) {
     return true
   }, [project, activeLayer, effectiveWorldSelection, soundEnabled])
 
-  /**
-   * Start interactive Single-Layer Move on canvas
-   */
   const startLayerMove = useCallback(
     (targetLayerId?: string): boolean => {
       if (!project) return false
@@ -1043,10 +931,6 @@ export function useEditorController(options: UseEditorOptions) {
     [project, layers, activeLayerId, activeLayer, soundEnabled]
   )
 
-  /**
-   * Section 8-3: Start interactive Multi-Layer Batch Move on canvas!
-   * Moves all checked layers by the exact same `(dx, dy)` while preserving their relative offsets and off-canvas pixels.
-   */
   const startMultiLayerMove = useCallback(
     (targetIds?: string[]): boolean => {
       if (!project) return false
@@ -1077,7 +961,7 @@ export function useEditorController(options: UseEditorOptions) {
       setFloatingShape(null)
       setMoveSession({
         mode: 'multi-layer',
-        layerId: movingLayers[0].id,
+        layerId: movingLayers[0]!.id,
         layerIds: idsToMove,
         initialLayerOffsets: initialOffsets,
         dx: 0,
@@ -1212,7 +1096,6 @@ export function useEditorController(options: UseEditorOptions) {
 
       const w = project.width
       const h = project.height
-      // Preserve FULL world-space selection even if moved partially or completely outside `[0..w-1, 0..h-1]`!
       const afterWorld = shiftWorldSelectionMask(
         moveSession.initialWorldSelection,
         moveSession.dx,
@@ -1242,12 +1125,9 @@ export function useEditorController(options: UseEditorOptions) {
     commitUpdatedLayer,
   ])
 
-  /**
-   * Compute live preview layer override for single-layer tools & selection move.
-   */
   const previewLayerOverride = useMemo((): {
     layerId: string
-    data: Uint8ClampedArray
+    data: Uint8Array
   } | null => {
     if (!project || !activeLayer || !activeLayerCanvasView) return null
     const w = project.width
@@ -1285,31 +1165,11 @@ export function useEditorController(options: UseEditorOptions) {
           data: extractLayerCanvasView(stamped, w, h),
         }
       }
-      // Note: 'multi-layer' preview shifts multiple layers simultaneously inside `compositedBuffer` below!
       return null
     }
 
     if (liveStrokeBuffer) {
       return liveStrokeBuffer
-    }
-
-    if (stampSession) {
-      const buf = new Uint8ClampedArray(activeLayerCanvasView)
-      applyStampToBuffer(buf, {
-        canvasWidth: w,
-        canvasHeight: h,
-        stampWidth: stampSession.width,
-        stampHeight: stampSession.height,
-        stampData: stampSession.data,
-        topLeftX: stampSession.x,
-        topLeftY: stampSession.y,
-        flipX: stampSession.flipX,
-        flipY: stampSession.flipY,
-        symmetry: symmetryMode,
-        seamlessWrap: seamlessWrapMode,
-        selectionMask: effectiveSelectionMask,
-      })
-      return { layerId: activeLayer.id, data: buf }
     }
 
     if (floatingShape) {
@@ -1328,7 +1188,7 @@ export function useEditorController(options: UseEditorOptions) {
     }
 
     if (stepPhase.kind === 'gradient-end') {
-      const buf = new Uint8ClampedArray(activeLayerCanvasView)
+      const buf = new Uint8Array(activeLayerCanvasView)
       applyGradientFloodFill(buf, {
         width: w,
         height: h,
@@ -1336,7 +1196,7 @@ export function useEditorController(options: UseEditorOptions) {
         startY: stepPhase.start.y,
         endX: cursor.x,
         endY: cursor.y,
-        color: activeRgba,
+        colorIndex: activePixelIndex,
         connectivity: toolSettings.fillConnectivity,
         gradientType: toolSettings.gradientType,
         fixedRatio: toolSettings.gradientFixedRatio,
@@ -1349,7 +1209,7 @@ export function useEditorController(options: UseEditorOptions) {
     }
 
     if (stepPhase.kind === 'line-end') {
-      const buf = new Uint8ClampedArray(activeLayerCanvasView)
+      const buf = new Uint8Array(activeLayerCanvasView)
       drawLine(buf, stepPhase.start, cursor, {
         width: w,
         height: h,
@@ -1357,7 +1217,7 @@ export function useEditorController(options: UseEditorOptions) {
         shape: toolSettings.lineShape,
         dither: toolSettings.lineDither,
         pixelPerfect: toolSettings.linePixelPerfect,
-        color: activeRgba,
+        colorIndex: activePixelIndex,
         selectionMask: effectiveSelectionMask,
         symmetry: symmetryMode,
         seamlessWrap: seamlessWrapMode,
@@ -1366,7 +1226,7 @@ export function useEditorController(options: UseEditorOptions) {
     }
 
     if (stepPhase.kind === 'bezier-p3') {
-      const buf = new Uint8ClampedArray(activeLayerCanvasView)
+      const buf = new Uint8Array(activeLayerCanvasView)
       drawLine(buf, stepPhase.p0, cursor, {
         width: w,
         height: h,
@@ -1374,7 +1234,7 @@ export function useEditorController(options: UseEditorOptions) {
         shape: toolSettings.lineShape,
         dither: toolSettings.lineDither,
         pixelPerfect: toolSettings.linePixelPerfect,
-        color: activeRgba,
+        colorIndex: activePixelIndex,
         selectionMask: effectiveSelectionMask,
         symmetry: symmetryMode,
         seamlessWrap: seamlessWrapMode,
@@ -1383,14 +1243,14 @@ export function useEditorController(options: UseEditorOptions) {
     }
 
     if (stepPhase.kind === 'bezier-p1') {
-      const buf = new Uint8ClampedArray(activeLayerCanvasView)
+      const buf = new Uint8Array(activeLayerCanvasView)
       drawCubicBezier(buf, stepPhase.p0, cursor, stepPhase.p3, stepPhase.p3, {
         width: w,
         height: h,
         size: toolSettings.lineSize,
         shape: toolSettings.lineShape,
         dither: toolSettings.lineDither,
-        color: activeRgba,
+        colorIndex: activePixelIndex,
         selectionMask: effectiveSelectionMask,
         symmetry: symmetryMode,
         seamlessWrap: seamlessWrapMode,
@@ -1399,14 +1259,14 @@ export function useEditorController(options: UseEditorOptions) {
     }
 
     if (stepPhase.kind === 'bezier-p2') {
-      const buf = new Uint8ClampedArray(activeLayerCanvasView)
+      const buf = new Uint8Array(activeLayerCanvasView)
       drawCubicBezier(buf, stepPhase.p0, stepPhase.p1, cursor, stepPhase.p3, {
         width: w,
         height: h,
         size: toolSettings.lineSize,
         shape: toolSettings.lineShape,
         dither: toolSettings.lineDither,
-        color: activeRgba,
+        colorIndex: activePixelIndex,
         selectionMask: effectiveSelectionMask,
         symmetry: symmetryMode,
         seamlessWrap: seamlessWrapMode,
@@ -1415,7 +1275,7 @@ export function useEditorController(options: UseEditorOptions) {
     }
 
     if (stepPhase.kind === 'shape-end') {
-      const buf = new Uint8ClampedArray(activeLayerCanvasView)
+      const buf = new Uint8Array(activeLayerCanvasView)
       const bounds = computeShapeBounds(
         stepPhase.start,
         cursor,
@@ -1427,7 +1287,7 @@ export function useEditorController(options: UseEditorOptions) {
         filled: toolSettings.shapeFilled,
         strokeSize: toolSettings.shapeSize,
         dither: toolSettings.shapeDither,
-        color: activeRgba,
+        colorIndex: activePixelIndex,
         selectionMask: effectiveSelectionMask,
         symmetry: symmetryMode,
         seamlessWrap: seamlessWrapMode,
@@ -1440,9 +1300,8 @@ export function useEditorController(options: UseEditorOptions) {
       return { layerId: activeLayer.id, data: buf }
     }
 
-    // Section 2: Hover brush footprint preview for Pen, Eraser, AND Line/Bezier when idle!
     if (stepPhase.kind === 'idle' && (tool === 'pen' || tool === 'eraser' || tool === 'line')) {
-      const buf = new Uint8ClampedArray(activeLayerCanvasView)
+      const buf = new Uint8Array(activeLayerCanvasView)
       const brushSize =
         tool === 'pen'
           ? toolSettings.penSize
@@ -1467,13 +1326,12 @@ export function useEditorController(options: UseEditorOptions) {
         height: h,
         size: brushSize,
         shape: brushShape,
-        color: activeRgba,
+        colorIndex: activePixelIndex,
         dither: brushDither,
         erase: tool === 'eraser',
         selectionMask: effectiveSelectionMask,
         symmetry: symmetryMode,
         seamlessWrap: seamlessWrapMode,
-        patternTile: tool === 'pen' ? activePatternTile : null,
       })
       return { layerId: activeLayer.id, data: buf }
     }
@@ -1486,17 +1344,15 @@ export function useEditorController(options: UseEditorOptions) {
     moveSession,
     layers,
     liveStrokeBuffer,
-    stampSession,
     floatingShape,
     effectiveSelectionMask,
     stepPhase,
     cursor,
-    activeRgba,
+    activePixelIndex,
     toolSettings,
     tool,
     symmetryMode,
     seamlessWrapMode,
-    activePatternTile,
   ])
 
   const compositedBuffer = useMemo(() => {
@@ -1515,12 +1371,15 @@ export function useEditorController(options: UseEditorOptions) {
           offsetY: init.offsetY + moveSession.dy,
         }
       })
-      return compositeLayers(previewLayers, project.width, project.height)
+      return compositeLayers(previewLayers, project.width, project.height, {
+        palette,
+      })
     }
     return compositeLayers(layers, project.width, project.height, {
+      palette,
       previewLayerOverride,
     })
-  }, [project, layers, moveSession, previewLayerOverride])
+  }, [project, layers, moveSession, palette, previewLayerOverride])
 
   const selectTool = useCallback(
     (nextTool: ToolId) => {
@@ -1530,24 +1389,13 @@ export function useEditorController(options: UseEditorOptions) {
       if (floatingShape) {
         commitFloatingShape()
       }
-      if (stampSession) {
-        commitStampSession()
-      }
       setStepPhase({ kind: 'idle' })
       if (nextTool === 'eyedropper' && tool !== 'eyedropper') {
         prevToolBeforeEyedropperRef.current = tool
       }
       setTool(nextTool)
     },
-    [
-      moveSession,
-      commitActiveMove,
-      floatingShape,
-      commitFloatingShape,
-      stampSession,
-      commitStampSession,
-      tool,
-    ]
+    [moveSession, commitActiveMove, floatingShape, commitFloatingShape, tool]
   )
 
   const cancelMultiStep = useCallback(() => {
@@ -1558,19 +1406,16 @@ export function useEditorController(options: UseEditorOptions) {
     if (moveSession) {
       setMoveSession(null)
     }
-    if (stampSession) {
-      setStampSession(null)
-    }
-  }, [floatingShape, moveSession, stampSession])
+  }, [floatingShape, moveSession])
 
   const recomputeContinuousStroke = useCallback(
     (
       rawPoints: readonly Point[],
-      baseCanvasView: Uint8ClampedArray,
+      baseCanvasView: Uint8Array,
       mode: 'pen' | 'eraser'
     ) => {
       if (!project) return baseCanvasView
-      const nextBuf = new Uint8ClampedArray(baseCanvasView)
+      const nextBuf = new Uint8Array(baseCanvasView)
       const pts =
         mode === 'pen' && toolSettings.pixelPerfect
           ? filterPixelPerfectPoints(rawPoints)
@@ -1581,31 +1426,25 @@ export function useEditorController(options: UseEditorOptions) {
         height: project.height,
         size: mode === 'pen' ? toolSettings.penSize : toolSettings.eraserSize,
         shape: mode === 'pen' ? toolSettings.penShape : toolSettings.eraserShape,
-        color: activeRgba,
+        colorIndex: activePixelIndex,
         dither: mode === 'pen' ? toolSettings.penDither : 1,
         erase: mode === 'eraser',
         selectionMask: effectiveSelectionMask,
         symmetry: symmetryMode,
         seamlessWrap: seamlessWrapMode,
-        patternTile: mode === 'pen' ? activePatternTile : null,
       })
       return nextBuf
     },
     [
       project,
       toolSettings,
-      activeRgba,
+      activePixelIndex,
       effectiveSelectionMask,
       symmetryMode,
       seamlessWrapMode,
-      activePatternTile,
     ]
   )
 
-  /**
-   * Section 12: Allow cursor / endpoint coordinates outside `[0..width-1, 0..height-1]`
-   * when `allowOutOfBounds` is true (Line, Bezier, Shape, Select area, Gradient Fill, or Seamless Wrap)!
-   */
   const moveCursorTo = useCallback(
     (pt: Point, allowOutOfBounds = false) => {
       if (!project) return
@@ -1623,7 +1462,9 @@ export function useEditorController(options: UseEditorOptions) {
       const nextPt =
         allowOutOfBounds && !seamlessActive
           ? normalizeWorldPoint(pt)
-          : allowOutOfBounds && seamlessActive && (tool === 'line' || tool === 'shape' || tool === 'select')
+          : allowOutOfBounds &&
+              seamlessActive &&
+              (tool === 'line' || tool === 'shape' || tool === 'select')
             ? normalizeWorldPoint(pt)
             : wrappedForCursor
 
@@ -1634,8 +1475,6 @@ export function useEditorController(options: UseEditorOptions) {
 
       const st = strokeRef.current
       if (st && st.active) {
-        // Keep raw stroke coordinates continuous across canvas borders when seamlessWrapMode is active
-        // so Bresenham segments cross the edge cleanly without jumping backward across the canvas!
         const strokePt = seamlessActive
           ? normalizeWorldPoint(pt)
           : clampCanvasPoint(pt, project.width, project.height)
@@ -1656,90 +1495,104 @@ export function useEditorController(options: UseEditorOptions) {
   )
 
   /**
-   * Section 1 & Section 9: Shared Eyedropper Color Picker
-   * - Does NOT modify any pixel or layer data.
-   * - If the sampled pixel is transparent (`a === 0`), selects the dedicated Transparent Slot (`TRANSPARENT_COLOR_INDEX = -1`).
-   * - If opaque, selects matching color in `palette.colors` or adds to palette (if `< 256` colors).
-   * - When invoked via double-tap (`restoreCurrentTool = true`), keeps the current tool active!
+   * Section 7-5: Indexed Color Eyedropper
+   * - Never mutates pixel data.
+   * - If composited pixel is transparent (`a === 0`), selects Transparent Slot (`-1`).
+   * - If active layer is normal 100% opaque and has a fixed index at `(pt.x, pt.y)` with no upper visible layer covering it,
+   *   directly selects that fixed index's display slot!
+   * - Otherwise resolves the composited RGB to an exact palette match, or registers it if `< 255` opaque colors,
+   *   or selects the nearest registered palette color and triggers `onPaletteLimitReached` when at the 255-color cap.
    */
   const pickColorAtCanvasPoint = useCallback(
-    (pt: Point, options?: { restorePreviousTool?: boolean }): boolean => {
+    (pt: Point, opts?: { restorePreviousTool?: boolean }): boolean => {
       if (!project) return false
       const w = project.width
       const h = project.height
       if (!isInBounds(pt.x, pt.y, w, h)) return false
 
-      const comp = compositeLayers(layers, w, h)
-      const picked = getPixel(comp, w, h, pt.x, pt.y)
+      const comp = compositeLayers(layers, w, h, { palette })
+      const off = (pt.y * w + pt.x) * 4
+      const r = comp[off]!
+      const g = comp[off + 1]!
+      const b = comp[off + 2]!
+      const a = comp[off + 3]!
 
-      if (picked.a === 0) {
+      if (a === 0) {
         setSelectedColorIndex(TRANSPARENT_COLOR_INDEX)
         playUiTick('step', soundEnabled)
         onColorPicked?.(true)
       } else {
-        const hex = rgbaToHex(picked)
-        const idx = palette.colors.findIndex(
-          (c) => c.toUpperCase() === hex.toUpperCase()
-        )
-        if (idx >= 0) {
-          setSelectedColorIndex(idx)
-        } else if (palette.colors.length < 256) {
-          const nextColors = [...palette.colors, hex]
-          const nextPal = { ...palette, colors: nextColors }
-          setPalette(nextPal)
-          setSelectedColorIndex(nextColors.length - 1)
-          persistCommittedState(
-            project,
-            layers,
-            nextPal,
-            nextColors.length - 1,
-            activeLayerId
-          )
+        // Check topmost visible normal 100%-opacity unclipped layer for direct fixed-index hit
+        let directFixedHit: number | null = null
+        for (let li = layers.length - 1; li >= 0; li--) {
+          const l = layers[li]!
+          if (!l.visible || l.opacity <= 0) continue
+          const view = extractLayerCanvasView(l, w, h)
+          const pxIdx = getPixelIndex(view, w, h, pt.x, pt.y)
+          if (pxIdx === TRANSPARENT_INDEX) continue
+          if (l.opacity === 100 && l.blendMode === 'normal' && !l.clipping) {
+            directFixedHit = pxIdx
+          }
+          break
+        }
+
+        if (directFixedHit !== null) {
+          const dispSlot = pixelIndexToDisplaySlot(palette, directFixedHit)
+          if (dispSlot >= 0) {
+            setSelectedColorIndex(dispSlot)
+          }
         } else {
-          const replaceIdx = selectedColorIndex >= 0 ? selectedColorIndex : 0
-          const nextColors = [...palette.colors]
-          nextColors[replaceIdx] = hex
-          const nextPal = { ...palette, colors: nextColors }
-          setPalette(nextPal)
-          setSelectedColorIndex(replaceIdx)
-          persistCommittedState(
-            project,
-            layers,
-            nextPal,
-            replaceIdx,
-            activeLayerId
-          )
+          const hex = rgbaToHex({ r, g, b }).toUpperCase()
+          const exactFixed = findExactFixedIndex(palette, hex)
+          if (exactFixed >= 0) {
+            const dispSlot = pixelIndexToDisplaySlot(palette, exactFixed)
+            setSelectedColorIndex(Math.max(0, dispSlot))
+          } else if (palette.colors.length < MAX_OPAQUE_PALETTE_COLORS) {
+            const added = addColorToIndexedPalette(palette, hex)
+            if (added.added && added.displayIndex >= 0) {
+              setPalette(added.palette)
+              setSelectedColorIndex(added.displayIndex)
+              persistCommittedState(
+                project,
+                layers,
+                added.palette,
+                added.displayIndex,
+                activeLayerId
+              )
+            }
+          } else {
+            // Palette has reached 255 opaque colors: never overwrite a fixed slot (which would corrupt pixels!);
+            // select the closest registered color and notify the user!
+            const nearFixed = findNearestFixedIndex(palette, r, g, b)
+            const dispSlot = pixelIndexToDisplaySlot(palette, nearFixed)
+            setSelectedColorIndex(Math.max(0, dispSlot))
+            onPaletteLimitReached?.()
+          }
         }
         playUiTick('step', soundEnabled)
         onColorPicked?.(false)
       }
 
-      if (options?.restorePreviousTool) {
+      if (opts?.restorePreviousTool) {
         if (toolRef.current === 'eyedropper') {
           const prev = prevToolBeforeEyedropperRef.current
           setTool(prev === 'eyedropper' ? 'pen' : prev)
         }
-        // When invoked via double-tap while using another tool (e.g. pen, line, fill, shape),
-        // `toolRef.current` is ALREADY that active tool, so we preserve it without clobbering!
       }
       return true
     },
     [
       project,
       layers,
+      palette,
       soundEnabled,
       onColorPicked,
-      palette,
       persistCommittedState,
       activeLayerId,
-      selectedColorIndex,
+      onPaletteLimitReached,
     ]
   )
 
-  /**
-   * Section 3: Sample color at the CURRENT in-app cursor (`cursorRef.current`).
-   * Used by double-tap eyedropper so the sample coordinate is ALWAYS the cursor's pixel, NEVER the finger tap location!
-   */
   const pickColorAtCurrentCursor = useCallback((): boolean => {
     const pt = cursorRef.current
     return pickColorAtCanvasPoint(pt, { restorePreviousTool: true })
@@ -1759,10 +1612,6 @@ export function useEditorController(options: UseEditorOptions) {
         commitFloatingShape()
         return
       }
-      if (stampSession) {
-        commitStampSession()
-        return
-      }
       if (activeLayer.locked && tool !== 'eyedropper' && tool !== 'select') {
         return
       }
@@ -1771,7 +1620,9 @@ export function useEditorController(options: UseEditorOptions) {
         seamlessWrapMode !== 'none' ||
         tool === 'line' ||
         tool === 'shape' ||
-        (tool === 'fill' && toolSettings.fillMode === 'gradient' && stepPhase.kind === 'gradient-end') ||
+        (tool === 'fill' &&
+          toolSettings.fillMode === 'gradient' &&
+          stepPhase.kind === 'gradient-end') ||
         (tool === 'select' && toolSettings.selectType !== 'wand')
 
       const pt = targetPoint
@@ -1784,7 +1635,10 @@ export function useEditorController(options: UseEditorOptions) {
 
       if (targetPoint) {
         const displayCursor =
-          seamlessWrapMode !== 'none' && tool !== 'line' && tool !== 'shape' && tool !== 'select'
+          seamlessWrapMode !== 'none' &&
+          tool !== 'line' &&
+          tool !== 'shape' &&
+          tool !== 'select'
             ? resolveCanvasPoint(
                 pt.x,
                 pt.y,
@@ -1803,7 +1657,7 @@ export function useEditorController(options: UseEditorOptions) {
         if (!activeLayer.visible) return
         const startStrokePt =
           seamlessWrapMode !== 'none' ? pt : clampCanvasPoint(pt, w, h)
-        const baseCopy = new Uint8ClampedArray(activeLayerCanvasView)
+        const baseCopy = new Uint8Array(activeLayerCanvasView)
         const initialPreview = recomputeContinuousStroke([startStrokePt], baseCopy, tool)
         strokeRef.current = {
           active: true,
@@ -1837,13 +1691,13 @@ export function useEditorController(options: UseEditorOptions) {
               ? resolveCanvasPoint(pt.x, pt.y, w, h, seamlessWrapMode) ??
                 clampCanvasPoint(pt, w, h)
               : clampCanvasPoint(pt, w, h)
-          const after = new Uint8ClampedArray(activeLayerCanvasView)
+          const after = new Uint8Array(activeLayerCanvasView)
           applyFloodFill(after, {
             width: w,
             height: h,
             seedX: seedPt.x,
             seedY: seedPt.y,
-            color: activeRgba,
+            colorIndex: activePixelIndex,
             connectivity: toolSettings.fillConnectivity,
             dither: toolSettings.fillDither,
             selectionMask: effectiveSelectionMask,
@@ -1862,7 +1716,7 @@ export function useEditorController(options: UseEditorOptions) {
             setStepPhase({ kind: 'gradient-end', start: clampedStart })
             playUiTick('step', soundEnabled)
           } else {
-            const after = new Uint8ClampedArray(activeLayerCanvasView)
+            const after = new Uint8Array(activeLayerCanvasView)
             applyGradientFloodFill(after, {
               width: w,
               height: h,
@@ -1870,7 +1724,7 @@ export function useEditorController(options: UseEditorOptions) {
               startY: stepPhase.start.y,
               endX: pt.x,
               endY: pt.y,
-              color: activeRgba,
+              colorIndex: activePixelIndex,
               connectivity: toolSettings.fillConnectivity,
               gradientType: toolSettings.gradientType,
               fixedRatio: toolSettings.gradientFixedRatio,
@@ -1894,7 +1748,7 @@ export function useEditorController(options: UseEditorOptions) {
             setStepPhase({ kind: 'line-end', start: pt })
             playUiTick('step', soundEnabled)
           } else {
-            const after = new Uint8ClampedArray(activeLayerCanvasView)
+            const after = new Uint8Array(activeLayerCanvasView)
             drawLine(after, stepPhase.start, pt, {
               width: w,
               height: h,
@@ -1902,7 +1756,7 @@ export function useEditorController(options: UseEditorOptions) {
               shape: toolSettings.lineShape,
               dither: toolSettings.lineDither,
               pixelPerfect: toolSettings.linePixelPerfect,
-              color: activeRgba,
+              colorIndex: activePixelIndex,
               selectionMask: effectiveSelectionMask,
               symmetry: symmetryMode,
               seamlessWrap: seamlessWrapMode,
@@ -1927,14 +1781,14 @@ export function useEditorController(options: UseEditorOptions) {
             })
             playUiTick('step', soundEnabled)
           } else if (stepPhase.kind === 'bezier-p2') {
-            const after = new Uint8ClampedArray(activeLayerCanvasView)
+            const after = new Uint8Array(activeLayerCanvasView)
             drawCubicBezier(after, stepPhase.p0, stepPhase.p1, pt, stepPhase.p3, {
               width: w,
               height: h,
               size: toolSettings.lineSize,
               shape: toolSettings.lineShape,
               dither: toolSettings.lineDither,
-              color: activeRgba,
+              colorIndex: activePixelIndex,
               selectionMask: effectiveSelectionMask,
               symmetry: symmetryMode,
               seamlessWrap: seamlessWrapMode,
@@ -1961,17 +1815,16 @@ export function useEditorController(options: UseEditorOptions) {
             toolSettings.shapeFixedRatio
           )
 
-          // Section 1-2: When Transparent Slot is selected, apply transparent shape directly to active layer
-          // (respecting dither `#` vs `.` and selectionMask, setting RGBA alpha=0)!
-          if (activeRgba.a === 0) {
-            const after = new Uint8ClampedArray(activeLayerCanvasView)
+          // When Transparent Slot (`TRANSPARENT_INDEX`) is selected, apply transparent shape directly to active layer
+          if (activePixelIndex === TRANSPARENT_INDEX) {
+            const after = new Uint8Array(activeLayerCanvasView)
             const shapeOpts = {
               width: w,
               height: h,
               filled: toolSettings.shapeFilled,
               strokeSize: toolSettings.shapeSize,
               dither: toolSettings.shapeDither,
-              color: activeRgba,
+              colorIndex: TRANSPARENT_INDEX,
               selectionMask: effectiveSelectionMask,
               symmetry: symmetryMode,
               seamlessWrap: seamlessWrapMode,
@@ -1987,20 +1840,17 @@ export function useEditorController(options: UseEditorOptions) {
             return
           }
 
-          // Section 12: Rasterize in local shape space (`[0..sw-1, 0..sh-1]`) with world-anchored dither
-          // so shapes extending outside `[0..w-1, 0..h-1]` preserve their true geometry & curves even when dragged/rotated!
           const sw = Math.max(1, Math.min(1024, bounds.width))
           const sh = Math.max(1, Math.min(1024, bounds.height))
           const localBuf = createPixelBuffer(sw, sh)
 
-          // Build unshifted shape in `[0..sw-1, 0..sh-1]` with solid mask first, then apply canvas-anchored dither `(bounds.minX + lx, bounds.minY + ly)`
           const solidLocalOpts = {
             width: sw,
             height: sh,
             filled: toolSettings.shapeFilled,
             strokeSize: toolSettings.shapeSize,
             dither: 1 as const,
-            color: activeRgba,
+            colorIndex: activePixelIndex,
             selectionMask: null,
           }
           const localBounds = {
@@ -2018,64 +1868,15 @@ export function useEditorController(options: UseEditorOptions) {
           }
 
           if (toolSettings.shapeDither !== 1) {
-            // Apply canvas-space dither mask anchored to `(0, 0)`
-            const tempCanvasTest = createPixelBuffer(1, 1)
             for (let ly = 0; ly < sh; ly++) {
               const worldY = bounds.minY + ly
               for (let lx = 0; lx < sw; lx++) {
-                const idx = (ly * sw + lx) * 4
-                if (localBuf[idx + 3] === 0) continue
+                const idx = ly * sw + lx
+                if (localBuf[idx] === TRANSPARENT_INDEX) continue
                 const worldX = bounds.minX + lx
-                tempCanvasTest[3] = 0
-                // Check dither at `(worldX, worldY)` via stamp/dither parity
-                stampPoints(tempCanvasTest, [{ x: 0, y: 0 }], {
-                  width: 1,
-                  height: 1,
-                  size: 1,
-                  shape: 'square',
-                  color: activeRgba,
-                  dither: 1,
-                })
-                // Direct world dither check
-                const dId = toolSettings.shapeDither
-                // Inline world dither modulo via rasterizeRectangle 1x1 trick is unnecessary; import shouldDrawWithDither or check directly
-                void dId
-                void worldX
-                void worldY
-              }
-            }
-          }
-
-          // Re-rasterize directly with canvas-anchored dither if shapeDither !== 1:
-          if (toolSettings.shapeDither !== 1) {
-            const ditheredBuf = createPixelBuffer(w, h)
-            const canvasShapeOpts = {
-              width: w,
-              height: h,
-              filled: toolSettings.shapeFilled,
-              strokeSize: toolSettings.shapeSize,
-              dither: toolSettings.shapeDither,
-              color: activeRgba,
-              selectionMask: null,
-            }
-            if (toolSettings.shapeType === 'rect') {
-              rasterizeRectangle(ditheredBuf, bounds, canvasShapeOpts)
-            } else {
-              rasterizeEllipse(ditheredBuf, bounds, canvasShapeOpts)
-            }
-            localBuf.fill(0)
-            for (let ly = 0; ly < sh; ly++) {
-              const cy = bounds.minY + ly
-              if (cy < 0 || cy >= h) continue
-              for (let lx = 0; lx < sw; lx++) {
-                const cx = bounds.minX + lx
-                if (cx < 0 || cx >= w) continue
-                const sIdx = (cy * w + cx) * 4
-                const dIdx = (ly * sw + lx) * 4
-                localBuf[dIdx] = ditheredBuf[sIdx]
-                localBuf[dIdx + 1] = ditheredBuf[sIdx + 1]
-                localBuf[dIdx + 2] = ditheredBuf[sIdx + 2]
-                localBuf[dIdx + 3] = ditheredBuf[sIdx + 3]
+                if (!shouldDrawWithDither(toolSettings.shapeDither, worldX, worldY)) {
+                  localBuf[idx] = TRANSPARENT_INDEX
+                }
               }
             }
           }
@@ -2129,7 +1930,6 @@ export function useEditorController(options: UseEditorOptions) {
             setStepPhase({ kind: 'select-end', start: pt })
             playUiTick('step', soundEnabled)
           } else {
-            // Preserve true world-space rectangle/ellipse coordinates even if partially or wholly outside canvas!
             const partWorld =
               toolSettings.selectType === 'ellipse'
                 ? selectWorldEllipseMask(stepPhase.start, pt)
@@ -2167,8 +1967,6 @@ export function useEditorController(options: UseEditorOptions) {
       commitActiveMove,
       floatingShape,
       commitFloatingShape,
-      stampSession,
-      commitStampSession,
       tool,
       toolSettings,
       stepPhase,
@@ -2176,7 +1974,7 @@ export function useEditorController(options: UseEditorOptions) {
       recomputeContinuousStroke,
       soundEnabled,
       pickColorAtCanvasPoint,
-      activeRgba,
+      activePixelIndex,
       effectiveSelectionMask,
       effectiveWorldSelection,
       symmetryMode,
@@ -2202,9 +2000,6 @@ export function useEditorController(options: UseEditorOptions) {
     )
   }, [commitLayerCanvasViewChange])
 
-  /**
-   * Abort an in-progress stroke WITHOUT committing (used by Section 9-3 when 2nd tap of a double-tap eyedropper arrives!).
-   */
   const abortStrokePreview = useCallback(() => {
     const st = strokeRef.current
     if (st) {
@@ -2274,15 +2069,19 @@ export function useEditorController(options: UseEditorOptions) {
 
   const outlineSelection = useCallback(() => {
     if (!project || !activeLayer || !activeLayerCanvasView || !effectiveSelectionMask) return
-    // Guarantee outlineColor comes from project palette (Section 3)
     const validHex =
       palette.colors.find(
         (c) => c.toUpperCase() === toolSettings.outlineColor.toUpperCase()
       ) ??
       (selectedColorIndex >= 0 && palette.colors[selectedColorIndex]
-        ? palette.colors[selectedColorIndex]
+        ? palette.colors[selectedColorIndex]!
         : palette.colors[0] ?? '#000000')
-    const outlineRgba = hexToRgba(validHex, 255)
+    const fixedIdx = findExactFixedIndex(palette, validHex)
+    const outlineColorIdx =
+      fixedIdx >= 0
+        ? fixedIdx
+        : displaySlotToPixelIndex(palette, selectedColorIndex >= 0 ? selectedColorIndex : 0)
+
     const nextBuffer = applySelectionOutline(
       activeLayerCanvasView,
       effectiveSelectionMask,
@@ -2290,7 +2089,7 @@ export function useEditorController(options: UseEditorOptions) {
       project.height,
       toolSettings.outlineMode,
       toolSettings.outlineSize,
-      outlineRgba
+      outlineColorIdx
     )
     commitLayerCanvasViewChange(
       activeLayer.id,
@@ -2302,7 +2101,7 @@ export function useEditorController(options: UseEditorOptions) {
     activeLayer,
     activeLayerCanvasView,
     effectiveSelectionMask,
-    palette.colors,
+    palette,
     toolSettings,
     selectedColorIndex,
     commitLayerCanvasViewChange,
@@ -2310,11 +2109,15 @@ export function useEditorController(options: UseEditorOptions) {
 
   const copySelectedPixels = useCallback((): boolean => {
     if (!project || !activeLayer || !effectiveWorldSelection) return false
-    const clip = copyWorldSelectionFromLayer(activeLayer, effectiveWorldSelection)
+    const clip = copyWorldSelectionFromLayer(
+      activeLayer,
+      effectiveWorldSelection,
+      palette
+    )
     if (!clip) return false
     updateClipboard(clip)
     return true
-  }, [project, activeLayer, effectiveWorldSelection, updateClipboard])
+  }, [project, activeLayer, effectiveWorldSelection, palette, updateClipboard])
 
   const cutSelectedPixels = useCallback((): boolean => {
     if (!project || !activeLayer || !effectiveWorldSelection) {
@@ -2322,21 +2125,29 @@ export function useEditorController(options: UseEditorOptions) {
     }
     const { clipboard: clip, nextLayer } = cutWorldSelectionFromLayer(
       activeLayer,
-      effectiveWorldSelection
+      effectiveWorldSelection,
+      palette
     )
     if (!clip) return false
     updateClipboard(clip)
     commitUpdatedLayer(activeLayer, nextLayer, 'Cut Selection')
     return true
-  }, [project, activeLayer, effectiveWorldSelection, updateClipboard, commitUpdatedLayer])
+  }, [
+    project,
+    activeLayer,
+    effectiveWorldSelection,
+    palette,
+    updateClipboard,
+    commitUpdatedLayer,
+  ])
 
   const pasteClipboardPixels = useCallback((): boolean => {
     if (!project || !activeLayer || !activeLayerCanvasView || !clipboard) return false
     const beforeMask = cloneSelectionMask(selectionMask)
     const beforeWorld = cloneWorldSelectionMask(effectiveWorldSelection)
 
-    // When pasting across canvases of different dimensions, if the copied origin would land completely outside
-    // `[0..project.width-1, 0..project.height-1]`, clamp it onto the visible canvas so pasted art is never lost off-screen!
+    const remapped = remapClipboardToTargetPalette(clipboard, palette)
+
     const intersectsCanvas =
       clipboard.offsetX < project.width &&
       clipboard.offsetX + clipboard.width > 0 &&
@@ -2351,7 +2162,7 @@ export function useEditorController(options: UseEditorOptions) {
 
     const afterLayer = stampBufferIntoLayerWorld(
       activeLayer,
-      clipboard.data,
+      remapped.data,
       clipboard.width,
       clipboard.height,
       targetOffsetX,
@@ -2360,7 +2171,7 @@ export function useEditorController(options: UseEditorOptions) {
     const pastedMask = new Uint8Array(clipboard.width * clipboard.height)
     let anyNonTransparent = false
     for (let i = 0; i < clipboard.width * clipboard.height; i++) {
-      if (clipboard.data[i * 4 + 3]! > 0) {
+      if (remapped.data[i] !== TRANSPARENT_INDEX) {
         pastedMask[i] = 1
         anyNonTransparent = true
       }
@@ -2385,18 +2196,27 @@ export function useEditorController(options: UseEditorOptions) {
       project.width,
       project.height
     )
-    commitUpdatedLayer(activeLayer, afterLayer, 'Paste', {
-      before: beforeMask,
-      after: afterCanvasMask,
-      beforeWorld,
-      afterWorld,
-    })
+    commitUpdatedLayer(
+      activeLayer,
+      afterLayer,
+      'Paste',
+      {
+        before: beforeMask,
+        after: afterCanvasMask,
+        beforeWorld,
+        afterWorld,
+      },
+      remapped.paletteChanged
+        ? { beforePalette: palette, afterPalette: remapped.palette }
+        : undefined
+    )
     return true
   }, [
     project,
     activeLayer,
     activeLayerCanvasView,
     clipboard,
+    palette,
     selectionMask,
     effectiveWorldSelection,
     commitUpdatedLayer,
@@ -2505,13 +2325,15 @@ export function useEditorController(options: UseEditorOptions) {
         currentActiveId: string,
         w: number,
         h: number,
-        currentTimeline: TimelineState
+        currentTimeline: TimelineState,
+        currentPalette: ProjectPalette
       ) => {
         width: number
         height: number
         layers: LayerRuntime[]
         activeLayerId: string
         timeline?: TimelineState
+        palette?: ProjectPalette
         clearSelection?: boolean
       } | null
     ) => {
@@ -2532,11 +2354,11 @@ export function useEditorController(options: UseEditorOptions) {
         activeLayerId,
         project.width,
         project.height,
-        curTl
+        curTl,
+        palette
       )
       if (!mutated) return false
 
-      // Reconcile timeline automatically if mutator didn't construct an explicit TimelineState
       let resolvedTl: TimelineState
       if (mutated.timeline) {
         resolvedTl = {
@@ -2554,7 +2376,6 @@ export function useEditorController(options: UseEditorOptions) {
         const survivingLayerIds = new Set(mutated.layers.map((l) => l.id))
         const prevLayerMap = new Map(layers.map((l) => [l.id, l]))
 
-        // Copy surviving cel mappings first
         for (const [k, v] of Object.entries(curTl.cels)) {
           const sep = k.indexOf(':')
           if (sep < 0) continue
@@ -2564,13 +2385,11 @@ export function useEditorController(options: UseEditorOptions) {
           }
         }
 
-        // Sync active frame buffers & populate newly added layers across frames
         for (const nl of mutated.layers) {
           const existedBefore = prevLayerMap.has(nl.id)
           const activeKey = makeCellKey(nl.id, curTl.activeFrameId)
 
           if (!existedBefore) {
-            // Newly created or duplicated layer
             for (const f of curTl.frames) {
               const fk = makeCellKey(nl.id, f.id)
               if (f.id === curTl.activeFrameId || curTl.frames.length === 1) {
@@ -2581,7 +2400,7 @@ export function useEditorController(options: UseEditorOptions) {
                   offsetY: nl.offsetY,
                   dataWidth: nl.dataWidth,
                   dataHeight: nl.dataHeight,
-                  data: new Uint8ClampedArray(nl.data),
+                  data: new Uint8Array(nl.data),
                 }
                 nextCels[fk] = { kind: 'cel', celId: cid }
               } else {
@@ -2605,7 +2424,7 @@ export function useEditorController(options: UseEditorOptions) {
                   offsetY: nl.offsetY,
                   dataWidth: nl.dataWidth,
                   dataHeight: nl.dataHeight,
-                  data: new Uint8ClampedArray(nl.data),
+                  data: new Uint8Array(nl.data),
                 }
               } else {
                 const cid = generateId('cel')
@@ -2615,7 +2434,7 @@ export function useEditorController(options: UseEditorOptions) {
                   offsetY: nl.offsetY,
                   dataWidth: nl.dataWidth,
                   dataHeight: nl.dataHeight,
-                  data: new Uint8ClampedArray(nl.data),
+                  data: new Uint8Array(nl.data),
                 }
                 nextCels[activeKey] = { kind: 'cel', celId: cid }
               }
@@ -2648,6 +2467,9 @@ export function useEditorController(options: UseEditorOptions) {
       )
       const afterSel = mutated.clearSelection ? null : beforeSel
       const afterWorld = mutated.clearSelection ? null : beforeWorld
+      const resolvedPalette = mutated.palette
+        ? normalizeProjectPalette(mutated.palette)
+        : palette
 
       historyRef.current.push({
         id: generateId('hist'),
@@ -2660,11 +2482,18 @@ export function useEditorController(options: UseEditorOptions) {
         afterSelection: afterSel,
         beforeWorldSelection: beforeWorld,
         afterWorldSelection: afterWorld,
+        ...(mutated.palette
+          ? {
+              beforePalette: normalizeProjectPalette(palette),
+              afterPalette: resolvedPalette,
+            }
+          : {}),
       })
       syncHistoryCounts()
 
       const updatedProject: ProjectRecord = {
         ...project,
+        pixelFormat: 'indexed-v1',
         width: mutated.width,
         height: mutated.height,
         activeLayerId: mutated.activeLayerId,
@@ -2674,12 +2503,16 @@ export function useEditorController(options: UseEditorOptions) {
         defaultFrameDurationMs: resolvedTl.defaultFrameDurationMs,
         playbackDirection: resolvedTl.playbackDirection,
         loopPlayback: resolvedTl.loopPlayback,
+        palette: resolvedPalette,
       }
       timelineRef.current = resolvedTl
       setTimeline(resolvedTl)
       setProject(updatedProject)
       setLayers(projectedLayers)
       setActiveLayerId(mutated.activeLayerId)
+      if (mutated.palette) {
+        setPalette(resolvedPalette)
+      }
       if (mutated.clearSelection) {
         setSelectionMask(null)
         setWorldSelection(null)
@@ -2689,7 +2522,7 @@ export function useEditorController(options: UseEditorOptions) {
       persistCommittedState(
         updatedProject,
         projectedLayers,
-        palette,
+        resolvedPalette,
         selectedColorIndex,
         mutated.activeLayerId,
         resolvedTl
@@ -2747,11 +2580,10 @@ export function useEditorController(options: UseEditorOptions) {
             ...src,
             id: newId,
             name: `${src.name} Copy`,
-            data: new Uint8ClampedArray(src.data),
+            data: new Uint8Array(src.data),
           }
           const next = [...curr.slice(0, idx + 1), copy, ...curr.slice(idx + 1)]
 
-          // Clone cel structure across ALL frames (preserving linked-cel groupings within the new layer!)
           const nextCels: CelMap = { ...curTl.cels }
           const nextCelBuffers: Record<string, CelBufferRuntime> = {
             ...curTl.celBuffers,
@@ -2774,7 +2606,7 @@ export function useEditorController(options: UseEditorOptions) {
                   offsetY: sb.offsetY,
                   dataWidth: sb.dataWidth,
                   dataHeight: sb.dataHeight,
-                  data: new Uint8ClampedArray(sb.data),
+                  data: new Uint8Array(sb.data),
                 }
               }
               nextCels[dstKey] = { kind: 'cel', celId: mappedId }
@@ -2805,12 +2637,12 @@ export function useEditorController(options: UseEditorOptions) {
         const idx = curr.findIndex((l) => l.id === layerId)
         if (idx < 0 || curr.length <= 1) return null
         const next = curr.filter((l) => l.id !== layerId)
-        if (next.length > 0 && next[0].clipping) {
-          next[0] = { ...next[0], clipping: false }
+        if (next.length > 0 && next[0]!.clipping) {
+          next[0] = { ...next[0]!, clipping: false }
         }
         const nextActive =
           currActive === layerId
-            ? next[Math.max(0, idx - 1)].id
+            ? next[Math.max(0, idx - 1)]!.id
             : currActive
         return { width: w, height: h, layers: next, activeLayerId: nextActive }
       })
@@ -2822,12 +2654,13 @@ export function useEditorController(options: UseEditorOptions) {
     (layerId: string): boolean => {
       return executeStructuralChange(
         'Merge Down',
-        (curr, _currActive, w, h, curTl) => {
+        (curr, _currActive, w, h, curTl, curPal) => {
           const idx = curr.findIndex((l) => l.id === layerId)
           if (idx <= 0) return null
           const lower = curr[idx - 1]!
           const upper = curr[idx]!
 
+          let workingPalette = normalizeProjectPalette(curPal)
           const nextCels: CelMap = {}
           const nextCelBuffers: Record<string, CelBufferRuntime> = {
             ...curTl.celBuffers,
@@ -2861,7 +2694,14 @@ export function useEditorController(options: UseEditorOptions) {
               continue
             }
 
-            const m = mergeTwoLayers(projectedPair[0]!, projectedPair[1]!, w, h)
+            const m = mergeTwoLayers(
+              projectedPair[0]!,
+              projectedPair[1]!,
+              w,
+              h,
+              workingPalette
+            )
+            workingPalette = m.palette
             if (f.id === curTl.activeFrameId) {
               activeMergedGeo = m
             }
@@ -2872,12 +2712,14 @@ export function useEditorController(options: UseEditorOptions) {
               offsetY: m.offsetY,
               dataWidth: m.dataWidth,
               dataHeight: m.dataHeight,
-              data: new Uint8ClampedArray(m.data),
+              data: new Uint8Array(m.data),
             }
             nextCels[makeCellKey(lower.id, f.id)] = { kind: 'cel', celId: cid }
           }
 
-          const merged = activeMergedGeo ?? mergeTwoLayers(lower, upper, w, h)
+          const merged =
+            activeMergedGeo ?? mergeTwoLayers(lower, upper, w, h, workingPalette)
+          workingPalette = merged.palette
           const mergedLayer: LayerRuntime = {
             ...lower,
             opacity: 100,
@@ -2898,6 +2740,7 @@ export function useEditorController(options: UseEditorOptions) {
             height: h,
             layers: next,
             activeLayerId: mergedLayer.id,
+            palette: workingPalette,
             timeline: {
               ...curTl,
               cels: nextCels,
@@ -2910,10 +2753,6 @@ export function useEditorController(options: UseEditorOptions) {
     [executeStructuralChange]
   )
 
-  /**
-   * Section 8: Multi-Layer Checkbox Selection & Safe Batch Operations
-   * - Toggling checkbox NEVER mutates `activeLayerId`!
-   */
   const toggleLayerSelected = useCallback((layerId: string) => {
     setSelectedLayerIds((prev) =>
       prev.includes(layerId) ? prev.filter((id) => id !== layerId) : [...prev, layerId]
@@ -2944,7 +2783,7 @@ export function useEditorController(options: UseEditorOptions) {
               ...l,
               id: nid,
               name: `${l.name} Copy`,
-              data: new Uint8ClampedArray(l.data),
+              data: new Uint8Array(l.data),
             })
           }
         }
@@ -2963,17 +2802,19 @@ export function useEditorController(options: UseEditorOptions) {
     let mergedId = ''
     const ok = executeStructuralChange(
       'Merge Selected Layers',
-      (curr, currActive, w, h) => {
+      (curr, currActive, w, h, _curTl, curPal) => {
         const selectedInOrder = curr.filter((l) => selectedSet.has(l.id))
         if (selectedInOrder.length < 2) return null
 
+        let workingPalette = normalizeProjectPalette(curPal)
         let acc: LayerRuntime = {
-          ...selectedInOrder[0],
-          data: new Uint8ClampedArray(selectedInOrder[0].data),
+          ...selectedInOrder[0]!,
+          data: new Uint8Array(selectedInOrder[0]!.data),
         }
         for (let i = 1; i < selectedInOrder.length; i++) {
-          const upper = selectedInOrder[i]
-          const m = mergeTwoLayers(acc, upper, w, h)
+          const upper = selectedInOrder[i]!
+          const m = mergeTwoLayers(acc, upper, w, h, workingPalette)
+          workingPalette = m.palette
           acc = {
             ...acc,
             opacity: 100,
@@ -2992,15 +2833,21 @@ export function useEditorController(options: UseEditorOptions) {
         for (let i = 0; i < curr.length; i++) {
           if (i === lowestSelectedIdx) {
             next.push(acc)
-          } else if (!selectedSet.has(curr[i].id)) {
-            next.push(curr[i])
+          } else if (!selectedSet.has(curr[i]!.id)) {
+            next.push(curr[i]!)
           }
         }
         if (next[0]?.clipping) {
           next[0] = { ...next[0], clipping: false }
         }
         const nextActive = selectedSet.has(currActive) ? acc.id : currActive
-        return { width: w, height: h, layers: next, activeLayerId: nextActive }
+        return {
+          width: w,
+          height: h,
+          layers: next,
+          activeLayerId: nextActive,
+          palette: workingPalette,
+        }
       }
     )
     if (ok && mergedId) {
@@ -3020,12 +2867,12 @@ export function useEditorController(options: UseEditorOptions) {
       (curr, currActive, w, h) => {
         const next = curr.filter((l) => !selectedSet.has(l.id))
         if (next.length < 1) return null
-        if (next[0].clipping) {
-          next[0] = { ...next[0], clipping: false }
+        if (next[0]!.clipping) {
+          next[0] = { ...next[0]!, clipping: false }
         }
         const nextActive = next.some((l) => l.id === currActive)
           ? currActive
-          : next[next.length - 1].id
+          : next[next.length - 1]!.id
         return { width: w, height: h, layers: next, activeLayerId: nextActive }
       }
     )
@@ -3106,10 +2953,11 @@ export function useEditorController(options: UseEditorOptions) {
         offsetX: 0,
         offsetY: 0,
         data: view,
+        sourceColorMap: extractUsedColorMap(view, palette),
       })
       return true
     },
-    [project, layers, updateClipboard]
+    [project, layers, palette, updateClipboard]
   )
 
   const flipLayer = useCallback(
@@ -3201,11 +3049,6 @@ export function useEditorController(options: UseEditorOptions) {
     ]
   )
 
-  /**
-   * Section 5: 9-Directional Anchor Canvas Resize (default anchor = `'center'`)!
-   * Applies the exact same deterministic `(shiftX, shiftY)` across ALL layers, keeping inter-layer relative positions
-   * and layer order/props 100% intact while preserving off-canvas pixel buffers!
-   */
   const resizeCanvas = useCallback(
     (newWidthRaw: number, newHeightRaw: number, anchor: ResizeAnchor = 'center') => {
       const nw = Math.max(
@@ -3247,72 +3090,376 @@ export function useEditorController(options: UseEditorOptions) {
     [executeStructuralChange]
   )
 
+  /**
+   * Smart Indexed Palette Updater (Section 7-3 & 7-5):
+   * 1. If `nextPalette` already includes `colorTable` and `displayOrder` (e.g. from `sortProjectPalette`,
+   *    `restorePaletteOriginalOrder`, `addColorToIndexedPalette`, `updateIndexedPaletteSlotColor`),
+   *    it preserves fixed indices verbatim so display-order sorting NEVER changes pixel colors!
+   * 2. If `nextPalette` was passed with `{ ...palette, colors: nextColors }`:
+   *    - Pure permutation of `palette.colors`: updates `displayOrder` ONLY (zero pixel color changes!).
+   *    - Single-slot color edit (`length` equal, 1 index changed): updates that slot's `colorTable[fixedIdx]`!
+   *    - Appended color (`length === prev.length + 1`): allocates a free fixed slot via `addColorToIndexedPalette`!
+   *    - Preset load / full palette replacement: builds a fresh fixed table AND remaps any existing cel pixels
+   *      to the exact or nearest color in the new preset (undoable in 1 step!).
+   */
   const updateProjectPalette = useCallback(
-    (nextPalette: ProjectPalette, nextColorIdx?: number) => {
+    (nextPaletteInput: ProjectPalette, nextColorIdx?: number) => {
       if (!project) return
-      const safeColors =
-        nextPalette.colors.length > 0
-          ? nextPalette.colors.slice(0, 256)
-          : ['#000000']
-      const normalized: ProjectPalette = {
-        name: nextPalette.name.trim() || 'Palette',
-        colors: safeColors,
-        ...(nextPalette.originalColors
-          ? { originalColors: [...nextPalette.originalColors] }
-          : {}),
-        sourcePaletteId: nextPalette.sourcePaletteId,
-        author: nextPalette.author,
-        sourceUrl: nextPalette.sourceUrl,
+      const curPal = normalizeProjectPalette(palette)
+      const safeInputColors = (
+        nextPaletteInput.colors.length > 0 ? nextPaletteInput.colors : ['#000000']
+      ).slice(0, MAX_OPAQUE_PALETTE_COLORS)
+
+      let resolvedPalette: ProjectPalette | null = null
+      let remapPixelsToNewTable = false
+
+      const hasExplicitIndexedTable =
+        Array.isArray(nextPaletteInput.colorTable) &&
+        Array.isArray(nextPaletteInput.displayOrder) &&
+        nextPaletteInput.displayOrder.length === safeInputColors.length &&
+        nextPaletteInput.displayOrder.every(
+          (slotIdx, dispIdx) =>
+            typeof nextPaletteInput.colorTable![slotIdx] === 'string' &&
+            nextPaletteInput.colorTable![slotIdx]!.toUpperCase() ===
+              (normalizeHex(safeInputColors[dispIdx] ?? '') ?? '').toUpperCase()
+        )
+
+      if (hasExplicitIndexedTable) {
+        resolvedPalette = normalizeProjectPalette({
+          ...nextPaletteInput,
+          colors: safeInputColors,
+        })
+      } else if (safeInputColors.length === curPal.colors.length) {
+        // Check if pure permutation of existing display slots
+        const usedPrevPositions = new Set<number>()
+        const mappedDisplayOrder: number[] = []
+        let isPurePermutation = true
+        for (const hex of safeInputColors) {
+          const norm = normalizeHex(hex)
+          if (!norm) {
+            isPurePermutation = false
+            break
+          }
+          const foundPos = curPal.colors.findIndex(
+            (c, pos) => !usedPrevPositions.has(pos) && c.toUpperCase() === norm
+          )
+          if (foundPos < 0) {
+            isPurePermutation = false
+            break
+          }
+          usedPrevPositions.add(foundPos)
+          mappedDisplayOrder.push(curPal.displayOrder![foundPos]!)
+        }
+
+        if (isPurePermutation) {
+          resolvedPalette = normalizeProjectPalette({
+            ...curPal,
+            ...nextPaletteInput,
+            colorTable: [...curPal.colorTable!],
+            displayOrder: mappedDisplayOrder,
+            colors: safeInputColors,
+          })
+        } else {
+          // Check if single-slot or in-place slot edit (same displayOrder, updated colorTable entries)
+          let diffCount = 0
+          let diffDispIdx = -1
+          for (let i = 0; i < safeInputColors.length; i++) {
+            const norm = normalizeHex(safeInputColors[i]!)
+            if (!norm || norm !== curPal.colors[i]!.toUpperCase()) {
+              diffCount++
+              diffDispIdx = i
+            }
+          }
+          if (
+            diffCount === 1 &&
+            nextPaletteInput.sourcePaletteId === curPal.sourcePaletteId
+          ) {
+            resolvedPalette = updateIndexedPaletteSlotColor(
+              { ...curPal, name: nextPaletteInput.name || curPal.name },
+              diffDispIdx,
+              safeInputColors[diffDispIdx]!
+            )
+          } else if (diffCount === 0) {
+            resolvedPalette = normalizeProjectPalette({
+              ...curPal,
+              name: nextPaletteInput.name.trim() || curPal.name,
+              sourcePaletteId: nextPaletteInput.sourcePaletteId,
+              author: nextPaletteInput.author,
+              sourceUrl: nextPaletteInput.sourceUrl,
+            })
+          }
+        }
+      } else if (
+        safeInputColors.length === curPal.colors.length + 1 &&
+        curPal.colors.every(
+          (c, idx) =>
+            (normalizeHex(safeInputColors[idx] ?? '') ?? '') === c.toUpperCase()
+        )
+      ) {
+        const added = addColorToIndexedPalette(
+          { ...curPal, name: nextPaletteInput.name || curPal.name },
+          safeInputColors[safeInputColors.length - 1]!,
+          { allowDuplicate: true }
+        )
+        resolvedPalette = added.palette
       }
-      historyRef.current.push({
-        id: generateId('hist'),
-        label: 'Edit Palette',
-        timestamp: Date.now(),
-        kind: 'palette',
-        beforePalette: {
-          ...palette,
-          colors: [...palette.colors],
-          ...(palette.originalColors
-            ? { originalColors: [...palette.originalColors] }
-            : {}),
-        },
-        afterPalette: {
-          ...normalized,
-          colors: [...normalized.colors],
-          ...(normalized.originalColors
-            ? { originalColors: [...normalized.originalColors] }
-            : {}),
-        },
-      })
-      syncHistoryCounts()
+
+      if (!resolvedPalette) {
+        // Full palette replacement (e.g. loading a library/Lospec palette):
+        // Build clean fixed table AND remap any existing pixels across timeline cels so art never corrupts!
+        resolvedPalette = normalizeProjectPalette({
+          name: nextPaletteInput.name.trim() || 'Palette',
+          colors: safeInputColors,
+          sourcePaletteId: nextPaletteInput.sourcePaletteId,
+          author: nextPaletteInput.author,
+          sourceUrl: nextPaletteInput.sourceUrl,
+        })
+        remapPixelsToNewTable = true
+      }
 
       const targetIdx =
         nextColorIdx !== undefined
           ? nextColorIdx === TRANSPARENT_COLOR_INDEX
             ? TRANSPARENT_COLOR_INDEX
-            : Math.max(0, Math.min(safeColors.length - 1, nextColorIdx))
+            : Math.max(0, Math.min(resolvedPalette.colors.length - 1, nextColorIdx))
           : selectedColorIndex === TRANSPARENT_COLOR_INDEX
             ? TRANSPARENT_COLOR_INDEX
-            : Math.min(selectedColorIndex, safeColors.length - 1)
-      setPalette(normalized)
+            : Math.min(selectedColorIndex, resolvedPalette.colors.length - 1)
+
+      if (remapPixelsToNewTable) {
+        const curTl = timelineRef.current
+        const slotRemap = new Uint8Array(256)
+        slotRemap.fill(TRANSPARENT_INDEX)
+        for (let oldFixed = 0; oldFixed < MAX_OPAQUE_PALETTE_COLORS; oldFixed++) {
+          const oldHex = curPal.colorTable![oldFixed]
+          if (!oldHex) continue
+          const exact = findExactFixedIndex(resolvedPalette, oldHex)
+          if (exact >= 0) {
+            slotRemap[oldFixed] = exact
+          } else {
+            const c = hexToRgba(oldHex)
+            slotRemap[oldFixed] = findNearestFixedIndex(
+              resolvedPalette,
+              c.r,
+              c.g,
+              c.b
+            )
+          }
+        }
+
+        const patches: PixelPatch[] = []
+        const nextCelBuffers: Record<string, CelBufferRuntime> = {
+          ...curTl.celBuffers,
+        }
+        const celToLayerId = new Map<string, string>()
+        for (const [ck, ref] of Object.entries(curTl.cels)) {
+          if (ref.kind === 'cel' && !celToLayerId.has(ref.celId)) {
+            const sep = ck.indexOf(':')
+            if (sep > 0) celToLayerId.set(ref.celId, ck.slice(0, sep))
+          }
+        }
+
+        for (const [celId, cb] of Object.entries(curTl.celBuffers)) {
+          const changedIndices: number[] = []
+          const beforeBytes: number[] = []
+          const afterBytes: number[] = []
+          const nextData = new Uint8Array(cb.data)
+
+          for (let p = 0; p < nextData.length; p++) {
+            const oldVal = nextData[p]!
+            if (oldVal === TRANSPARENT_INDEX) continue
+            const newVal = slotRemap[oldVal]!
+            if (newVal !== oldVal) {
+              nextData[p] = newVal
+              changedIndices.push(p)
+              beforeBytes.push(oldVal)
+              afterBytes.push(newVal)
+            }
+          }
+
+          if (changedIndices.length > 0) {
+            nextCelBuffers[celId] = { ...cb, data: nextData }
+            patches.push({
+              layerId: celToLayerId.get(celId) ?? layers[0]?.id ?? '',
+              celId,
+              indices: new Uint32Array(changedIndices),
+              before: new Uint8Array(beforeBytes),
+              after: new Uint8Array(afterBytes),
+            })
+          }
+        }
+
+        const nextTl: TimelineState = {
+          ...curTl,
+          celBuffers: nextCelBuffers,
+        }
+        const nextActiveLayers = projectFrameLayers(
+          layers,
+          nextTl.cels,
+          nextTl.celBuffers,
+          nextTl.activeFrameId,
+          project.width,
+          project.height
+        )
+
+        historyRef.current.push({
+          id: generateId('hist'),
+          label: 'Switch Palette',
+          timestamp: Date.now(),
+          kind: patches.length > 0 ? 'pixel-diff' : 'palette',
+          frameId: curTl.activeFrameId,
+          ...(patches.length > 0 ? { pixelPatches: patches } : {}),
+          beforePalette: curPal,
+          afterPalette: resolvedPalette,
+        })
+        syncHistoryCounts()
+        timelineRef.current = nextTl
+        setTimeline(nextTl)
+        setLayers(nextActiveLayers)
+        setPalette(resolvedPalette)
+        setSelectedColorIndex(targetIdx)
+        persistCommittedState(
+          project,
+          nextActiveLayers,
+          resolvedPalette,
+          targetIdx,
+          activeLayerId,
+          nextTl
+        )
+        return
+      }
+
+      historyRef.current.push({
+        id: generateId('hist'),
+        label: 'Edit Palette',
+        timestamp: Date.now(),
+        kind: 'palette',
+        beforePalette: curPal,
+        afterPalette: resolvedPalette,
+      })
+      syncHistoryCounts()
+
+      setPalette(resolvedPalette)
       setSelectedColorIndex(targetIdx)
-      persistCommittedState(project, layers, normalized, targetIdx, activeLayerId)
+      persistCommittedState(project, layers, resolvedPalette, targetIdx, activeLayerId)
     },
     [
       project,
       palette,
-      syncHistoryCounts,
       selectedColorIndex,
-      persistCommittedState,
       layers,
+      syncHistoryCounts,
+      persistCommittedState,
       activeLayerId,
     ]
   )
 
   /**
-   * Replace `sourceHex` with `targetHexOrTransparent` across layers/frames while keeping Linked Cels intact.
-   * Commits a single atomic `HistoryEntry` (`pixelPatches` per unique `celId`) for 1-step Undo/Redo!
+   * Section 7-6: Count how many pixels across the entire artwork reference `displaySlotIndex`'s fixed color index.
    */
+  const countPaletteSlotUsage = useCallback(
+    (displaySlotIndex: number): number => {
+      if (displaySlotIndex < 0 || displaySlotIndex >= palette.colors.length) {
+        return 0
+      }
+      const fixedIdx = displaySlotToPixelIndex(palette, displaySlotIndex)
+      if (fixedIdx === TRANSPARENT_INDEX) return 0
+      const curTl = timelineRef.current
+      return countFixedIndexUsageAcrossProject({
+        fixedIndex: fixedIdx,
+        cels: curTl.cels,
+        celBuffers: curTl.celBuffers,
+        fallbackLayers: layers,
+      })
+    },
+    [palette, layers]
+  )
+
+  /**
+   * Section 7-6: Delete a palette color slot safely!
+   * - If unused (`usage === 0`), removes the slot cleanly without touching pixels.
+   * - If in use, replaces all referencing pixels across all frames/cels with either another palette slot
+   *   or `TRANSPARENT_INDEX` (`255`), and pushes a single atomic Undo entry restoring both pixels & palette!
+   */
+  const deletePaletteColorSlot = useCallback(
+    (
+      displaySlotIndex: number,
+      replacementTarget: { kind: 'slot'; displayIndex: number } | { kind: 'transparent' } = {
+        kind: 'transparent',
+      }
+    ): boolean => {
+      if (!project || palette.colors.length <= 1) return false
+      if (displaySlotIndex < 0 || displaySlotIndex >= palette.colors.length) {
+        return false
+      }
+
+      const curPal = normalizeProjectPalette(palette)
+      const curTl = timelineRef.current
+      const replacementFixedIdx =
+        replacementTarget.kind === 'transparent'
+          ? 'transparent'
+          : displaySlotToPixelIndex(curPal, replacementTarget.displayIndex)
+
+      const res = deletePaletteSlotWithReplacement({
+        palette: curPal,
+        deleteDisplaySlot: displaySlotIndex,
+        replacementTarget: replacementFixedIdx,
+        selectedColorIndex,
+        layerMetas: layers,
+        frames: curTl.frames,
+        cels: curTl.cels,
+        celBuffers: curTl.celBuffers,
+        activeFrameId: curTl.activeFrameId,
+        canvasWidth: project.width,
+        canvasHeight: project.height,
+      })
+
+      if (res.nextPalette === curPal) return false
+
+      historyRef.current.push({
+        id: generateId('hist'),
+        label: 'Delete Palette Color',
+        timestamp: Date.now(),
+        kind: res.pixelPatches.length > 0 ? 'pixel-diff' : 'palette',
+        frameId: curTl.activeFrameId,
+        ...(res.pixelPatches.length > 0 ? { pixelPatches: res.pixelPatches } : {}),
+        beforePalette: curPal,
+        afterPalette: res.nextPalette,
+      })
+      syncHistoryCounts()
+
+      const nextTl: TimelineState = {
+        ...curTl,
+        celBuffers: res.nextCelBuffers,
+      }
+      timelineRef.current = nextTl
+      setTimeline(nextTl)
+      setLayers(res.nextActiveLayers)
+      setPalette(res.nextPalette)
+      setSelectedColorIndex(res.nextSelectedIndex)
+      playUiTick('step', soundEnabled)
+      persistCommittedState(
+        project,
+        res.nextActiveLayers,
+        res.nextPalette,
+        res.nextSelectedIndex,
+        activeLayerId,
+        nextTl
+      )
+      return true
+    },
+    [
+      project,
+      palette,
+      selectedColorIndex,
+      layers,
+      syncHistoryCounts,
+      soundEnabled,
+      persistCommittedState,
+      activeLayerId,
+    ]
+  )
+
   const replaceProjectColor = useCallback(
     (params: {
       sourceHex: string
@@ -3323,7 +3470,22 @@ export function useEditorController(options: UseEditorOptions) {
     }): number => {
       if (!project) return 0
       const curTl = timelineRef.current
+      const curPal = normalizeProjectPalette(palette)
+
+      // Ensure targetHex exists in `workingPal` if replacing pixels with a color not yet in palette
+      let workingPal = curPal
+      if (params.targetHexOrTransparent !== 'transparent') {
+        const normDst = normalizeHex(params.targetHexOrTransparent)
+        if (normDst && findExactFixedIndex(workingPal, normDst) < 0) {
+          if (workingPal.colors.length < MAX_OPAQUE_PALETTE_COLORS) {
+            const added = addColorToIndexedPalette(workingPal, normDst)
+            workingPal = added.palette
+          }
+        }
+      }
+
       const res = replaceColorAcrossTimeline({
+        palette: workingPal,
         sourceHex: params.sourceHex,
         targetHexOrTransparent: params.targetHexOrTransparent,
         layerMetas: layers,
@@ -3338,22 +3500,24 @@ export function useEditorController(options: UseEditorOptions) {
         frameScope: params.frameScope ?? 'all-frames',
       })
 
-      let nextPal = palette
+      let nextPal = res.nextPalette
       if (
         params.updatePaletteSwatch &&
         params.targetHexOrTransparent !== 'transparent'
       ) {
-        const srcUpper = params.sourceHex.toUpperCase()
-        const dstUpper = params.targetHexOrTransparent.toUpperCase()
-        if (srcUpper !== dstUpper) {
-          const nextColors = palette.colors.map((c) =>
-            c.toUpperCase() === srcUpper ? dstUpper : c
-          )
-          nextPal = { ...palette, colors: nextColors }
+        const srcFixed = findExactFixedIndex(nextPal, params.sourceHex)
+        const normDst = normalizeHex(params.targetHexOrTransparent)
+        if (srcFixed >= 0 && normDst) {
+          const dispSlot = pixelIndexToDisplaySlot(nextPal, srcFixed)
+          if (dispSlot >= 0) {
+            nextPal = updateIndexedPaletteSlotColor(nextPal, dispSlot, normDst)
+          }
         }
       }
 
-      const paletteChanged = nextPal !== palette
+      const paletteChanged =
+        nextPal.colors.length !== curPal.colors.length ||
+        nextPal.colors.some((c, i) => c !== curPal.colors[i])
       if (res.pixelPatches.length === 0 && !paletteChanged) {
         return 0
       }
@@ -3367,8 +3531,8 @@ export function useEditorController(options: UseEditorOptions) {
         pixelPatches: res.pixelPatches.length > 0 ? res.pixelPatches : undefined,
         ...(paletteChanged
           ? {
-              beforePalette: { ...palette, colors: [...palette.colors] },
-              afterPalette: { ...nextPal, colors: [...nextPal.colors] },
+              beforePalette: curPal,
+              afterPalette: nextPal,
             }
           : {}),
       })
@@ -3397,9 +3561,9 @@ export function useEditorController(options: UseEditorOptions) {
     },
     [
       project,
+      palette,
       layers,
       activeLayerId,
-      palette,
       syncHistoryCounts,
       soundEnabled,
       persistCommittedState,
@@ -3408,8 +3572,8 @@ export function useEditorController(options: UseEditorOptions) {
   )
 
   /**
-   * Import external RGBA pixel buffer into the current project as a new non-destructive layer
-   * (supports buffers smaller, equal, or larger than canvas dimensions without silent cropping!).
+   * Import external pixel buffer (either 1-byte Indexed OR 4-byte RGBA) into the current project as a new layer,
+   * automatically registering/remapping colors into the project's 255-color indexed palette!
    */
   const importBufferAsNewLayer = useCallback(
     (params: {
@@ -3421,14 +3585,61 @@ export function useEditorController(options: UseEditorOptions) {
       if (!project || layers.length >= MAX_LAYERS) return false
       const imgW = Math.max(1, Math.round(params.width))
       const imgH = Math.max(1, Math.round(params.height))
-      const expected = imgW * imgH * 4
-      const clean = new Uint8ClampedArray(expected)
-      clean.set(params.data.subarray(0, Math.min(expected, params.data.length)))
 
       return executeStructuralChange(
         'Import Image Layer',
-        (curr, currActive, w, h, curTl) => {
+        (curr, currActive, w, h, curTl, curPal) => {
           if (curr.length >= MAX_LAYERS) return null
+
+          let indexedLayerData: Uint8Array
+          let nextPalette = normalizeProjectPalette(curPal)
+
+          if (params.data.byteLength === imgW * imgH) {
+            indexedLayerData = new Uint8Array(params.data)
+          } else {
+            // Convert 4-byte RGBA into 1-byte Indexed Color while preserving all existing `curPal` fixed slots!
+            const expectedRgba = imgW * imgH * 4
+            const cleanRgba = new Uint8Array(expectedRgba)
+            cleanRgba.set(
+              params.data.subarray(0, Math.min(expectedRgba, params.data.length))
+            )
+
+            // Collect existing cel colors so we never drop colors already used on canvas if quantization occurs
+            const usedFixed = new Set<number>()
+            for (const cb of Object.values(curTl.celBuffers)) {
+              for (let i = 0; i < cb.data.length; i++) {
+                const v = cb.data[i]!
+                if (v !== TRANSPARENT_INDEX) usedFixed.add(v)
+              }
+            }
+
+            // First try adding exact opaque colors into free slots of `nextPalette`
+            const convertedTmp = convertRgbaBuffersToIndexed(
+              [{ id: 'imp', width: imgW, height: imgH, rgba: cleanRgba }],
+              nextPalette
+            )
+            // Remap `convertedTmp` onto `nextPalette` preserving existing fixed slots!
+            const colorMap: Record<number, string> = {}
+            const tmpTable = convertedTmp.palette.colorTable!
+            for (let s = 0; s < MAX_OPAQUE_PALETTE_COLORS; s++) {
+              if (tmpTable[s]) colorMap[s] = tmpTable[s]!
+            }
+            const remapped = remapClipboardToTargetPalette(
+              {
+                width: imgW,
+                height: imgH,
+                offsetX: 0,
+                offsetY: 0,
+                data: convertedTmp.buffers.get('imp')!,
+                sourceColorMap: colorMap,
+              },
+              nextPalette
+            )
+            indexedLayerData = remapped.data
+            nextPalette = remapped.palette
+            void usedFixed
+          }
+
           const newLayerId = generateId('layer')
           const ox = Math.floor((w - imgW) / 2)
           const oy = Math.floor((h - imgH) / 2)
@@ -3444,7 +3655,7 @@ export function useEditorController(options: UseEditorOptions) {
             offsetY: oy,
             dataWidth: imgW,
             dataHeight: imgH,
-            data: clean,
+            data: indexedLayerData,
           }
           const idx = curr.findIndex((l) => l.id === currActive)
           const insertAt = idx >= 0 ? idx + 1 : curr.length
@@ -3465,7 +3676,7 @@ export function useEditorController(options: UseEditorOptions) {
             offsetY: oy,
             dataWidth: imgW,
             dataHeight: imgH,
-            data: new Uint8ClampedArray(clean),
+            data: new Uint8Array(indexedLayerData),
           }
           for (const f of curTl.frames) {
             nextCels[makeCellKey(newLayerId, f.id)] =
@@ -3479,6 +3690,7 @@ export function useEditorController(options: UseEditorOptions) {
             height: h,
             layers: nextLayers,
             activeLayerId: newLayerId,
+            palette: nextPalette,
             timeline: {
               ...curTl,
               cels: nextCels,
@@ -3516,10 +3728,6 @@ export function useEditorController(options: UseEditorOptions) {
     }
     if (floatingShape) {
       setFloatingShape(null)
-      return
-    }
-    if (stampSession) {
-      setStampSession(null)
       return
     }
     if (stepPhase.kind !== 'idle') {
@@ -3565,6 +3773,7 @@ export function useEditorController(options: UseEditorOptions) {
     timelineRef.current = nextTl
     setTimeline(nextTl)
 
+    const normPal = normalizeProjectPalette(prev.palette)
     const updatedProj: ProjectRecord = {
       ...project,
       width: prev.width,
@@ -3573,11 +3782,12 @@ export function useEditorController(options: UseEditorOptions) {
       frames: nextTl.frames,
       cels: nextTl.cels,
       activeFrameId: nextTl.activeFrameId,
+      palette: normPal,
     }
     const safeIdx =
       selectedColorIndex === TRANSPARENT_COLOR_INDEX
         ? TRANSPARENT_COLOR_INDEX
-        : Math.min(selectedColorIndex, Math.max(0, prev.palette.colors.length - 1))
+        : Math.min(selectedColorIndex, Math.max(0, normPal.colors.length - 1))
     setProject(updatedProj)
     setLayers(prev.layers)
     setActiveLayerId(prev.activeLayerId)
@@ -3587,12 +3797,12 @@ export function useEditorController(options: UseEditorOptions) {
         ? prev.worldSelection
         : canvasMaskToWorldSelection(prev.selectionMask, prev.width, prev.height)
     )
-    setPalette(prev.palette)
+    setPalette(normPal)
     setSelectedColorIndex(safeIdx)
     persistCommittedState(
       updatedProj,
       prev.layers,
-      prev.palette,
+      normPal,
       safeIdx,
       prev.activeLayerId,
       nextTl
@@ -3601,7 +3811,6 @@ export function useEditorController(options: UseEditorOptions) {
     project,
     moveSession,
     floatingShape,
-    stampSession,
     stepPhase.kind,
     layers,
     activeLayerId,
@@ -3654,6 +3863,7 @@ export function useEditorController(options: UseEditorOptions) {
     timelineRef.current = nextTl
     setTimeline(nextTl)
 
+    const normPal = normalizeProjectPalette(next.palette)
     const updatedProj: ProjectRecord = {
       ...project,
       width: next.width,
@@ -3662,11 +3872,12 @@ export function useEditorController(options: UseEditorOptions) {
       frames: nextTl.frames,
       cels: nextTl.cels,
       activeFrameId: nextTl.activeFrameId,
+      palette: normPal,
     }
     const safeIdx =
       selectedColorIndex === TRANSPARENT_COLOR_INDEX
         ? TRANSPARENT_COLOR_INDEX
-        : Math.min(selectedColorIndex, Math.max(0, next.palette.colors.length - 1))
+        : Math.min(selectedColorIndex, Math.max(0, normPal.colors.length - 1))
     setProject(updatedProj)
     setLayers(next.layers)
     setActiveLayerId(next.activeLayerId)
@@ -3676,32 +3887,28 @@ export function useEditorController(options: UseEditorOptions) {
         ? next.worldSelection
         : canvasMaskToWorldSelection(next.selectionMask, next.width, next.height)
     )
-    setPalette(next.palette)
+    setPalette(normPal)
     setSelectedColorIndex(safeIdx)
-      persistCommittedState(
-        updatedProj,
-        next.layers,
-        next.palette,
-        safeIdx,
-        next.activeLayerId,
-        nextTl
-      )
-    }, [
-      project,
-      layers,
-      activeLayerId,
-      selectionMask,
-      effectiveWorldSelection,
-      palette,
-      soundEnabled,
-      syncHistoryCounts,
-      selectedColorIndex,
-      persistCommittedState,
-    ])
-
-  // ---------------------------------------------------------------------------
-  // Unified Frame / Cel / Playback / Onion-Skin / Load Estimator Operations
-  // ---------------------------------------------------------------------------
+    persistCommittedState(
+      updatedProj,
+      next.layers,
+      normPal,
+      safeIdx,
+      next.activeLayerId,
+      nextTl
+    )
+  }, [
+    project,
+    layers,
+    activeLayerId,
+    selectionMask,
+    effectiveWorldSelection,
+    palette,
+    soundEnabled,
+    syncHistoryCounts,
+    selectedColorIndex,
+    persistCommittedState,
+  ])
 
   const selectFrame = useCallback(
     (frameId: string) => {
@@ -3715,9 +3922,6 @@ export function useEditorController(options: UseEditorOptions) {
       }
       if (floatingShape) {
         setFloatingShape(null)
-      }
-      if (stampSession) {
-        setStampSession(null)
       }
       if (stepPhase.kind !== 'idle') {
         setStepPhase({ kind: 'idle' })
@@ -3751,7 +3955,6 @@ export function useEditorController(options: UseEditorOptions) {
       project,
       moveSession,
       floatingShape,
-      stampSession,
       stepPhase.kind,
       layers,
       persistCommittedState,
@@ -3912,7 +4115,6 @@ export function useEditorController(options: UseEditorOptions) {
     [executeStructuralChange]
   )
 
-  // Cell-level operations
   const clearCell = useCallback(
     (layerId?: string, frameId?: string): boolean => {
       const lId = layerId ?? activeLayerId
@@ -4092,7 +4294,7 @@ export function useEditorController(options: UseEditorOptions) {
     const ok = executeStructuralChange(
       'Clear Selected Cels',
       (curr, currActive, w, h, curTl) => {
-        let nextCels = { ...curTl.cels }
+        const nextCels = { ...curTl.cels }
         for (const ck of selectedCellKeys) {
           nextCels[ck] = { kind: 'empty' }
         }
@@ -4153,7 +4355,6 @@ export function useEditorController(options: UseEditorOptions) {
     return executeStructuralChange(
       'Link Selected Cels',
       (curr, currActive, w, h, curTl) => {
-        // Group selected cells by layerId; link within each layer to the earliest frame in timeline order
         const byLayer = new Map<string, string[]>()
         for (const ck of selectedCellKeys) {
           const sep = ck.indexOf(':')
@@ -4172,8 +4373,7 @@ export function useEditorController(options: UseEditorOptions) {
         for (const [lId, fIds] of byLayer.entries()) {
           if (fIds.length < 2) continue
           fIds.sort((a, b) => (frameOrder.get(a) ?? 0) - (frameOrder.get(b) ?? 0))
-          // Pick first non-empty frame if available, else allocate a blank shared cel
-          let srcFrameId =
+          const srcFrameId =
             fIds.find((fid) => nextCels[makeCellKey(lId, fid)]?.kind === 'cel') ??
             fIds[0]!
           const srcKey = makeCellKey(lId, srcFrameId)
@@ -4226,7 +4426,7 @@ export function useEditorController(options: UseEditorOptions) {
         offsetY: 0,
         dataWidth: project?.width ?? 1,
         dataHeight: project?.height ?? 1,
-        data: new Uint8ClampedArray(0),
+        data: new Uint8Array(0),
         isEmpty: true,
         sourceLayerId: activeLayerId,
         sourceFrameId: curTl.activeFrameId,
@@ -4239,7 +4439,7 @@ export function useEditorController(options: UseEditorOptions) {
       offsetY: sb.offsetY,
       dataWidth: sb.dataWidth,
       dataHeight: sb.dataHeight,
-      data: new Uint8ClampedArray(sb.data),
+      data: new Uint8Array(sb.data),
       isEmpty: false,
       sourceLayerId: activeLayerId,
       sourceFrameId: curTl.activeFrameId,
@@ -4291,7 +4491,7 @@ export function useEditorController(options: UseEditorOptions) {
               offsetY: celClipboard.offsetY,
               dataWidth: celClipboard.dataWidth,
               dataHeight: celClipboard.dataHeight,
-              data: new Uint8ClampedArray(celClipboard.data),
+              data: new Uint8Array(celClipboard.data),
             },
           }
           const nextCels: CelMap = {
@@ -4337,7 +4537,6 @@ export function useEditorController(options: UseEditorOptions) {
     [project, persistCommittedState, layers, palette, selectedColorIndex, activeLayerId]
   )
 
-  // Playback Controls & Timer Loop
   const setPlaybackDirection = useCallback(
     (dir: PlaybackDirection) => {
       if (!project) return
@@ -4416,7 +4615,6 @@ export function useEditorController(options: UseEditorOptions) {
     )
     if (seq.length === 0) return
 
-    // Align initial step cursor to current activeFrameId if needed
     const curFrameIdx = timeline.frames.findIndex(
       (f) => f.id === timeline.activeFrameId
     )
@@ -4482,7 +4680,7 @@ export function useEditorController(options: UseEditorOptions) {
     setOnionSkin((prev) => ({ ...prev, ...patch }))
   }, [])
 
-  // Onion-skin composited buffers (multi-step weighted composite for Prev & Next frames)
+  // Onion-skin composited RGBA buffers (multi-step weighted composite for Prev & Next frames)
   const { onionPrevBuffer, onionNextBuffer } = useMemo((): {
     onionPrevBuffer: Uint8ClampedArray | null
     onionNextBuffer: Uint8ClampedArray | null
@@ -4506,7 +4704,7 @@ export function useEditorController(options: UseEditorOptions) {
       dir: -1 | 1,
       count: number
     ): Uint8ClampedArray | null => {
-      const acc = createPixelBuffer(w, h)
+      const acc = new Uint8ClampedArray(w * h * 4)
       let anyDrawn = false
       for (let step = count; step >= 1; step--) {
         let idx = curIdx + dir * step
@@ -4526,7 +4724,7 @@ export function useEditorController(options: UseEditorOptions) {
           w,
           h
         )
-        const comp = compositeLayers(fLayers, w, h)
+        const comp = compositeLayers(fLayers, w, h, { palette })
         const falloff = 1 / step
         for (let i = 0; i < comp.length; i += 4) {
           const sa = comp[i + 3]!
@@ -4562,6 +4760,7 @@ export function useEditorController(options: UseEditorOptions) {
     timeline.cels,
     timeline.celBuffers,
     layers,
+    palette,
   ])
 
   const loadEstimate = useMemo(() => {
@@ -4575,6 +4774,9 @@ export function useEditorController(options: UseEditorOptions) {
       celBuffers: timeline.celBuffers,
     })
   }, [project, layers, timeline.frames, timeline.cels, timeline.celBuffers])
+
+  // Unused-import guard for `getHexForPixelIndex`
+  void getHexForPixelIndex
 
   return {
     loading,
@@ -4592,6 +4794,7 @@ export function useEditorController(options: UseEditorOptions) {
     setSelectedColorIndex,
     isTransparentColorSelected,
     activeHexColor,
+    activePixelIndex,
     tool,
     selectTool,
     toolSettings,
@@ -4613,13 +4816,6 @@ export function useEditorController(options: UseEditorOptions) {
     updateActiveMoveOffset,
     commitActiveMove,
     cancelActiveMove,
-    stampSession,
-    startStampPlacement,
-    moveStampSession,
-    flipStampSession,
-    commitStampSession,
-    cancelStampSession,
-    extractActiveSelectionAsStamp,
     symmetryMode,
     setSymmetryMode,
     tilePreviewGrid,
@@ -4636,7 +4832,6 @@ export function useEditorController(options: UseEditorOptions) {
       undoCount > 0 ||
       floatingShape !== null ||
       moveSession !== null ||
-      stampSession !== null ||
       stepPhase.kind !== 'idle',
     canRedo: redoCount > 0,
     undoCount,
@@ -4671,10 +4866,11 @@ export function useEditorController(options: UseEditorOptions) {
     translateLayer,
     resizeCanvas,
     updateProjectPalette,
+    countPaletteSlotUsage,
+    deletePaletteColorSlot,
     replaceProjectColor,
     importBufferAsNewLayer,
     renameProject,
-    // Timeline, Cels, Playback, Onion Skin & Load Estimate
     timeline,
     selectFrame,
     stepFrame,

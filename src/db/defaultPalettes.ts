@@ -8,6 +8,18 @@ export interface SeedPaletteTemplate {
 
 export const DEFAULT_PALETTE_TEMPLATES: readonly SeedPaletteTemplate[] = [
   {
+    id: 'pal-lavender-atelier-24',
+    name: 'Lavender Atelier 24',
+    colors: [
+      '#24192E', '#3D2C4D', '#5F4975', '#876FA3',
+      '#B49FD1', '#DACDF0', '#F4EFFA', '#FDF9F2',
+      '#4E3242', '#7D4E68', '#AD728F', '#D9A5BC',
+      '#8F4B53', '#C46D72', '#E69F9B', '#F7D3C4',
+      '#304D42', '#4E7A68', '#78A890', '#B3D6C2',
+      '#6E533B', '#A37D56', '#D4B07B', '#F2DFB6',
+    ],
+  },
+  {
     id: 'pal-standard-32',
     name: 'dotdot Standard 32',
     colors: [
@@ -46,16 +58,6 @@ export const DEFAULT_PALETTE_TEMPLATES: readonly SeedPaletteTemplate[] = [
     name: 'Pocket Green 4',
     colors: [
       '#0F380F', '#306230', '#8BAC0F', '#9BBC0F',
-    ],
-  },
-  {
-    id: 'pal-cyber-16',
-    name: 'Cyberpunk Neon 16',
-    colors: [
-      '#090A14', '#151931', '#262B44', '#3A4466',
-      '#F72585', '#B5179E', '#7209B7', '#560BAD',
-      '#480CA8', '#3A0CA3', '#3F37C9', '#4361EE',
-      '#4895EF', '#4CC9F0', '#00F5D4', '#FEE440',
     ],
   },
   {
