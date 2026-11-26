@@ -80,6 +80,14 @@ export function ProjectDetailPage() {
     [projects, settings.gallerySortMode]
   )
 
+  // Immediate synchronous fallback from AppContext.projects so ViewTransition snapshots
+  // always capture `artwork-${id}` on the very first synchronous frame (`flushSync`)!
+  const summaryProject = useMemo(
+    () => (id ? projects.find((p) => p.id === id) ?? null : null),
+    [projects, id]
+  )
+  const displayProject = project ?? summaryProject
+
   const currentIndex = useMemo(
     () => (id ? sortedProjects.findIndex((p) => p.id === id) : -1),
     [sortedProjects, id]
@@ -106,6 +114,12 @@ export function ProjectDetailPage() {
       setSizeEstimate(cached.est)
       setLoading(false)
     } else {
+      setProject(null)
+      setLayers([])
+      setTimeline(null)
+      if (summaryProject) {
+        setNameDraft(summaryProject.name)
+      }
       setLoading(true)
     }
 
@@ -349,9 +363,13 @@ export function ProjectDetailPage() {
     setSwipeDragX(0)
   }
 
-  // Generate crisp preview PNG URL (long-press friendly on iOS Safari / PWA)
+  // Generate crisp preview PNG URL (long-press friendly on iOS Safari / PWA),
+  // using summaryProject.thumbnailPng immediately before full layers finish hydrating!
   const previewPngBytes = useMemo(() => {
-    if (!project || layers.length === 0) return project?.thumbnailPng ?? null
+    if (!displayProject) return null
+    if (!project || layers.length === 0) {
+      return displayProject.thumbnailPng ?? null
+    }
     const previewScale = Math.max(
       1,
       Math.min(16, Math.floor(1024 / Math.max(1, project.width, project.height)))
@@ -362,20 +380,17 @@ export function ProjectDetailPage() {
       project.height,
       previewScale
     ).png
-  }, [project, layers])
+  }, [displayProject, project, layers])
 
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  useEffect(() => {
-    if (!previewPngBytes) {
-      setPreviewUrl(null)
-      return
+  // Synchronous data/object URL fallback so the very first render inside startViewTransition has real pixels
+  const previewUrl = useMemo(() => {
+    if (!previewPngBytes || previewPngBytes.length === 0) return null
+    let binary = ''
+    const chunk = 0x8000
+    for (let i = 0; i < previewPngBytes.length; i += chunk) {
+      binary += String.fromCharCode(...previewPngBytes.subarray(i, i + chunk))
     }
-    const blob = new Blob([previewPngBytes.slice().buffer], { type: 'image/png' })
-    const url = URL.createObjectURL(blob)
-    setPreviewUrl(url)
-    return () => {
-      URL.revokeObjectURL(url)
-    }
+    return `data:image/png;base64,${btoa(binary)}`
   }, [previewPngBytes])
 
   const formatDateTime = (ms: number) => {
@@ -408,14 +423,16 @@ export function ProjectDetailPage() {
   }
 
   const handleOpenInEditor = async () => {
-    if (!project) return
-    await updateSettings({ activeProjectId: project.id })
-    vtNavigate(`/editor/${project.id}`)
+    const target = project ?? displayProject
+    if (!target) return
+    void updateSettings({ activeProjectId: target.id })
+    vtNavigate(`/editor/${target.id}`)
   }
 
   const handleDuplicateArtwork = async () => {
-    if (!project) return
-    const duplicated = await duplicateProjectById(project.id, undefined, db)
+    const target = project ?? displayProject
+    if (!target) return
+    const duplicated = await duplicateProjectById(target.id, undefined, db)
     if (!duplicated) return
     await refreshProjects()
     showToast(t('toastDuplicatedArtwork'), 'success')
@@ -423,15 +440,16 @@ export function ProjectDetailPage() {
   }
 
   const handleDeleteArtwork = async () => {
-    if (!project) return
-    prefetchCacheRef.current.delete(project.id)
-    await deleteProjectById(project.id, db)
+    const target = project ?? displayProject
+    if (!target) return
+    prefetchCacheRef.current.delete(target.id)
+    await deleteProjectById(target.id, db)
     await refreshProjects()
     setConfirmDeleteOpen(false)
     vtNavigate('/', { replace: true })
   }
 
-  if (loading) {
+  if (loading && !displayProject) {
     return (
       <div className="h-dvh flex items-center justify-center bg-[var(--bg-app)]">
         <PixelLoadingIndicator label={t('loading')} />
@@ -439,7 +457,7 @@ export function ProjectDetailPage() {
     )
   }
 
-  if (!project) {
+  if (!displayProject) {
     return (
       <div className="h-dvh flex flex-col items-center justify-center gap-4 bg-[var(--bg-app)]">
         <VTButtonLink
@@ -453,7 +471,8 @@ export function ProjectDetailPage() {
     )
   }
 
-  const frameCount = timeline?.frames.length ?? project.frames?.length ?? 1
+  const activeProject = displayProject
+  const frameCount = timeline?.frames.length ?? activeProject.frames?.length ?? 1
   const isAnimationArtwork = frameCount >= 2
 
   return (
@@ -477,7 +496,7 @@ export function ProjectDetailPage() {
           </VTButtonLink>
 
           <h1 className="text-sm font-bold truncate" data-testid="detail-header-title">
-            {project.name}
+            {activeProject.name}
           </h1>
 
           <button
@@ -500,26 +519,26 @@ export function ProjectDetailPage() {
         <main className="flex-1 max-w-2xl w-full mx-auto p-4 pb-12 pb-safe space-y-4">
           {/* Large Pixel-Art Preview (Long-pressable native <img> + ViewTransition + directional swipe motion, solid background matching page --bg-app) */}
           <motion.div
-            key={project.id}
+            key={activeProject.id}
             initial={
               reducedMotion || swipeDir === 0
                 ? { opacity: 1, x: 0 }
-                : { opacity: 0.65, x: swipeDir * 28 }
+                : { opacity: 0.72, x: swipeDir * 24 }
             }
             animate={{ opacity: 1, x: swipeDragX }}
             transition={
               reducedMotion
                 ? { duration: 0 }
-                : { type: 'spring', stiffness: 460, damping: 36, mass: 0.8 }
+                : { type: 'spring', stiffness: 420, damping: 36, mass: 0.85 }
             }
             className="aspect-square max-h-[50dvh] w-full mx-auto border-2 border-[var(--border-pixel)] bg-[var(--bg-app)] overflow-hidden flex items-center justify-center p-4"
             data-testid="detail-preview-card"
           >
-            <ViewTransition name={`artwork-${project.id}`}>
+            <ViewTransition name={`artwork-${activeProject.id}`}>
               {previewUrl ? (
                 <img
                   src={previewUrl}
-                  alt={project.name}
+                  alt={activeProject.name}
                   draggable={false}
                   className="max-w-full max-h-full object-contain pixelated"
                   data-testid="detail-preview-img"
@@ -658,7 +677,7 @@ export function ProjectDetailPage() {
                     if (e.key === 'Enter') void handleSaveRename()
                     else if (e.key === 'Escape') {
                       setEditingName(false)
-                      setNameDraft(project.name)
+                      setNameDraft(activeProject.name)
                     }
                   }}
                   className="min-h-[34px] px-2.5 text-sm font-bold pixel-input text-right"
@@ -668,10 +687,11 @@ export function ProjectDetailPage() {
                 <button
                   type="button"
                   onClick={() => setEditingName(true)}
+                  disabled={!project}
                   className="flex items-center gap-1.5 text-sm font-bold cursor-pointer hover:text-[var(--accent-primary)]"
                   data-testid="detail-rename-btn"
                 >
-                  <span>{project.name}</span>
+                  <span>{activeProject.name}</span>
                   <PixelIcon name="edit" size={14} />
                 </button>
               )}
@@ -679,11 +699,11 @@ export function ProjectDetailPage() {
 
             <MetaRow
               label={t('canvasSize')}
-              value={`${project.width} × ${project.height} px`}
+              value={`${activeProject.width} × ${activeProject.height} px`}
             />
             <MetaRow
               label={t('layerCount')}
-              value={`${project.layers.length}`}
+              value={`${activeProject.layers.length}`}
             />
             <MetaRow
               label={t('frameCount')}
@@ -697,11 +717,11 @@ export function ProjectDetailPage() {
             />
             <MetaRow
               label={t('createdAt')}
-              value={formatDateTime(project.createdAt)}
+              value={formatDateTime(activeProject.createdAt)}
             />
             <MetaRow
               label={t('updatedAt')}
-              value={formatDateTime(project.updatedAt)}
+              value={formatDateTime(activeProject.updatedAt)}
             />
 
             <div className="p-3.5 space-y-2">
@@ -710,12 +730,12 @@ export function ProjectDetailPage() {
                   {t('usedPalette')}
                 </span>
                 <span className="text-xs font-bold">
-                  {project.palette.name} ({project.palette.colors.length}{' '}
+                  {activeProject.palette.name} ({activeProject.palette.colors.length}{' '}
                   {t('colorsCount')})
                 </span>
               </div>
               <div className="flex flex-wrap gap-1">
-                {project.palette.colors.slice(0, 48).map((hex, idx) => (
+                {activeProject.palette.colors.slice(0, 48).map((hex, idx) => (
                   <span
                     key={idx}
                     style={{ backgroundColor: hex }}
@@ -729,10 +749,10 @@ export function ProjectDetailPage() {
         </main>
 
         <ExportPngModal
-          open={exportOpen}
-          projectName={project.name}
-          width={project.width}
-          height={project.height}
+          open={exportOpen && layers.length > 0}
+          projectName={activeProject.name}
+          width={activeProject.width}
+          height={activeProject.height}
           layers={layers}
           checkerDark={settings.checkerboardDark}
           initialIntent={exportIntent}
@@ -744,9 +764,9 @@ export function ProjectDetailPage() {
         {timeline && isAnimationArtwork && (
           <ExportGifModal
             open={exportGifOpen}
-            projectName={project.name}
-            width={project.width}
-            height={project.height}
+            projectName={activeProject.name}
+            width={activeProject.width}
+            height={activeProject.height}
             layerMetas={layers}
             frames={timeline.frames}
             cels={timeline.cels}

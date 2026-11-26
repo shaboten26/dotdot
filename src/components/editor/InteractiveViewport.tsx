@@ -1732,22 +1732,10 @@ export function InteractiveViewport({
       }`}
       data-testid="canvas-viewport"
     >
-      <canvas
-        ref={displayCanvasRef}
-        className="block w-full h-full pointer-events-none"
-      />
-
       <ViewTransition name={`artwork-${projectId}`}>
-        <div
-          aria-hidden="true"
-          style={{
-            position: 'absolute',
-            left: `${Math.round(transform.panX)}px`,
-            top: `${Math.round(transform.panY)}px`,
-            width: `${Math.max(1, Math.round(width * transform.scale))}px`,
-            height: `${Math.max(1, Math.round(height * transform.scale))}px`,
-          }}
-          className="pointer-events-none"
+        <canvas
+          ref={displayCanvasRef}
+          className="block w-full h-full pointer-events-none pixelated"
         />
       </ViewTransition>
 

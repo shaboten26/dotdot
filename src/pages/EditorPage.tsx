@@ -29,6 +29,7 @@ import {
   type InputModality,
 } from '../utils/inputDetect'
 import { PixelIcon, PixelLoadingIndicator } from '../components/common/PixelIcon'
+import { PixelThumbnail } from '../components/common/PixelThumbnail'
 import { PixelCheckbox } from '../components/common/PixelCheckbox'
 import {
   useViewTransitionNavigate,
@@ -39,6 +40,7 @@ export function EditorPage() {
   const { id: routeProjectId } = useParams<{ id?: string }>()
   const {
     ready,
+    projects,
     settings,
     reducedMotion,
     palettes,
@@ -196,7 +198,48 @@ export function EditorPage() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [editor])
 
+  const summaryProject = targetProjectId
+    ? projects.find((p) => p.id === targetProjectId) ?? null
+    : null
+
   if (!ready || editor.loading) {
+    if (summaryProject) {
+      return (
+        <ViewTransition>
+          <div className="h-dvh w-full flex flex-col bg-[var(--bg-app)] overflow-hidden select-none pl-safe pr-safe">
+            <header className="relative flex items-center justify-between gap-2 px-2.5 py-1.5 pt-safe bg-[var(--bg-surface)] border-b-2 border-[var(--border-pixel)] shrink-0 z-30">
+              <VTButtonLink
+                to="/"
+                title={t('navGallery')}
+                className="pixel-btn min-h-[44px] min-w-[44px] px-2.5 flex items-center gap-1.5 text-xs font-bold shrink-0"
+              >
+                <PixelIcon name="back" size={16} />
+                <span>{t('back')}</span>
+              </VTButtonLink>
+              <div className="flex-1 min-w-0 flex items-center justify-center">
+                <span className="text-xs sm:text-sm font-bold truncate">
+                  {summaryProject.name}
+                </span>
+              </div>
+              <div className="min-w-[44px] min-h-[44px]" aria-hidden="true" />
+            </header>
+            <main className="flex-1 min-h-0 flex items-center justify-center bg-[var(--canvas-well)] p-6">
+              <ViewTransition name={`artwork-${summaryProject.id}`}>
+                <div className="w-64 h-64 max-w-[75vw] max-h-[55dvh] flex items-center justify-center">
+                  <PixelThumbnail
+                    pngBytes={summaryProject.thumbnailPng}
+                    alt={summaryProject.name}
+                    checkerDark={settings.checkerboardDark}
+                    className="w-full h-full"
+                  />
+                </div>
+              </ViewTransition>
+            </main>
+          </div>
+        </ViewTransition>
+      )
+    }
+
     return (
       <div className="h-dvh w-full flex items-center justify-center bg-[var(--bg-app)]">
         <PixelLoadingIndicator label={t('loading')} />
@@ -487,9 +530,12 @@ export function EditorPage() {
           {editor.moveSession ? (
             <motion.div
               key="active-move-bar"
-              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 4 }}
+              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: reducedMotion ? 0 : 0.1, ease: 'easeOut' }}
+              transition={{
+                duration: reducedMotion ? 0 : 0.18,
+                ease: [0.22, 1, 0.36, 1],
+              }}
             >
               <ActiveMoveBar
                 moveSession={editor.moveSession}
@@ -501,9 +547,12 @@ export function EditorPage() {
           ) : editor.floatingShape ? (
             <motion.div
               key="floating-transform-bar"
-              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 4 }}
+              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: reducedMotion ? 0 : 0.1, ease: 'easeOut' }}
+              transition={{
+                duration: reducedMotion ? 0 : 0.18,
+                ease: [0.22, 1, 0.36, 1],
+              }}
             >
               <FloatingTransformBar
                 floatingShape={editor.floatingShape}
@@ -513,57 +562,59 @@ export function EditorPage() {
                 onDiscard={editor.discardFloatingShape}
               />
             </motion.div>
-          ) : (
-            <>
-              {editor.hasSelection && !optionsOpen && (
-                <motion.div
-                  key="selection-ready-bar"
-                  initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: reducedMotion ? 0 : 0.1, ease: 'easeOut' }}
-                >
-                  <SelectionReadyBar
-                    onStartMove={() => {
-                      editor.startSelectionMove()
-                    }}
-                    onClearSelection={editor.clearCurrentSelection}
-                  />
-                </motion.div>
-              )}
-              <ToolDetailPopover
-                open={optionsOpen}
-                onClose={() => setOptionsOpen(false)}
-                tool={editor.tool}
-                settings={editor.toolSettings}
-                paletteColors={editor.palette.colors}
-                eyedropperDoubleTap={settings.eyedropperDoubleTap}
-                onToggleEyedropperDoubleTap={(next) =>
-                  void updateSettings({ eyedropperDoubleTap: next })
-                }
-                hasSelection={editor.hasSelection}
-                hasClipboard={editor.clipboard !== null}
-                onChange={(patch) =>
-                  editor.setToolSettings((prev) => ({ ...prev, ...patch }))
-                }
-                onStartSelectionMove={() => {
+          ) : editor.hasSelection && !optionsOpen ? (
+            <motion.div
+              key="selection-ready-bar"
+              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{
+                duration: reducedMotion ? 0 : 0.18,
+                ease: [0.22, 1, 0.36, 1],
+              }}
+            >
+              <SelectionReadyBar
+                onStartMove={() => {
                   editor.startSelectionMove()
                 }}
-                onNudgeSelection={editor.nudgeSelection}
-                onApplyOutline={editor.outlineSelection}
-                onCut={() => {
-                  if (editor.cutSelectedPixels()) showToast(t('toastCut'))
-                }}
-                onCopy={() => {
-                  if (editor.copySelectedPixels()) showToast(t('toastCopied'))
-                }}
-                onPaste={() => {
-                  if (editor.pasteClipboardPixels()) showToast(t('toastPasted'))
-                }}
-                onFlipSelection={editor.flipSelectedPixels}
-                onInvertSelection={editor.invertCurrentSelection}
                 onClearSelection={editor.clearCurrentSelection}
               />
-            </>
+            </motion.div>
+          ) : null}
+
+          {!editor.moveSession && !editor.floatingShape && (
+            <ToolDetailPopover
+              open={optionsOpen}
+              onClose={() => setOptionsOpen(false)}
+              tool={editor.tool}
+              settings={editor.toolSettings}
+              paletteColors={editor.palette.colors}
+              eyedropperDoubleTap={settings.eyedropperDoubleTap}
+              onToggleEyedropperDoubleTap={(next) =>
+                void updateSettings({ eyedropperDoubleTap: next })
+              }
+              hasSelection={editor.hasSelection}
+              hasClipboard={editor.clipboard !== null}
+              onChange={(patch) =>
+                editor.setToolSettings((prev) => ({ ...prev, ...patch }))
+              }
+              onStartSelectionMove={() => {
+                editor.startSelectionMove()
+              }}
+              onNudgeSelection={editor.nudgeSelection}
+              onApplyOutline={editor.outlineSelection}
+              onCut={() => {
+                if (editor.cutSelectedPixels()) showToast(t('toastCut'))
+              }}
+              onCopy={() => {
+                if (editor.copySelectedPixels()) showToast(t('toastCopied'))
+              }}
+              onPaste={() => {
+                if (editor.pasteClipboardPixels()) showToast(t('toastPasted'))
+              }}
+              onFlipSelection={editor.flipSelectedPixels}
+              onInvertSelection={editor.invertCurrentSelection}
+              onClearSelection={editor.clearCurrentSelection}
+            />
           )}
 
           {/* Workspace Mode Switcher: `ツール` vs (`レイヤー` [1 frame] / `タイムライン` [>=2 frames]) + Always-Visible Arrow & Play Controls in the Same Zone */}
@@ -703,9 +754,12 @@ export function EditorPage() {
                   ? 'dock-layers'
                   : 'dock-timeline'
             }
-            initial={reducedMotion ? { opacity: 1 } : { opacity: 0.72, y: 3 }}
+            initial={reducedMotion ? { opacity: 1 } : { opacity: 0.78, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: reducedMotion ? 0 : 0.11, ease: 'easeOut' }}
+            transition={{
+              duration: reducedMotion ? 0 : 0.2,
+              ease: [0.22, 1, 0.36, 1],
+            }}
             className="flex flex-col shrink-0"
           >
           {workspaceTab === 'tools' ? (
