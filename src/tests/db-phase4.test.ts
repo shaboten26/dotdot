@@ -111,11 +111,11 @@ describe('IndexedDB (Dexie), Palettes, Startup Invariants & Environment Pack ZIP
     )
 
     const beforeLayer1 = createPixelBuffer(16, 16)
-    const afterLayer1 = new Uint8ClampedArray(beforeLayer1)
-    setPixel(afterLayer1, 16, 16, 4, 5, RED)
+    const afterLayer1 = new Uint8Array(beforeLayer1)
+    setPixel(afterLayer1, 16, 16, 4, 5, 1)
 
     const layer2Data = createPixelBuffer(16, 16)
-    setPixel(layer2Data, 16, 16, 4, 5, CYAN)
+    setPixel(layer2Data, 16, 16, 4, 5, 2)
 
     const historyMgr = new HistoryManager(50)
     const patch = createPixelPatch(created.layers[0].id, beforeLayer1, afterLayer1)!
@@ -187,8 +187,12 @@ describe('IndexedDB (Dexie), Palettes, Startup Invariants & Environment Pack ZIP
     expect(restoredHero!.project.name).toBe('Hero Sprite')
     expect(restoredHero!.layers.length).toBe(2)
     expect(restoredHero!.layers[1].clipping).toBe(true)
-    expect(getPixel(restoredHero!.layers[0].data, 16, 16, 4, 5)).toEqual(RED)
-    expect(getPixel(restoredHero!.layers[1].data, 16, 16, 4, 5)).toEqual(CYAN)
+    expect(
+      getPixel(restoredHero!.layers[0].data, 16, 16, 4, 5, restoredHero!.project.palette)
+    ).toEqual(RED)
+    expect(
+      getPixel(restoredHero!.layers[1].data, 16, 16, 4, 5, restoredHero!.project.palette)
+    ).toEqual(CYAN)
 
     expect(restoredHero!.history.undoStack.length).toBe(1)
     const restoredHistoryMgr = new HistoryManager(50)
@@ -272,9 +276,9 @@ describe('IndexedDB (Dexie), Palettes, Startup Invariants & Environment Pack ZIP
     const hugeEst = await estimateSingleProjectStorageBytes(huge.project.id, testDb)
     expect(smallEstBefore).not.toBeNull()
     expect(hugeEst).not.toBeNull()
-    // Small 8x8 single-project estimate must NEVER include the 128x128 project!
-    expect(smallEstBefore!.pixelDataBytes).toBe(8 * 8 * 4 + 48)
-    expect(hugeEst!.pixelDataBytes).toBe(128 * 128 * 4 + 48)
+    // Small 8x8 single-project estimate must NEVER include the 128x128 project! (1 byte/pixel in indexed-v1)
+    expect(smallEstBefore!.pixelDataBytes).toBe(8 * 8 + 48)
+    expect(hugeEst!.pixelDataBytes).toBe(128 * 128 + 48)
 
     // Add 2 frames to `small`: Frame 2 linked to Frame 1 (counted ONCE), Frame 3 empty (0B)!
     const layerId = small.layers[0].id
@@ -304,7 +308,7 @@ describe('IndexedDB (Dexie), Palettes, Startup Invariants & Environment Pack ZIP
 
     const smallEstAfter = await estimateSingleProjectStorageBytes(small.project.id, testDb)
     // Even with 3 frames (Frame 1 + linked Frame 2 + empty Frame 3), unique celBuffer is STILL 1!
-    expect(smallEstAfter!.pixelDataBytes).toBe(8 * 8 * 4 + 48)
+    expect(smallEstAfter!.pixelDataBytes).toBe(8 * 8 + 48)
 
     // Verify EnvPack round-trip preserves multi-frame linked & empty cels cleanly
     const zipBytes = await exportEnvironmentPackZip(testDb)

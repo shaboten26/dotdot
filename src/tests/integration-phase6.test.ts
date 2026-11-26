@@ -31,14 +31,15 @@ describe('Phase 6 Integration: i18n Completeness, 50-Layer Compositing & Viewpor
     const h = 64
     const layers: LayerRuntime[] = []
 
+    const colors = Array.from({ length: 120 }, (_, i) => {
+      const r = ((i * 7 + 13) % 250)
+        .toString(16)
+        .padStart(2, '0')
+      return `#${r}64C8`.toUpperCase()
+    })
     for (let i = 0; i < MAX_LAYERS; i++) {
       const buf = createPixelBuffer(w, h)
-      setPixel(buf, w, h, i % w, Math.floor(i / w), {
-        r: (i * 5) % 256,
-        g: 100,
-        b: 200,
-        a: 255,
-      })
+      setPixel(buf, w, h, i % w, Math.floor(i / w), i)
       layers.push({
         id: `layer-${i}`,
         name: `Layer ${i + 1}`,
@@ -54,7 +55,9 @@ describe('Phase 6 Integration: i18n Completeness, 50-Layer Compositing & Viewpor
       })
     }
 
-    const comp = compositeLayers(layers, w, h)
+    const comp = compositeLayers(layers, w, h, {
+      palette: { name: '100-Layer Pal', colors },
+    })
     expect(getPixel(comp, w, h, 0, 0).a).toBe(255)
     expect(getPixel(comp, w, h, 35, 1).a).toBe(255)
     expect(getPixel(comp, w, h, 36, 1).a).toBe(0)

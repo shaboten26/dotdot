@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { BlendMode, LayerRuntime } from '../../types'
+import type { BlendMode, LayerRuntime, ProjectPalette } from '../../types'
 import { MAX_LAYERS } from '../../engine/compositor'
 import { ALL_BLEND_MODES } from '../../state/useEditorController'
 import { Modal } from '../common/Modal'
@@ -28,6 +28,7 @@ const BLEND_LABEL_KEYS: Record<BlendMode, TranslationKey> = {
 interface LayerSheetProps {
   open: boolean
   onClose: () => void
+  palette?: ProjectPalette
   canvasWidth: number
   canvasHeight: number
   checkerDark?: boolean
@@ -78,6 +79,7 @@ export type LayerPanelContentProps = Omit<LayerSheetProps, 'open' | 'onClose'> &
 export function LayerPanelContent({
   onClose,
   compactInline = false,
+  palette,
   canvasWidth,
   canvasHeight,
   checkerDark = false,
@@ -391,6 +393,7 @@ export function LayerPanelContent({
                   <div className="relative shrink-0">
                     <LayerBufferThumbnail
                       layer={layer}
+                      palette={palette}
                       canvasWidth={canvasWidth}
                       canvasHeight={canvasHeight}
                       checkerDark={checkerDark}

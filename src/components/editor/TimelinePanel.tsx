@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { LayerRuntime, PlaybackDirection } from '../../types'
+import type { LayerRuntime, PlaybackDirection, ProjectPalette } from '../../types'
 import {
   getCellStateKind,
   getCelReferenceCountMap,
@@ -19,6 +19,7 @@ import { useI18n } from '../../i18n/I18nContext'
 import { useApp } from '../../state/AppContext'
 
 interface TimelinePanelProps {
+  palette?: ProjectPalette
   canvasWidth?: number
   canvasHeight?: number
   checkerDark?: boolean
@@ -85,6 +86,7 @@ interface TimelinePanelProps {
  * - GIF Export button is intentionally omitted from the timeline (available in Viewer & Export menu when >=2 frames).
  */
 export function TimelinePanel({
+  palette,
   canvasWidth = 32,
   canvasHeight = 32,
   checkerDark = false,
@@ -230,6 +232,7 @@ export function TimelinePanel({
         <LinkCelModal
           open={linkModalOpen}
           onClose={() => setLinkModalOpen(false)}
+          palette={palette}
           canvasWidth={canvasWidth}
           canvasHeight={canvasHeight}
           checkerDark={checkerDark}

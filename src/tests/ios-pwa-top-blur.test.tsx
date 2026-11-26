@@ -107,7 +107,7 @@ describe('Stage 2: iPhone Home-Screen Standalone PWA Top Blur Suppression', () =
       'true'
     )
 
-    // 4. Verify index.html & manifest.webmanifest status-bar / theme-color sync with retro-cute --bg-surface
+    // 4. Verify index.html & manifest.webmanifest status-bar / theme-color sync with lavender --bg-surface
     const indexHtml = fs.readFileSync(
       path.resolve(process.cwd(), 'index.html'),
       'utf8'
@@ -115,8 +115,8 @@ describe('Stage 2: iPhone Home-Screen Standalone PWA Top Blur Suppression', () =
     expect(indexHtml).toContain(
       '<meta name="apple-mobile-web-app-status-bar-style" content="default" />'
     )
-    expect(indexHtml).toContain('content="#f7f3e8"')
-    expect(indexHtml).toContain('content="#252a36"')
+    expect(indexHtml).toContain('content="#faf6f0"')
+    expect(indexHtml).toContain('content="#292133"')
 
     const manifest = JSON.parse(
       fs.readFileSync(
@@ -124,7 +124,7 @@ describe('Stage 2: iPhone Home-Screen Standalone PWA Top Blur Suppression', () =
         'utf8'
       )
     ) as { background_color: string; theme_color: string }
-    expect(manifest.background_color).toBe('#1c2029')
-    expect(manifest.theme_color).toBe('#252a36')
+    expect(manifest.background_color).toBe('#1f1926')
+    expect(manifest.theme_color).toBe('#292133')
   })
 })

@@ -24,11 +24,11 @@ describe('v2.4.x UI Unification, Viewer Solid Background, Tab-Bar Frame Controls
     expect(css).toContain('input[type="number"]')
     expect(css).toContain('font-family: var(--font-mono)')
 
-    // Retro-cute ivory & dusk blue-gray console palette + strict zero-shadow rule + ViewTransition
-    expect(css).toContain('--bg-surface: #f7f3e8')
-    expect(css).toContain('--bg-surface: #252a36')
-    expect(css).toContain('--accent-primary: #6d65a8')
-    expect(css).toContain('--accent-teal: #3f8c82')
+    // Lavender Cream & Dusk Plum retro-cute pixel-art studio palette + strict zero-shadow rule + ViewTransition
+    expect(css).toContain('--bg-surface: #faf6f0')
+    expect(css).toContain('--bg-surface: #292133')
+    expect(css).toContain('--accent-primary: #7b62ad')
+    expect(css).toContain('--accent-teal: #578a75')
     expect(css).toContain('box-shadow: none !important')
     expect(css).toContain('::view-transition-old(root)')
     expect(css).toContain('::view-transition-new(root)')
@@ -284,21 +284,21 @@ describe('v2.4.x UI Unification, Viewer Solid Background, Tab-Bar Frame Controls
     fireEvent.pointerDown(drawBtn, { pointerId: 1, pointerType: 'touch' })
     fireEvent.pointerUp(drawBtn, { pointerId: 1, pointerType: 'touch' })
 
-    // Verify pixels were actually drawn onto the layer
+    // Verify pixels were actually drawn onto the layer (255 = TRANSPARENT_INDEX)
     await waitFor(async () => {
       const afterLine = (await loadProjectFull(created.project.id, db))!
-      const nonZero = afterLine.layers[0]!.data.some((v) => v !== 0)
+      const nonZero = afterLine.layers[0]!.data.some((v) => v !== 255)
       expect(nonZero).toBe(true)
     })
 
     // 3. Press Undo ONCE:
-    // - Drawn line pixels MUST be reverted to all transparent
+    // - Drawn line pixels MUST be reverted to all transparent (255)
     // - Selection MUST remain active (`selection-ready-bar` still visible!)
     fireEvent.click(screen.getByTestId('undo-btn'))
 
     await waitFor(async () => {
       const afterUndo = (await loadProjectFull(created.project.id, db))!
-      const anyOpaque = afterUndo.layers[0]!.data.some((v) => v !== 0)
+      const anyOpaque = afterUndo.layers[0]!.data.some((v) => v !== 255)
       expect(anyOpaque).toBe(false)
     })
     expect(screen.getByTestId('selection-ready-bar')).toBeTruthy()
@@ -366,7 +366,14 @@ describe('v2.4.x UI Unification, Viewer Solid Background, Tab-Bar Frame Controls
 
     await waitFor(async () => {
       const loadedB = (await loadProjectFull(projB.project.id, db))!
-      const pastedPx = getPixel(loadedB.layers[0]!.data, 16, 16, 8, 8)
+      const pastedPx = getPixel(
+        loadedB.layers[0]!.data,
+        16,
+        16,
+        8,
+        8,
+        loadedB.project.palette
+      )
       expect(pastedPx).toEqual({ r: 220, g: 38, b: 38, a: 255 })
     })
   }, 15000)

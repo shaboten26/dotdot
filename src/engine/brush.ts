@@ -8,6 +8,7 @@ import {
   type SymmetryMode,
 } from '../types'
 import { shouldDrawWithDither } from './dithering'
+export { shouldDrawWithDither }
 import { expandSymmetricPoints, resolveCanvasPoint } from './symmetry'
 
 const brushOffsetCache = new Map<string, Point[]>()

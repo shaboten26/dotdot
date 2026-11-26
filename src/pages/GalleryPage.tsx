@@ -43,6 +43,7 @@ export function GalleryPage() {
     backupReminderDue,
     originStorageStatus,
     lowStorageWarningDue,
+    migrationProgress,
     updateSettings,
     refreshProjects,
     reorderProjectsManual,
@@ -173,8 +174,22 @@ export function GalleryPage() {
 
   if (!ready) {
     return (
-      <div className="h-dvh w-full flex items-center justify-center bg-[var(--bg-app)]">
-        <PixelLoadingIndicator label={t('loading')} />
+      <div className="h-dvh w-full flex flex-col items-center justify-center gap-3 px-6 bg-[var(--bg-app)]">
+        <PixelLoadingIndicator
+          label={
+            migrationProgress
+              ? `${t('migrationRunningTitle')} (${migrationProgress.completedProjects}/${migrationProgress.totalProjects})`
+              : t('loading')
+          }
+        />
+        {migrationProgress?.currentProjectName && (
+          <span
+            className="text-xs text-[var(--text-secondary)] truncate max-w-xs"
+            data-testid="migration-progress-project-name"
+          >
+            {migrationProgress.currentProjectName}
+          </span>
+        )}
       </div>
     )
   }
@@ -514,6 +529,7 @@ export function GalleryPage() {
                             pngBytes={proj.thumbnailPng}
                             alt={proj.name}
                             checkerDark={settings.checkerboardDark}
+                            transparentBg={true}
                             className="w-full h-full p-2.5"
                           />
                         </ViewTransition>

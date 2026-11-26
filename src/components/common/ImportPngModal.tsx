@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   downscaleByIntegerBlock,
-  extractPaletteColorsFromRgba,
   inspectPngForImport,
+  prepareImportedPngAsIndexed,
   type PngResolutionInspection,
 } from '../../engine/pngImport'
 import { MAX_CANVAS_SIZE } from '../../engine/pixelBuffer'
@@ -178,10 +178,14 @@ export function ImportPngModal({
         return
       }
 
-      const colors = extractPaletteColorsFromRgba(
+      const prepared = prepareImportedPngAsIndexed(
         restored.data,
-        ['#000000', '#FFFFFF'],
-        256
+        restored.width,
+        restored.height,
+        {
+          name: `${projectName.trim() || 'PNG'} Palette`,
+          colors: [],
+        }
       )
       const layerId = generateId('layer')
       const created = await createImportedProject({
@@ -201,14 +205,11 @@ export function ImportPngModal({
             offsetY: 0,
             dataWidth: restored.width,
             dataHeight: restored.height,
-            data: restored.data,
+            data: prepared.indexedData,
           },
         ],
         activeLayerId: layerId,
-        palette: {
-          name: `${projectName.trim() || 'PNG'} Palette`,
-          colors,
-        },
+        palette: prepared.palette,
       })
       onCreatedProject?.(created)
       onClose()

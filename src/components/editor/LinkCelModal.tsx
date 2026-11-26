@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { CelBufferRuntime, LayerRuntime } from '../../types'
+import type { CelBufferRuntime, LayerRuntime, ProjectPalette } from '../../types'
 import {
   getCellStateKind,
   getCelReferenceCountMap,
@@ -9,6 +9,7 @@ import {
   willLinkingOverwriteDistinctPixels,
   type TimelineState,
 } from '../../engine/animation'
+import { buildPaletteRgbaLut, indexedBufferToRgba } from '../../engine/indexedPalette'
 import { extractLayerCanvasView } from '../../engine/pixelBuffer'
 import { useApp } from '../../state/AppContext'
 import { useI18n } from '../../i18n/I18nContext'
@@ -16,20 +17,30 @@ import { PixelIcon } from '../common/PixelIcon'
 import { PixelCheckbox } from '../common/PixelCheckbox'
 import { getCheckerboardStyle } from '../common/PixelThumbnail'
 
+const FALLBACK_LINK_PALETTE: ProjectPalette = {
+  name: 'Fallback',
+  colors: ['#241F31'],
+  colorTable: ['#241F31'],
+  displayOrder: [0],
+}
+
 function CelBufferThumbCanvas({
   celBuffer,
+  palette,
   canvasWidth,
   canvasHeight,
   checkerDark = false,
   sizePx = 44,
 }: {
   celBuffer: CelBufferRuntime | null
+  palette?: ProjectPalette
   canvasWidth: number
   canvasHeight: number
   checkerDark?: boolean
   sizePx?: number
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const activePalette = palette ?? FALLBACK_LINK_PALETTE
 
   useEffect(() => {
     const cvs = canvasRef.current
@@ -52,14 +63,16 @@ function CelBufferThumbCanvas({
       canvasWidth,
       canvasHeight
     )
+    const lut = buildPaletteRgbaLut(activePalette)
+    const rgba = indexedBufferToRgba(visibleSlice, lut)
     ctx.imageSmoothingEnabled = false
     const img = new ImageData(
-      new Uint8ClampedArray(visibleSlice),
+      new Uint8ClampedArray(rgba),
       canvasWidth,
       canvasHeight
     )
     ctx.putImageData(img, 0, 0)
-  }, [celBuffer, canvasWidth, canvasHeight])
+  }, [celBuffer, activePalette, canvasWidth, canvasHeight])
 
   return (
     <div
@@ -101,6 +114,7 @@ interface LinkCelCandidate {
 interface LinkCelModalProps {
   open: boolean
   onClose: () => void
+  palette?: ProjectPalette
   canvasWidth: number
   canvasHeight: number
   checkerDark?: boolean
@@ -128,6 +142,7 @@ interface LinkCelModalProps {
 export function LinkCelModal({
   open,
   onClose,
+  palette,
   canvasWidth,
   canvasHeight,
   checkerDark = false,
@@ -427,6 +442,7 @@ export function LinkCelModal({
                 <div className="flex items-center gap-2.5">
                   <CelBufferThumbCanvas
                     celBuffer={targetBuffer}
+                    palette={palette}
                     canvasWidth={canvasWidth}
                     canvasHeight={canvasHeight}
                     checkerDark={checkerDark}
@@ -490,6 +506,7 @@ export function LinkCelModal({
                         >
                           <CelBufferThumbCanvas
                             celBuffer={cand.celBuffer}
+                            palette={palette}
                             canvasWidth={canvasWidth}
                             canvasHeight={canvasHeight}
                             checkerDark={checkerDark}
@@ -537,6 +554,7 @@ export function LinkCelModal({
                     <div className="flex flex-col items-center gap-1">
                       <CelBufferThumbCanvas
                         celBuffer={targetBuffer}
+                        palette={palette}
                         canvasWidth={canvasWidth}
                         canvasHeight={canvasHeight}
                         checkerDark={checkerDark}
@@ -556,6 +574,7 @@ export function LinkCelModal({
                     <div className="flex flex-col items-center gap-1">
                       <CelBufferThumbCanvas
                         celBuffer={selectedCandidate.celBuffer}
+                        palette={palette}
                         canvasWidth={canvasWidth}
                         canvasHeight={canvasHeight}
                         checkerDark={checkerDark}

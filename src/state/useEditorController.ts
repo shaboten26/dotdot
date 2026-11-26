@@ -1549,14 +1549,14 @@ export function useEditorController(options: UseEditorOptions) {
             setSelectedColorIndex(Math.max(0, dispSlot))
           } else if (palette.colors.length < MAX_OPAQUE_PALETTE_COLORS) {
             const added = addColorToIndexedPalette(palette, hex)
-            if (added.added && added.displayIndex >= 0) {
+            if (added && added.displaySlot >= 0) {
               setPalette(added.palette)
-              setSelectedColorIndex(added.displayIndex)
+              setSelectedColorIndex(added.displaySlot)
               persistCommittedState(
                 project,
                 layers,
                 added.palette,
-                added.displayIndex,
+                added.displaySlot,
                 activeLayerId
               )
             }
@@ -2146,7 +2146,14 @@ export function useEditorController(options: UseEditorOptions) {
     const beforeMask = cloneSelectionMask(selectionMask)
     const beforeWorld = cloneWorldSelectionMask(effectiveWorldSelection)
 
-    const remapped = remapClipboardToTargetPalette(clipboard, palette)
+    const remapped = remapClipboardToTargetPalette(
+      clipboard.data,
+      clipboard.sourceColorMap,
+      palette
+    )
+    const paletteChanged =
+      remapped.nextPalette.colors.length !== palette.colors.length ||
+      remapped.nextPalette.colors.some((c, i) => c !== palette.colors[i])
 
     const intersectsCanvas =
       clipboard.offsetX < project.width &&
@@ -2162,7 +2169,7 @@ export function useEditorController(options: UseEditorOptions) {
 
     const afterLayer = stampBufferIntoLayerWorld(
       activeLayer,
-      remapped.data,
+      remapped.remappedData,
       clipboard.width,
       clipboard.height,
       targetOffsetX,
@@ -2171,7 +2178,7 @@ export function useEditorController(options: UseEditorOptions) {
     const pastedMask = new Uint8Array(clipboard.width * clipboard.height)
     let anyNonTransparent = false
     for (let i = 0; i < clipboard.width * clipboard.height; i++) {
-      if (remapped.data[i] !== TRANSPARENT_INDEX) {
+      if (remapped.remappedData[i] !== TRANSPARENT_INDEX) {
         pastedMask[i] = 1
         anyNonTransparent = true
       }
@@ -2206,8 +2213,8 @@ export function useEditorController(options: UseEditorOptions) {
         beforeWorld,
         afterWorld,
       },
-      remapped.paletteChanged
-        ? { beforePalette: palette, afterPalette: remapped.palette }
+      paletteChanged
+        ? { beforePalette: palette, afterPalette: remapped.nextPalette }
         : undefined
     )
     return true
@@ -2701,7 +2708,7 @@ export function useEditorController(options: UseEditorOptions) {
               h,
               workingPalette
             )
-            workingPalette = m.palette
+            workingPalette = m.nextPalette
             if (f.id === curTl.activeFrameId) {
               activeMergedGeo = m
             }
@@ -2719,7 +2726,7 @@ export function useEditorController(options: UseEditorOptions) {
 
           const merged =
             activeMergedGeo ?? mergeTwoLayers(lower, upper, w, h, workingPalette)
-          workingPalette = merged.palette
+          workingPalette = merged.nextPalette
           const mergedLayer: LayerRuntime = {
             ...lower,
             opacity: 100,
@@ -2814,7 +2821,7 @@ export function useEditorController(options: UseEditorOptions) {
         for (let i = 1; i < selectedInOrder.length; i++) {
           const upper = selectedInOrder[i]!
           const m = mergeTwoLayers(acc, upper, w, h, workingPalette)
-          workingPalette = m.palette
+          workingPalette = m.nextPalette
           acc = {
             ...acc,
             opacity: 100,
@@ -3196,12 +3203,34 @@ export function useEditorController(options: UseEditorOptions) {
             (normalizeHex(safeInputColors[idx] ?? '') ?? '') === c.toUpperCase()
         )
       ) {
-        const added = addColorToIndexedPalette(
-          { ...curPal, name: nextPaletteInput.name || curPal.name },
-          safeInputColors[safeInputColors.length - 1]!,
-          { allowDuplicate: true }
-        )
-        resolvedPalette = added.palette
+        const nextHex = normalizeHex(safeInputColors[safeInputColors.length - 1]!)
+        const added = nextHex
+          ? addColorToIndexedPalette(
+              { ...curPal, name: nextPaletteInput.name || curPal.name },
+              nextHex
+            )
+          : null
+        if (added && !added.alreadyExisted) {
+          resolvedPalette = added.palette
+        } else if (
+          nextHex &&
+          curPal.displayOrder!.length < MAX_OPAQUE_PALETTE_COLORS
+        ) {
+          // Support intentional duplicate color swatch appended in UI without colliding fixed indices
+          const nextTable = [...curPal.colorTable!]
+          const freeFixed = nextTable.findIndex((v) => v === null)
+          if (freeFixed >= 0) {
+            nextTable[freeFixed] = nextHex
+            const nextOrder = [...curPal.displayOrder!, freeFixed]
+            resolvedPalette = {
+              ...curPal,
+              name: nextPaletteInput.name || curPal.name,
+              colorTable: nextTable,
+              displayOrder: nextOrder,
+              colors: nextOrder.map((idx) => nextTable[idx]!),
+            }
+          }
+        }
       }
 
       if (!resolvedPalette) {
@@ -3369,8 +3398,8 @@ export function useEditorController(options: UseEditorOptions) {
         fixedIndex: fixedIdx,
         cels: curTl.cels,
         celBuffers: curTl.celBuffers,
-        fallbackLayers: layers,
-      })
+        layers,
+      }).pixelCount
     },
     [palette, layers]
   )
@@ -3384,7 +3413,10 @@ export function useEditorController(options: UseEditorOptions) {
   const deletePaletteColorSlot = useCallback(
     (
       displaySlotIndex: number,
-      replacementTarget: { kind: 'slot'; displayIndex: number } | { kind: 'transparent' } = {
+      replacementTarget:
+        | { kind: 'slot'; displayIndex: number }
+        | { kind: 'displayIndex'; targetDisplayIndex: number }
+        | { kind: 'transparent' } = {
         kind: 'transparent',
       }
     ): boolean => {
@@ -3395,16 +3427,20 @@ export function useEditorController(options: UseEditorOptions) {
 
       const curPal = normalizeProjectPalette(palette)
       const curTl = timelineRef.current
-      const replacementFixedIdx =
+      const normalizedReplacement:
+        | { kind: 'transparent' }
+        | { kind: 'slot'; displaySlot: number } =
         replacementTarget.kind === 'transparent'
-          ? 'transparent'
-          : displaySlotToPixelIndex(curPal, replacementTarget.displayIndex)
+          ? { kind: 'transparent' }
+          : replacementTarget.kind === 'displayIndex'
+            ? { kind: 'slot', displaySlot: replacementTarget.targetDisplayIndex }
+            : { kind: 'slot', displaySlot: replacementTarget.displayIndex }
 
       const res = deletePaletteSlotWithReplacement({
         palette: curPal,
         deleteDisplaySlot: displaySlotIndex,
-        replacementTarget: replacementFixedIdx,
-        selectedColorIndex,
+        selectedDisplaySlot: selectedColorIndex,
+        replacementTarget: normalizedReplacement,
         layerMetas: layers,
         frames: curTl.frames,
         cels: curTl.cels,
@@ -3414,7 +3450,7 @@ export function useEditorController(options: UseEditorOptions) {
         canvasHeight: project.height,
       })
 
-      if (res.nextPalette === curPal) return false
+      if (!res || res.nextPalette === curPal) return false
 
       historyRef.current.push({
         id: generateId('hist'),
@@ -3436,13 +3472,13 @@ export function useEditorController(options: UseEditorOptions) {
       setTimeline(nextTl)
       setLayers(res.nextActiveLayers)
       setPalette(res.nextPalette)
-      setSelectedColorIndex(res.nextSelectedIndex)
+      setSelectedColorIndex(res.nextSelectedSlot)
       playUiTick('step', soundEnabled)
       persistCommittedState(
         project,
         res.nextActiveLayers,
         res.nextPalette,
-        res.nextSelectedIndex,
+        res.nextSelectedSlot,
         activeLayerId,
         nextTl
       )
@@ -3479,7 +3515,9 @@ export function useEditorController(options: UseEditorOptions) {
         if (normDst && findExactFixedIndex(workingPal, normDst) < 0) {
           if (workingPal.colors.length < MAX_OPAQUE_PALETTE_COLORS) {
             const added = addColorToIndexedPalette(workingPal, normDst)
-            workingPal = added.palette
+            if (added) {
+              workingPal = added.palette
+            }
           }
         }
       }
@@ -3625,18 +3663,12 @@ export function useEditorController(options: UseEditorOptions) {
               if (tmpTable[s]) colorMap[s] = tmpTable[s]!
             }
             const remapped = remapClipboardToTargetPalette(
-              {
-                width: imgW,
-                height: imgH,
-                offsetX: 0,
-                offsetY: 0,
-                data: convertedTmp.buffers.get('imp')!,
-                sourceColorMap: colorMap,
-              },
+              convertedTmp.buffers.get('imp')!,
+              colorMap,
               nextPalette
             )
-            indexedLayerData = remapped.data
-            nextPalette = remapped.palette
+            indexedLayerData = remapped.remappedData
+            nextPalette = remapped.nextPalette
             void usedFixed
           }
 
@@ -4870,6 +4902,7 @@ export function useEditorController(options: UseEditorOptions) {
     deletePaletteColorSlot,
     replaceProjectColor,
     importBufferAsNewLayer,
+    importPngAsNewLayer: importBufferAsNewLayer,
     renameProject,
     timeline,
     selectFrame,

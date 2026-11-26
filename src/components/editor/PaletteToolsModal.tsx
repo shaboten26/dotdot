@@ -99,6 +99,7 @@ export function PaletteToolsModal({
       width: canvasWidth,
       height: canvasHeight,
       layers,
+      palette,
       paletteColors: palette.colors,
       targetLayerId:
         analyzeScope === 'layer' && activeLayerId ? activeLayerId : 'composite',
@@ -109,7 +110,7 @@ export function PaletteToolsModal({
     layers,
     canvasWidth,
     canvasHeight,
-    palette.colors,
+    palette,
     analyzeScope,
     activeLayerId,
   ])
@@ -120,6 +121,7 @@ export function PaletteToolsModal({
       width: canvasWidth,
       height: canvasHeight,
       layers,
+      palette,
       paletteColors: palette.colors,
       targetLayerId:
         replaceScope === 'layer' && activeLayerId ? activeLayerId : 'composite',
@@ -131,7 +133,7 @@ export function PaletteToolsModal({
     tab,
     canvasWidth,
     canvasHeight,
-    palette.colors,
+    palette,
     replaceScope,
     activeLayerId,
   ])

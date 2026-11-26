@@ -6,7 +6,6 @@ import type {
   FloatingShapeState,
   Point,
   SeamlessWrapMode,
-  StampPlacementSession,
   SymmetryMode,
   TilePreviewGrid,
   ToolId,
@@ -58,7 +57,6 @@ interface InteractiveViewportProps {
   stepPhase: MultiStepPhase
   floatingShape: FloatingShapeState | null
   moveSession: ActiveMoveSession | null
-  stampSession?: StampPlacementSession | null
   symmetryMode?: SymmetryMode
   showSymmetryGuide?: boolean
   tilePreviewGrid?: TilePreviewGrid
@@ -86,7 +84,6 @@ interface InteractiveViewportProps {
   onDoubleTapEyedropper: () => void
   onMoveFloatingShape: (dx: number, dy: number) => void
   onUpdateMoveOffset: (dx: number, dy: number) => void
-  onMoveStampSession?: (dx: number, dy: number) => void
 }
 
 interface ActivePointerInfo {
@@ -221,7 +218,7 @@ function drawAnimatedMarchingAntsEdges(
   }
 
   // Base dark backing strip + animated bright marching dashes
-  ctx.fillStyle = '#262b34'
+  ctx.fillStyle = '#241f31'
   for (const e of mergedH) {
     ctx.fillRect(e.x0, e.y - halfT, e.x1 - e.x0, thickness)
   }
@@ -229,7 +226,7 @@ function drawAnimatedMarchingAntsEdges(
     ctx.fillRect(e.x - halfT, e.y0, thickness, e.y1 - e.y0)
   }
 
-  ctx.fillStyle = '#fbf8f1'
+  ctx.fillStyle = '#fbf8f6'
   for (const e of mergedH) {
     let x = e.x0
     while (x < e.x1) {
@@ -274,7 +271,6 @@ export function InteractiveViewport({
   stepPhase,
   floatingShape,
   moveSession,
-  stampSession = null,
   symmetryMode = 'none',
   showSymmetryGuide = true,
   tilePreviewGrid = 'off',
@@ -301,7 +297,6 @@ export function InteractiveViewport({
   onDoubleTapEyedropper,
   onMoveFloatingShape,
   onUpdateMoveOffset,
-  onMoveStampSession,
 }: InteractiveViewportProps) {
   const { reducedMotion } = useApp()
   const { t } = useI18n()
@@ -387,7 +382,6 @@ export function InteractiveViewport({
       | 'pan'
       | 'floating-drag'
       | 'move-session-drag'
-      | 'stamp-drag'
     startVx: number
     startVy: number
     lastVx: number
@@ -548,8 +542,8 @@ export function InteractiveViewport({
       Math.round(4 * dpr),
       Math.min(Math.round(16 * dpr), scale >= 2 ? Math.round(scale * dpr) : Math.round(8 * dpr))
     )
-    const cLight = checkerboardDark ? '#252a36' : '#f3efe4'
-    const cDark = checkerboardDark ? '#1c2029' : '#dfd8c7'
+    const cLight = checkerboardDark ? '#272235' : '#f5f1f8'
+    const cDark = checkerboardDark ? '#1d1928' : '#e4dce9'
     ctx.fillStyle = cLight
     ctx.fillRect(devLeft, devTop, devW, devH)
     ctx.fillStyle = cDark
@@ -687,9 +681,9 @@ export function InteractiveViewport({
           ctx.clip()
 
           // Subtle checkerboard background for neighboring tiles
-          ctx.fillStyle = checkerboardDark ? '#212632' : '#ebe5d7'
+          ctx.fillStyle = checkerboardDark ? '#231e30' : '#ece5f1'
           ctx.fillRect(tLeft, tTop, devW, devH)
-          ctx.fillStyle = checkerboardDark ? '#191d27' : '#dcd4c2'
+          ctx.fillStyle = checkerboardDark ? '#1a1625' : '#ddd4e4'
           for (let r = 0; r < rows; r++) {
             const y0 = tTop + r * checkCell
             const hCell = Math.min(checkCell, tTop + devH - y0)
@@ -726,7 +720,7 @@ export function InteractiveViewport({
 
     // 3. Crisp Symmetric 4-Sided Outer Pixel Frame
     const borderPx = Math.max(2, Math.round(2 * dpr))
-    ctx.fillStyle = checkerboardDark ? '#646f84' : '#4c5565'
+    ctx.fillStyle = checkerboardDark ? '#766a8f' : '#574e6c'
     ctx.fillRect(devLeft - borderPx, devTop - borderPx, devW + borderPx * 2, borderPx)
     ctx.fillRect(devLeft - borderPx, devTop + devH, devW + borderPx * 2, borderPx)
     ctx.fillRect(devLeft - borderPx, devTop, borderPx, devH)
@@ -909,29 +903,6 @@ export function InteractiveViewport({
       drawPixelHandle(ctx, bx + bw, by, '#8476c4', dpr)
       drawPixelHandle(ctx, bx, by + bh, '#8476c4', dpr)
       drawPixelHandle(ctx, bx + bw, by + bh, '#8476c4', dpr)
-    }
-
-    // 6b. Active Stamp Placement Frame & Corner Handles
-    if (stampSession) {
-      const [bx, bx1] = pixelSpanX(stampSession.x, stampSession.width)
-      const [by, by1] = pixelSpanY(stampSession.y, stampSession.height)
-      const bw = bx1 - bx
-      const bh = by1 - by
-
-      ctx.save()
-      ctx.strokeStyle = '#181521'
-      ctx.lineWidth = Math.max(2, Math.round(2.5 * dpr))
-      ctx.strokeRect(bx, by, bw, bh)
-      ctx.setLineDash([Math.round(4 * dpr), Math.round(3 * dpr)])
-      ctx.strokeStyle = '#62b3a6'
-      ctx.lineWidth = Math.max(1.5, Math.round(1.5 * dpr))
-      ctx.strokeRect(bx, by, bw, bh)
-      ctx.restore()
-
-      drawPixelHandle(ctx, bx, by, '#62b3a6', dpr)
-      drawPixelHandle(ctx, bx + bw, by, '#62b3a6', dpr)
-      drawPixelHandle(ctx, bx, by + bh, '#62b3a6', dpr)
-      drawPixelHandle(ctx, bx + bw, by + bh, '#62b3a6', dpr)
     }
 
     // 7. Multi-step Control Handles & Guide Lines (also visible outside canvas bounds!)
@@ -1221,7 +1192,6 @@ export function InteractiveViewport({
     antsOffset,
     floatingShape,
     moveSession,
-    stampSession,
     symmetryMode,
     showSymmetryGuide,
     tilePreviewGrid,
@@ -1353,24 +1323,6 @@ export function InteractiveViewport({
         return
       }
 
-      if (stampSession) {
-        cancelPendingSingleTap()
-        singleGestureRef.current = {
-          pointerId: e.pointerId,
-          mode: 'stamp-drag',
-          startVx: vx,
-          startVy: vy,
-          lastVx: vx,
-          lastVy: vy,
-          startCanvasPt: { x: 0, y: 0 },
-          moved: false,
-          hadMultiTouch: false,
-          accumFloatX: 0,
-          accumFloatY: 0,
-        }
-        return
-      }
-
       const rawCanvasPt = mapScreenToLogicalPixel(vx, vy)
 
       if (detected === 'touch') {
@@ -1475,7 +1427,6 @@ export function InteractiveViewport({
       spacePressed,
       moveSession,
       floatingShape,
-      stampSession,
       mapScreenToLogicalPixel,
       allowsOutOfBoundsPoint,
       width,
@@ -1602,20 +1553,6 @@ export function InteractiveViewport({
           return
         }
 
-        if (g.mode === 'stamp-drag') {
-          const effScale = Math.max(0.5, transform.scale)
-          g.accumFloatX += effDxCss / effScale
-          g.accumFloatY += effDyCss / effScale
-          const moveX = Math.trunc(g.accumFloatX)
-          const moveY = Math.trunc(g.accumFloatY)
-          if (moveX !== 0 || moveY !== 0) {
-            g.accumFloatX -= moveX
-            g.accumFloatY -= moveY
-            onMoveStampSession?.(moveX, moveY)
-          }
-          return
-        }
-
         if (g.mode === 'touch-cursor') {
           // Section 4-2: Touching/tapping alone MUST NOT move the cursor!
           // Only start moving the cursor AFTER the finger slides past TOUCH_SLIDE_DEADZONE_PX,
@@ -1684,8 +1621,7 @@ export function InteractiveViewport({
         e.pointerType === 'mouse' &&
         activePointersRef.current.size === 0 &&
         !floatingShape &&
-        !moveSession &&
-        !stampSession
+        !moveSession
       ) {
         const rawPt = mapScreenToLogicalPixel(vx, vy)
         if (allowsOutOfBoundsPoint && stepPhase.kind !== 'idle') {
@@ -1710,13 +1646,11 @@ export function InteractiveViewport({
       cursorSpeed,
       onUpdateMoveOffset,
       onMoveFloatingShape,
-      onMoveStampSession,
       allowsOutOfBoundsPoint,
       onMoveCursor,
       onBeginDrawAt,
       floatingShape,
       moveSession,
-      stampSession,
       stepPhase.kind,
     ]
   )
@@ -1858,10 +1792,6 @@ export function InteractiveViewport({
     statusIcon = toolSettings.shapeType === 'ellipse' ? 'ellipse' : 'rect'
     statusPrimary = t('statusWaitingConfirm')
     statusSub = `${((floatingShape.rotationDeg % 360) + 360) % 360}°`
-  } else if (stampSession) {
-    statusIcon = 'stamp'
-    statusPrimary = stampSession.name
-    statusSub = `${stampSession.x},${stampSession.y}`
   } else {
     if (tool === 'pen') {
       statusPrimary = t('toolPen')
@@ -1916,7 +1846,7 @@ export function InteractiveViewport({
       className={`relative w-full h-full overflow-hidden bg-[var(--canvas-well)] select-none ${
         spacePressed
           ? 'cursor-grab'
-          : floatingShape || moveSession || stampSession
+          : floatingShape || moveSession
             ? 'cursor-move'
             : modality === 'mouse'
               ? 'cursor-crosshair'

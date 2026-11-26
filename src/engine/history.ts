@@ -11,6 +11,8 @@ import type {
   TimelineSnapshot,
   WorldSelectionMask,
 } from '../types'
+
+export type { PixelPatch }
 import { normalizeProjectPalette } from './indexedPalette'
 import { createPixelBuffer, normalizeLayerGeometry } from './pixelBuffer'
 import { projectFrameLayers, pruneUnreferencedCelBuffers } from './animation'

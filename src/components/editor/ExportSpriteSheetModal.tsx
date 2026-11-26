@@ -6,6 +6,7 @@ import type {
   LayerMeta,
   LayerRuntime,
   PlaybackDirection,
+  ProjectPalette,
 } from '../../types'
 import {
   generateSpriteSheet,
@@ -24,6 +25,7 @@ interface ExportSpriteSheetModalProps {
   projectName: string
   width: number
   height: number
+  palette: ProjectPalette
   layerMetas: readonly LayerMeta[]
   frames: readonly FrameMeta[]
   cels: CelMap
@@ -41,6 +43,7 @@ export function ExportSpriteSheetModal({
   projectName,
   width,
   height,
+  palette,
   layerMetas,
   frames,
   cels,
@@ -98,6 +101,7 @@ export function ExportSpriteSheetModal({
       projectName,
       canvasWidth: width,
       canvasHeight: height,
+      palette,
       layerMetas,
       frames,
       cels,
@@ -117,6 +121,7 @@ export function ExportSpriteSheetModal({
     projectName,
     width,
     height,
+    palette,
     layerMetas,
     frames,
     cels,

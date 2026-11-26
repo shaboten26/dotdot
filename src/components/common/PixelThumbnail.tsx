@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
-import type { DitherPatternId, LayerRuntime } from '../../types'
+import type { DitherPatternId, LayerRuntime, ProjectPalette } from '../../types'
 import { shouldDrawWithDither } from '../../engine/dithering'
+import { buildPaletteRgbaLut, indexedBufferToRgba } from '../../engine/indexedPalette'
 import { extractLayerCanvasView } from '../../engine/pixelBuffer'
 
 interface PixelThumbnailProps {
@@ -8,6 +9,11 @@ interface PixelThumbnailProps {
   alt: string
   className?: string
   checkerDark?: boolean
+  /**
+   * When true (used in Gallery cards), renders with a completely transparent background
+   * so transparent artwork pixels show the underlying card surface without checkerboard.
+   */
+  transparentBg?: boolean
 }
 
 export function getCheckerboardStyle(checkerDark: boolean, cellPx = 10) {
@@ -15,15 +21,15 @@ export function getCheckerboardStyle(checkerDark: boolean, cellPx = 10) {
   return checkerDark
     ? {
         backgroundImage:
-          'linear-gradient(45deg, #252a36 25%, transparent 25%), linear-gradient(-45deg, #252a36 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #252a36 75%), linear-gradient(-45deg, transparent 75%, #252a36 75%)',
-        backgroundColor: '#1c2029',
+          'linear-gradient(45deg, #272235 25%, transparent 25%), linear-gradient(-45deg, #272235 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #272235 75%), linear-gradient(-45deg, transparent 75%, #272235 75%)',
+        backgroundColor: '#1d1928',
         backgroundSize: `${cellPx}px ${cellPx}px`,
         backgroundPosition: `0 0, 0 ${half}px, ${half}px -${half}px, -${half}px 0px`,
       }
     : {
         backgroundImage:
-          'linear-gradient(45deg, #dfd8c7 25%, transparent 25%), linear-gradient(-45deg, #dfd8c7 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #dfd8c7 75%), linear-gradient(-45deg, transparent 75%, #dfd8c7 75%)',
-        backgroundColor: '#f3efe4',
+          'linear-gradient(45deg, #e4dce9 25%, transparent 25%), linear-gradient(-45deg, #e4dce9 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e4dce9 75%), linear-gradient(-45deg, transparent 75%, #e4dce9 75%)',
+        backgroundColor: '#f5f1f8',
         backgroundSize: `${cellPx}px ${cellPx}px`,
         backgroundPosition: `0 0, 0 ${half}px, ${half}px -${half}px, -${half}px 0px`,
       }
@@ -34,6 +40,7 @@ export function PixelThumbnail({
   alt,
   className = '',
   checkerDark = false,
+  transparentBg = false,
 }: PixelThumbnailProps) {
   const url = useMemo(() => {
     if (!pngBytes || pngBytes.byteLength === 0) return null
@@ -47,11 +54,14 @@ export function PixelThumbnail({
     }
   }, [url])
 
-  const checkerStyle = getCheckerboardStyle(checkerDark, 12)
+  const bgStyle = transparentBg
+    ? { backgroundColor: 'transparent' }
+    : getCheckerboardStyle(checkerDark, 12)
 
   return (
     <div
-      style={checkerStyle}
+      style={bgStyle}
+      data-transparent-bg={transparentBg ? 'true' : 'false'}
       className={`flex items-center justify-center overflow-hidden ${className}`}
     >
       {url ? (
@@ -68,26 +78,36 @@ export function PixelThumbnail({
   )
 }
 
+const FALLBACK_PREVIEW_PALETTE: ProjectPalette = {
+  name: 'Fallback',
+  colors: ['#241F31'],
+  colorTable: ['#241F31'],
+  displayOrder: [0],
+}
+
 /**
- * Section 6-1: Live Layer Pixel Thumbnail (`LayerBufferThumbnail`)
- * - Renders actual pixel content of a single layer onto a `<canvas>` over a checkerboard background
+ * Live Layer Pixel Thumbnail (`LayerBufferThumbnail`)
+ * - Renders actual 1-byte indexed pixel content of a single layer onto a `<canvas>` over a checkerboard background
  * - Preserves canvas aspect ratio inside a fixed square frame (`44x44px`)
  * - Never clears or hides pixel preview when `layer.visible === false` (dimmed badge indicates hidden state instead)
  */
 export function LayerBufferThumbnail({
   layer,
+  palette,
   canvasWidth,
   canvasHeight,
   checkerDark = false,
   size = 44,
 }: {
   layer: LayerRuntime
+  palette?: ProjectPalette
   canvasWidth: number
   canvasHeight: number
   checkerDark?: boolean
   size?: number
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const activePalette = palette ?? FALLBACK_PREVIEW_PALETTE
 
   useEffect(() => {
     const el = canvasRef.current
@@ -100,8 +120,10 @@ export function LayerBufferThumbnail({
     if (!ctx) return
     ctx.imageSmoothingEnabled = false
     const view = extractLayerCanvasView(layer, canvasWidth, canvasHeight)
+    const lut = buildPaletteRgbaLut(activePalette)
+    const rgba = indexedBufferToRgba(view, lut)
     const imgData = new ImageData(
-      new Uint8ClampedArray(view),
+      new Uint8ClampedArray(rgba),
       canvasWidth,
       canvasHeight
     )
@@ -114,6 +136,7 @@ export function LayerBufferThumbnail({
     layer.offsetY,
     layer.dataWidth,
     layer.dataHeight,
+    activePalette,
     canvasWidth,
     canvasHeight,
   ])
@@ -154,7 +177,7 @@ export function LayerBufferThumbnail({
 }
 
 /**
- * Section 12: High-Contrast Theme-Aware Dither Swatch (`DitherSwatch`)
+ * High-Contrast Theme-Aware Dither Swatch (`DitherSwatch`)
  * - NEVER depends on the active drawing color or palette color!
  * - Uses theme-aware high-contrast foreground (`--text-primary`) & background (`--bg-panel`)
  *   so all 8 dither patterns remain 100% legible even when white, pale yellow, or black is selected.

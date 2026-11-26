@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { LayerRuntime, ResizeAnchor } from '../../types'
+import type { LayerRuntime, ProjectPalette, ResizeAnchor } from '../../types'
 import {
   exportCompositePngBytes,
   getDefaultExportScale,
@@ -276,6 +276,7 @@ interface ExportPngModalProps {
   projectName: string
   width: number
   height: number
+  palette: ProjectPalette
   layers: readonly LayerRuntime[]
   checkerDark?: boolean
   initialIntent?: ExportPngInitialIntent
@@ -294,6 +295,7 @@ export function ExportPngModal({
   projectName,
   width,
   height,
+  palette,
   layers,
   checkerDark = false,
   initialIntent = 'download',
@@ -344,8 +346,10 @@ export function ExportPngModal({
       1,
       Math.min(selectedScale, Math.max(1, Math.floor(1024 / Math.max(1, width, height))))
     )
-    return exportCompositePngBytes(layers, width, height, previewScale).png
-  }, [open, layers, width, height, selectedScale])
+    return exportCompositePngBytes(layers, width, height, previewScale, {
+      palette,
+    }).png
+  }, [open, layers, width, height, palette, selectedScale])
 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   useEffect(() => {
@@ -367,7 +371,7 @@ export function ExportPngModal({
       width,
       height,
       selectedScale,
-      { embedMetadata: embedMeta }
+      { palette, embedMetadata: embedMeta }
     )
     const blob = new Blob([png.slice().buffer], { type: 'image/png' })
     return {

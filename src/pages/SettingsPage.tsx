@@ -1,16 +1,23 @@
-import React, { ViewTransition, useCallback, useEffect, useRef, useState } from 'react'
+import React, { ViewTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import type {
+  CursorDisplaySize,
+  DarkThemeVariantId,
   LanguageCode,
+  LightThemeVariantId,
   PaletteData,
+  ProjectRecord,
   SeamlessWrapMode,
   SymmetryMode,
   ThemeMode,
+  TilePreviewGrid,
   UiSizePreset,
 } from '../types'
 import {
   DEFAULT_UI_SIZE_CONFIG,
   getStorageStatus,
+  MAX_CURSOR_SPEED,
+  MIN_CURSOR_SPEED,
   requestStoragePersistence,
   resetAllAppData,
   UI_SIZE_PRESETS,
@@ -22,14 +29,20 @@ import {
   inspectAndValidateEnvPack,
   type ValidatedEnvPack,
 } from '../db/envPack'
+import {
+  DARK_THEME_VARIANTS,
+  LIGHT_THEME_VARIANTS,
+} from '../theme/themes'
+import { normalizeProjectPalette } from '../engine/indexedPalette'
 import { useApp } from '../state/AppContext'
 import { useI18n } from '../i18n/I18nContext'
-import { ConfirmDialog } from '../components/common/Modal'
+import type { TranslationKey } from '../i18n/translations'
+import { ConfirmDialog, Modal } from '../components/common/Modal'
 import { PixelIcon } from '../components/common/PixelIcon'
 import { PixelCheckbox } from '../components/common/PixelCheckbox'
 import { PixelSlider } from '../components/common/PixelSlider'
+import { PixelThumbnail } from '../components/common/PixelThumbnail'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
-import { StampSheetModal } from '../components/editor/StampSheetModal'
 import { LospecImportModal } from '../components/common/LospecImportModal'
 import {
   LegalDocsModal,
@@ -46,14 +59,28 @@ function formatBytes(bytes: number | null): string | null {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
+const LIGHT_VARIANT_LABEL_KEYS: Record<LightThemeVariantId, TranslationKey> = {
+  'lavender-cream': 'themeVarLavenderCream',
+  'milk-lilac': 'themeVarMilkLilac',
+  'sage-ivory': 'themeVarSageIvory',
+  'berry-paper': 'themeVarBerryPaper',
+}
+
+const DARK_VARIANT_LABEL_KEYS: Record<DarkThemeVariantId, TranslationKey> = {
+  'dusk-plum': 'themeVarDuskPlum',
+  'midnight-lavender': 'themeVarMidnightLavender',
+  'moss-grape': 'themeVarMossGrape',
+  'velvet-fig': 'themeVarVelvetFig',
+}
+
 export function SettingsPage() {
   const {
     settings,
     reducedMotion,
     palettes,
-    stamps,
     projects,
     originStorageStatus,
+    migrationSummary,
     updateSettings,
     updateUiSize,
     addLibraryPalette,
@@ -61,9 +88,6 @@ export function SettingsPage() {
     duplicateLibraryPalette,
     removeLibraryPalette,
     reorderLibraryPalettes,
-    addStamp,
-    renameStamp,
-    removeStamp,
     reloadWorkspaceState,
     markEnvPackExported,
     showToast,
@@ -80,6 +104,7 @@ export function SettingsPage() {
     typeof settings.historyLimit === 'number' ? settings.historyLimit : 100
   )
   const [previewChecked, setPreviewChecked] = useState(true)
+  const [themeDetailsOpen, setThemeDetailsOpen] = useState(false)
 
   const [editingPalette, setEditingPalette] = useState<PaletteData | null>(null)
   const [editingColorIdx, setEditingColorIdx] = useState(0)
@@ -103,8 +128,8 @@ export function SettingsPage() {
   const [confirmResetOpen, setConfirmResetOpen] = useState(false)
   const [lospecLibOpen, setLospecLibOpen] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [manageStampsOpen, setManageStampsOpen] = useState(false)
   const [legalTab, setLegalTab] = useState<LegalDocTab | null>(null)
+  const [compareProject, setCompareProject] = useState<ProjectRecord | null>(null)
 
   const refreshStorage = useCallback(async () => {
     const info = await getStorageStatus()
@@ -120,6 +145,16 @@ export function SettingsPage() {
       setCustomLimitInput(settings.historyLimit)
     }
   }, [settings.historyLimit])
+
+  const quantizedProjects = useMemo(
+    () =>
+      projects.filter(
+        (p) =>
+          p.migrationReport?.wasQuantized ||
+          p.migrationReport?.hadSemiTransparentPixels
+      ),
+    [projects]
+  )
 
   const formatDateTime = (ms: number | null) => {
     if (!ms) return t('neverExportedLabel')
@@ -146,10 +181,6 @@ export function SettingsPage() {
     }
   }
 
-  /**
-   * Section 11: ONLY Environment Pack ZIP generation updates `lastExportAt`!
-   * PNG download/share never touches `lastExportAt`.
-   */
   const handleExportEnvPack = async () => {
     const zipBytes = await exportEnvironmentPackZip()
     const blob = new Blob([zipBytes.slice().buffer], { type: 'application/zip' })
@@ -218,6 +249,8 @@ export function SettingsPage() {
   const usageFormatted = formatBytes(storageInfo.usageBytes)
   const quotaFormatted = formatBytes(storageInfo.quotaBytes)
   const ui = settings.uiSize
+  const activeLightVariant = settings.lightThemeVariant ?? 'lavender-cream'
+  const activeDarkVariant = settings.darkThemeVariant ?? 'dusk-plum'
 
   return (
     <ViewTransition>
@@ -251,14 +284,37 @@ export function SettingsPage() {
         </header>
 
         <main className="flex-1 max-w-3xl w-full mx-auto p-3.5 sm:p-4 pb-12 pb-safe space-y-5">
-          {/* 1. Theme & Language */}
+          {/* 1. Theme (Light / Dark / System + Collapsible Sub-Theme Variants) & Language */}
           <section className="pixel-card p-4 space-y-4">
             <SectionTitle icon="sparkle" title={t('sectionAppearance')} />
 
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-[var(--text-secondary)] block">
-                {t('themeLabel')}
-              </label>
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-xs font-bold text-[var(--text-secondary)] block">
+                  {t('themeLabel')}
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => setThemeDetailsOpen((v) => !v)}
+                  aria-expanded={themeDetailsOpen}
+                  className={`min-h-[32px] px-2.5 text-[11px] font-bold flex items-center gap-1 ${
+                    themeDetailsOpen ? 'pixel-btn pixel-btn-teal' : 'pixel-btn'
+                  }`}
+                  data-testid="toggle-theme-details-btn"
+                >
+                  <PixelIcon
+                    name={themeDetailsOpen ? 'arrowUp' : 'arrowDown'}
+                    size={11}
+                  />
+                  <span>
+                    {themeDetailsOpen
+                      ? t('themeDetailCloseBtn')
+                      : t('themeDetailToggleBtn')}
+                  </span>
+                </button>
+              </div>
+
               <div className="grid grid-cols-3 gap-2">
                 {(
                   [
@@ -299,6 +355,122 @@ export function SettingsPage() {
                   )
                 })}
               </div>
+
+              {/* Collapsible Detailed Light & Dark Sub-Theme Selectors (Hidden by default unless opened) */}
+              {themeDetailsOpen && (
+                <div
+                  className="p-3 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-3 mt-1"
+                  data-testid="theme-details-panel"
+                >
+                  <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+                    {t('themeDetailHint')}
+                  </p>
+
+                  {/* Light Series Sub-Themes */}
+                  <div className="space-y-1.5">
+                    <div className="text-xs font-bold text-[var(--text-primary)]">
+                      {t('themeLightSeriesLabel')}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                      {LIGHT_THEME_VARIANTS.map((variant) => {
+                        const active = activeLightVariant === variant.id
+                        return (
+                          <button
+                            key={variant.id}
+                            type="button"
+                            onClick={() =>
+                              void updateSettings({
+                                lightThemeVariant: variant.id,
+                              })
+                            }
+                            aria-pressed={active}
+                            className={`p-2 border-2 text-left flex items-center justify-between gap-2 cursor-pointer ${
+                              active
+                                ? 'bg-[var(--bg-panel)] border-[var(--accent-primary)]'
+                                : 'bg-[var(--bg-surface)] border-[var(--border-pixel)]'
+                            }`}
+                            data-testid={`light-theme-variant-${variant.id}`}
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              {active && (
+                                <PixelIcon
+                                  name="check"
+                                  size={12}
+                                  className="text-[var(--accent-primary)] shrink-0"
+                                />
+                              )}
+                              <span className="text-xs font-bold truncate">
+                                {t(LIGHT_VARIANT_LABEL_KEYS[variant.id])}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-0.5 shrink-0">
+                              {variant.previewColors.map((hex, i) => (
+                                <span
+                                  key={i}
+                                  style={{ backgroundColor: hex }}
+                                  className="w-3.5 h-3.5 border border-[var(--border-pixel)]"
+                                />
+                              ))}
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Dark Series Sub-Themes */}
+                  <div className="space-y-1.5">
+                    <div className="text-xs font-bold text-[var(--text-primary)]">
+                      {t('themeDarkSeriesLabel')}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                      {DARK_THEME_VARIANTS.map((variant) => {
+                        const active = activeDarkVariant === variant.id
+                        return (
+                          <button
+                            key={variant.id}
+                            type="button"
+                            onClick={() =>
+                              void updateSettings({
+                                darkThemeVariant: variant.id,
+                              })
+                            }
+                            aria-pressed={active}
+                            className={`p-2 border-2 text-left flex items-center justify-between gap-2 cursor-pointer ${
+                              active
+                                ? 'bg-[var(--bg-panel)] border-[var(--accent-primary)]'
+                                : 'bg-[var(--bg-surface)] border-[var(--border-pixel)]'
+                            }`}
+                            data-testid={`dark-theme-variant-${variant.id}`}
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              {active && (
+                                <PixelIcon
+                                  name="check"
+                                  size={12}
+                                  className="text-[var(--accent-primary)] shrink-0"
+                                />
+                              )}
+                              <span className="text-xs font-bold truncate">
+                                {t(DARK_VARIANT_LABEL_KEYS[variant.id])}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-0.5 shrink-0">
+                              {variant.previewColors.map((hex, i) => (
+                                <span
+                                  key={i}
+                                  style={{ backgroundColor: hex }}
+                                  className="w-3.5 h-3.5 border border-[var(--border-pixel)]"
+                                />
+                              ))}
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="space-y-1.5">
@@ -348,7 +520,7 @@ export function SettingsPage() {
             </div>
           </section>
 
-          {/* 2. UI Size Customization + Live UI Preview + PixelSliders with +-1 */}
+          {/* 2. UI Size Customization + Live UI Preview */}
           <section className="pixel-card p-4 space-y-4" data-testid="ui-size-section">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <SectionTitle icon="resize" title={t('sectionUiSize')} />
@@ -362,7 +534,6 @@ export function SettingsPage() {
               </button>
             </div>
 
-            {/* Live UI Preview Box (updates in real time using actual CSS variables!) */}
             <div
               className="p-3 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-2.5"
               data-testid="ui-size-live-preview"
@@ -403,7 +574,7 @@ export function SettingsPage() {
                   style={{ gap: 'var(--ui-gap, 6px)' }}
                   className="flex items-center"
                 >
-                  {['#292533', '#7E72B8', '#52948B', '#D9A066'].map((hex, i) => (
+                  {['#241F31', '#8A6FB8', '#6D9B84', '#C47488'].map((hex, i) => (
                     <span
                       key={hex}
                       style={{
@@ -438,7 +609,6 @@ export function SettingsPage() {
               </div>
             </div>
 
-            {/* Presets: Compact / Standard / Large */}
             <div className="grid grid-cols-3 gap-2">
               {(
                 [
@@ -480,7 +650,6 @@ export function SettingsPage() {
               })}
             </div>
 
-            {/* Individual PixelSliders with [-]/[+] Step Buttons */}
             <div className="space-y-2.5 pt-1">
               <UiSliderRow
                 label={t('uiOverallScale')}
@@ -573,7 +742,7 @@ export function SettingsPage() {
             </div>
           </section>
 
-          {/* 3. Editor Preferences & History Limit */}
+          {/* 3. Editor Preferences, Cursor Settings & History Limit */}
           <section className="pixel-card p-4 space-y-3.5">
             <SectionTitle icon="settings" title={t('sectionEditorPrefs')} />
 
@@ -643,6 +812,60 @@ export function SettingsPage() {
               </div>
             </div>
 
+            {/* Consolidated Touch Virtual Cursor Size & Speed */}
+            <div className="p-3 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-2.5">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="font-bold text-[var(--text-primary)]">
+                  {t('cursorSpeedSection')}
+                </span>
+                <span className="font-mono font-bold text-[var(--accent-primary)]">
+                  {settings.cursorSpeed.toFixed(2)}x ({Math.round(settings.cursorSpeed * 100)}%)
+                </span>
+              </div>
+              <input
+                type="range"
+                min={Math.round(MIN_CURSOR_SPEED * 100)}
+                max={Math.round(MAX_CURSOR_SPEED * 100)}
+                step={5}
+                value={Math.round(settings.cursorSpeed * 100)}
+                aria-label={t('cursorSpeedSection')}
+                onChange={(e) => {
+                  const next = Number(e.target.value) / 100
+                  void updateSettings({ cursorSpeed: next })
+                }}
+                className="w-full cursor-pointer accent-[var(--accent-primary)]"
+                data-testid="settings-cursor-speed-slider"
+              />
+              <div className="space-y-1 pt-1">
+                <span className="text-xs font-bold text-[var(--text-secondary)] block">
+                  {t('cursorSizeSection')}
+                </span>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(
+                    [
+                      { value: 'small', label: t('cursorSizeSmall') },
+                      { value: 'standard', label: t('cursorSizeStandard') },
+                      { value: 'large', label: t('cursorSizeLarge') },
+                    ] as Array<{ value: CursorDisplaySize; label: string }>
+                  ).map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => void updateSettings({ cursorSize: opt.value })}
+                      className={`min-h-[34px] px-2 text-xs font-bold ${
+                        settings.cursorSize === opt.value
+                          ? 'pixel-btn pixel-btn-active'
+                          : 'pixel-btn'
+                      }`}
+                      data-testid={`settings-cursor-size-${opt.value}`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
             <div className="flex flex-col gap-1 pt-1">
               <PixelCheckbox
                 checked={settings.eyedropperDoubleTap}
@@ -677,7 +900,7 @@ export function SettingsPage() {
             </div>
           </section>
 
-          {/* 3b. Collapsible Advanced Editing, Stamps & I/O Settings */}
+          {/* 3b. Consolidated Tile Preview, Seamless Wrap, Symmetry & Export Defaults */}
           <section
             className="pixel-card p-4 space-y-3"
             data-testid="settings-advanced-section"
@@ -712,31 +935,31 @@ export function SettingsPage() {
 
             {advancedOpen && (
               <div className="space-y-3.5 pt-2 border-t border-[var(--border-subtle)]">
-                {/* Default Symmetry Mode */}
+                {/* Default Tile Repeat Preview */}
                 <div className="space-y-1.5">
                   <span className="text-xs font-bold text-[var(--text-secondary)] block">
-                    {t('defaultSymmetryLabel')}
+                    {t('tilePreviewLabel')}
                   </span>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                  <div className="grid grid-cols-3 gap-1.5">
                     {(
                       [
-                        { id: 'none', label: t('symmetryOff') },
-                        { id: 'horizontal', label: t('symmetryHorizontal') },
-                        { id: 'vertical', label: t('symmetryVertical') },
-                        { id: 'quad', label: t('symmetryQuad') },
-                      ] as Array<{ id: SymmetryMode; label: string }>
+                        { id: 'off', label: t('tilePreviewOff') },
+                        { id: '3x3', label: t('tilePreview3x3') },
+                        { id: '5x5', label: t('tilePreview5x5') },
+                      ] as Array<{ id: TilePreviewGrid; label: string }>
                     ).map((opt) => (
                       <button
                         key={opt.id}
                         type="button"
                         onClick={() =>
-                          void updateSettings({ defaultSymmetryMode: opt.id })
+                          void updateSettings({ defaultTilePreviewGrid: opt.id })
                         }
                         className={`min-h-[36px] px-2 text-xs font-bold ${
-                          settings.defaultSymmetryMode === opt.id
+                          (settings.defaultTilePreviewGrid ?? 'off') === opt.id
                             ? 'pixel-btn pixel-btn-active'
                             : 'pixel-btn'
                         }`}
+                        data-testid={`settings-tile-preview-${opt.id}`}
                       >
                         {opt.label}
                       </button>
@@ -778,6 +1001,61 @@ export function SettingsPage() {
                   </div>
                 </div>
 
+                {/* Default Symmetry Mode */}
+                <div className="space-y-1.5">
+                  <span className="text-xs font-bold text-[var(--text-secondary)] block">
+                    {t('defaultSymmetryLabel')}
+                  </span>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                    {(
+                      [
+                        { id: 'none', label: t('symmetryOff') },
+                        { id: 'horizontal', label: t('symmetryHorizontal') },
+                        { id: 'vertical', label: t('symmetryVertical') },
+                        { id: 'quad', label: t('symmetryQuad') },
+                      ] as Array<{ id: SymmetryMode; label: string }>
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() =>
+                          void updateSettings({ defaultSymmetryMode: opt.id })
+                        }
+                        className={`min-h-[36px] px-2 text-xs font-bold ${
+                          settings.defaultSymmetryMode === opt.id
+                            ? 'pixel-btn pixel-btn-active'
+                            : 'pixel-btn'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Default Sprite Sheet Spacing */}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-[var(--text-secondary)]">
+                    {t('spriteSheetTitle')} — {t('spriteSheetSpacing')}
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={64}
+                    value={settings.defaultSpriteSheetPadding ?? 0}
+                    onChange={(e) =>
+                      void updateSettings({
+                        defaultSpriteSheetPadding: Math.max(
+                          0,
+                          Math.min(64, Number(e.target.value) || 0)
+                        ),
+                      })
+                    }
+                    className="w-20 min-h-[34px] px-2 text-xs font-mono font-bold text-right pixel-input"
+                    data-testid="settings-default-sprite-padding"
+                  />
+                </div>
+
                 <div className="flex flex-col gap-1">
                   <PixelCheckbox
                     checked={settings.showSymmetryGuide ?? true}
@@ -795,26 +1073,61 @@ export function SettingsPage() {
                     testId="settings-embed-png-meta-checkbox"
                   />
                 </div>
-
-                <div className="flex items-center justify-between gap-2 pt-1">
-                  <span className="text-xs font-bold text-[var(--text-secondary)]">
-                    {t('manageStampsTitle')} ({stamps.length})
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setManageStampsOpen(true)}
-                    className="pixel-btn pixel-btn-teal min-h-[38px] px-3 text-xs font-bold flex items-center gap-1.5"
-                    data-testid="settings-open-stamps-btn"
-                  >
-                    <PixelIcon name="stamp" size={14} />
-                    <span>{t('stampTitle')}</span>
-                  </button>
-                </div>
               </div>
             )}
           </section>
 
-          {/* 4. Palette Library Manager */}
+          {/* 3c. Indexed Color Migration Report & Before/After Quantization Comparison (shown when quantized artworks exist) */}
+          {(quantizedProjects.length > 0 ||
+            (migrationSummary && migrationSummary.quantizedProjectIds.length > 0)) && (
+            <section
+              className="pixel-card p-4 space-y-3"
+              data-testid="settings-migration-report-section"
+            >
+              <SectionTitle
+                icon="palette"
+                title={t('migrationSummaryTitle')}
+              />
+              <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                {t('migrationSummaryDesc')}
+              </p>
+
+              <div className="space-y-2">
+                {quantizedProjects.map((proj) => {
+                  const rep = proj.migrationReport
+                  return (
+                    <div
+                      key={proj.id}
+                      className="p-2.5 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] flex flex-wrap items-center justify-between gap-2 text-xs"
+                      data-testid={`migration-quantized-item-${proj.id}`}
+                    >
+                      <div className="min-w-0 space-y-0.5">
+                        <div className="font-bold truncate">{proj.name}</div>
+                        {rep && (
+                          <div className="text-[11px] text-[var(--text-secondary)]">
+                            {t('migrationOriginalColors')}: {rep.originalOpaqueColorCount} → {rep.finalOpaqueColorCount}
+                            {rep.hadSemiTransparentPixels
+                              ? ` · ${t('migrationSemiTransparentNote')}`
+                              : ''}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setCompareProject(proj)}
+                        className="pixel-btn pixel-btn-teal min-h-[34px] px-2.5 text-xs font-bold"
+                        data-testid={`migration-compare-btn-${proj.id}`}
+                      >
+                        {t('migrationCompareBtn')}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </section>
+          )}
+
+          {/* 4. Palette Library Manager (Max 255 Opaque Colors) */}
           <section className="pixel-card p-4 space-y-3">
             <div className="flex items-center justify-between gap-2">
               <SectionTitle
@@ -838,7 +1151,7 @@ export function SettingsPage() {
                   onClick={async () => {
                     const created = await addLibraryPalette(
                       `Palette ${palettes.length + 1}`,
-                      ['#181521', '#F4F1EA', '#8476C4', '#579B91', '#C47388', '#E0A96D']
+                      ['#241F31', '#F7F4FA', '#8A6FB8', '#6D9B84', '#C47488', '#D9A06B']
                     )
                     setEditingPalette(created)
                     setEditingColorIdx(0)
@@ -1094,7 +1407,7 @@ export function SettingsPage() {
             <div className="text-xs space-y-1.5 text-[var(--text-secondary)]">
               <div className="flex justify-between">
                 <span>{t('appVersionLabel')}</span>
-                <span className="font-bold text-[var(--text-primary)]">2.5.0</span>
+                <span className="font-bold text-[var(--text-primary)]">3.0.0</span>
               </div>
               <div className="flex justify-between">
                 <span>{t('storageEngineLabel')}</span>
@@ -1157,11 +1470,11 @@ export function SettingsPage() {
           <PaletteSheet
             open={true}
             onClose={() => setEditingPalette(null)}
-            palette={{
+            palette={normalizeProjectPalette({
               name: editingPalette.name,
               colors: editingPalette.colors,
               sourcePaletteId: editingPalette.id,
-            }}
+            })}
             selectedIndex={editingColorIdx}
             checkerDark={settings.checkerboardDark}
             libraryPalettes={palettes}
@@ -1200,19 +1513,67 @@ export function SettingsPage() {
           }}
         />
 
-        <StampSheetModal
-          open={manageStampsOpen}
-          onClose={() => setManageStampsOpen(false)}
-          stamps={stamps}
-          checkerDark={settings.checkerboardDark}
-          onCreateStamp={addStamp}
-          onRenameStamp={renameStamp}
-          onDeleteStamp={async (id) => {
-            const ok = await removeStamp(id)
-            if (ok) showToast(t('stampDeletedMsg'), 'info')
-            return ok
-          }}
-        />
+        {/* Before / After Quantized Artwork Comparison Modal */}
+        <Modal
+          open={compareProject !== null}
+          title={compareProject ? compareProject.name : t('migrationSummaryTitle')}
+          onClose={() => setCompareProject(null)}
+          maxWidthClass="max-w-md"
+        >
+          {compareProject && (
+            <div className="space-y-3 text-xs" data-testid="migration-compare-modal">
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="space-y-1">
+                  <div className="font-bold text-[var(--text-secondary)] text-center">
+                    {t('migrationBeforeLabel')}
+                  </div>
+                  <div className="aspect-square border-2 border-[var(--border-pixel)]">
+                    <PixelThumbnail
+                      pngBytes={
+                        compareProject.migrationReport?.beforePreviewPng ??
+                        compareProject.thumbnailPng
+                      }
+                      alt={`${compareProject.name} Before`}
+                      checkerDark={settings.checkerboardDark}
+                      className="w-full h-full p-2"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="font-bold text-[var(--accent-teal)] text-center">
+                    {t('migrationAfterLabel')}
+                  </div>
+                  <div className="aspect-square border-2 border-[var(--border-pixel)]">
+                    <PixelThumbnail
+                      pngBytes={
+                        compareProject.migrationReport?.afterPreviewPng ??
+                        compareProject.thumbnailPng
+                      }
+                      alt={`${compareProject.name} After`}
+                      checkerDark={settings.checkerboardDark}
+                      className="w-full h-full p-2"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {compareProject.migrationReport && (
+                <div className="p-2.5 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-1">
+                  <div>
+                    {t('migrationOriginalColors')}:{' '}
+                    <strong>{compareProject.migrationReport.originalOpaqueColorCount}</strong> →{' '}
+                    <strong>{compareProject.migrationReport.finalOpaqueColorCount}</strong>
+                  </div>
+                  {compareProject.migrationReport.hadSemiTransparentPixels && (
+                    <div className="text-[var(--text-secondary)]">
+                      {t('migrationSemiTransparentNote')}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </Modal>
 
         {legalTab !== null && (
           <LegalDocsModal
@@ -1256,10 +1617,6 @@ export function SettingsPage() {
                 <div className="flex justify-between">
                   <span>{t('importSummaryPalettes')}</span>
                   <strong>{pendingPack.manifest.counts.palettes}</strong>
-                </div>
-                <div className="flex justify-between">
-                  <span>{t('importSummaryStamps')}</span>
-                  <strong>{pendingPack.manifest.counts.stamps ?? 0}</strong>
                 </div>
                 <div className="flex justify-between">
                   <span>{t('importSummaryHistory')}</span>

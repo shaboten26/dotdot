@@ -1,4 +1,5 @@
 import { normalizeHex } from '../engine/color'
+import { MAX_OPAQUE_PALETTE_COLORS } from '../types'
 
 export type LospecApplyMode = 'replace' | 'append'
 
@@ -24,7 +25,7 @@ export interface LospecFetchedPalette {
   slug: string
   name: string
   author: string
-  colors: string[] // #RRGGBB uppercase, 1..256
+  colors: string[] // #RRGGBB uppercase, 1..255
   sourceUrl: string
   truncated: boolean
   originalColorCount: number
@@ -207,8 +208,8 @@ export async function fetchLospecPalette(
   }
 
   const originalColorCount = normalizedAll.length
-  const truncated = originalColorCount > 256
-  const colors = normalizedAll.slice(0, 256)
+  const truncated = originalColorCount > MAX_OPAQUE_PALETTE_COLORS
+  const colors = normalizedAll.slice(0, MAX_OPAQUE_PALETTE_COLORS)
   const name =
     typeof record.name === 'string' && record.name.trim()
       ? record.name.trim()
@@ -231,7 +232,7 @@ export async function fetchLospecPalette(
 
 /**
  * Apply an imported Lospec color list onto an existing palette in either `'replace'` or `'append'` mode
- * while strictly respecting the 256-color maximum.
+ * while strictly respecting the 255-color indexed studio limit.
  */
 export function mergeLospecPaletteColors(
   existingColors: readonly string[],
@@ -239,16 +240,16 @@ export function mergeLospecPaletteColors(
   mode: LospecApplyMode
 ): { colors: string[]; truncated: boolean } {
   if (mode === 'replace') {
-    const sliced = incomingColors.slice(0, 256)
+    const sliced = incomingColors.slice(0, MAX_OPAQUE_PALETTE_COLORS)
     return {
       colors: sliced.length > 0 ? [...sliced] : ['#000000'],
-      truncated: incomingColors.length > 256,
+      truncated: incomingColors.length > MAX_OPAQUE_PALETTE_COLORS,
     }
   }
 
   const combined = [...existingColors, ...incomingColors]
   return {
-    colors: combined.slice(0, 256),
-    truncated: combined.length > 256,
+    colors: combined.slice(0, MAX_OPAQUE_PALETTE_COLORS),
+    truncated: combined.length > MAX_OPAQUE_PALETTE_COLORS,
   }
 }

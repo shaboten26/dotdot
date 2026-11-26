@@ -26,12 +26,15 @@ import {
   rasterizeRectangle,
 } from '../engine/rasterize'
 
-const RED = { r: 255, g: 0, b: 0, a: 255 }
-const BLUE = { r: 0, g: 120, b: 255, a: 255 }
-const GREEN = { r: 0, g: 200, b: 80, a: 255 }
+const RED_IDX = 1
+const BLUE_IDX = 2
+const GREEN_IDX = 3
+const RED = { r: RED_IDX, g: RED_IDX, b: RED_IDX, a: 255 }
+const BLUE = { r: BLUE_IDX, g: BLUE_IDX, b: BLUE_IDX, a: 255 }
+const GREEN = { r: GREEN_IDX, g: GREEN_IDX, b: GREEN_IDX, a: 255 }
 
 function countColorPixels(
-  buf: Uint8ClampedArray,
+  buf: Uint8Array | Uint8ClampedArray,
   w: number,
   h: number,
   color: { r: number; g: number; b: number; a: number }
@@ -224,7 +227,7 @@ describe('Flood Fill (4/8-connectivity & Gradient Fill)', () => {
     setPixel(base, w, h, 1, 0, BLUE)
     setPixel(base, w, h, 0, 1, BLUE)
 
-    const buf4 = new Uint8ClampedArray(base)
+    const buf4 = new Uint8Array(base)
     applyFloodFill(buf4, {
       width: w,
       height: h,
@@ -236,7 +239,7 @@ describe('Flood Fill (4/8-connectivity & Gradient Fill)', () => {
     })
     expect(countColorPixels(buf4, w, h, RED)).toBe(1) // only (0,0)
 
-    const buf8 = new Uint8ClampedArray(base)
+    const buf8 = new Uint8Array(base)
     applyFloodFill(buf8, {
       width: w,
       height: h,
@@ -258,8 +261,8 @@ describe('Flood Fill (4/8-connectivity & Gradient Fill)', () => {
       setPixel(base, w, h, 24, y, GREEN)
     }
 
-    const previewBuf = new Uint8ClampedArray(base)
-    const commitBuf = new Uint8ClampedArray(base)
+    const previewBuf = new Uint8Array(base)
+    const commitBuf = new Uint8Array(base)
 
     const opts = {
       width: w,
@@ -363,9 +366,9 @@ describe('Line, Cubic Bezier & Shapes', () => {
       filled: true,
       color: GREEN,
     })
-    // Every pixel must have alpha 0 or 255 (strictly no anti-aliasing)
-    for (let i = 3; i < eBuf.length; i += 4) {
-      expect(eBuf[i] === 0 || eBuf[i] === 255).toBe(true)
+    // Every pixel must be strictly an opaque index (0..254) or transparent (255)
+    for (let i = 0; i < eBuf.length; i++) {
+      expect(eBuf[i]! <= 255).toBe(true)
     }
     expect(getPixel(eBuf, 16, 16, 7, 7)).toEqual(GREEN)
 

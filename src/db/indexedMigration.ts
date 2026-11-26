@@ -9,7 +9,6 @@ import {
   type FrameMeta,
   type LayerMeta,
   type LayerPixelRecord,
-  type LayerRuntime,
   type MigrationStateRecord,
   type ProjectHistoryRecord,
   type ProjectMigrationReport,
@@ -867,7 +866,7 @@ export interface MigrationCapableDb {
   }
   transaction<T>(
     mode: 'rw' | 'r',
-    tables: unknown[],
+    tables: any[],
     scope: () => Promise<T>
   ): Promise<T>
 }

@@ -69,12 +69,7 @@ describe('Unified 1-Frame Still & N-Frame Animation Engine + Load Estimator', ()
     const sharedRef = timeline.cels[makeCellKey('layer-1', 'f1')]
     expect(sharedRef?.kind).toBe('cel')
     if (sharedRef?.kind === 'cel') {
-      setPixel(timeline.celBuffers[sharedRef.celId]!.data, 8, 8, 4, 4, {
-        r: 0,
-        g: 255,
-        b: 0,
-        a: 255,
-      })
+      setPixel(timeline.celBuffers[sharedRef.celId]!.data, 8, 8, 4, 4, 2)
     }
     const f2Projected = projectFrameLayers(
       [layer],
@@ -85,13 +80,13 @@ describe('Unified 1-Frame Still & N-Frame Animation Engine + Load Estimator', ()
       8
     )
     expect(getPixel(f2Projected[0]!.data, 8, 8, 4, 4)).toEqual({
-      r: 0,
-      g: 255,
-      b: 0,
+      r: 2,
+      g: 2,
+      b: 2,
       a: 255,
     })
 
-    // Load estimator counts shared linked cel ONCE and empty cel as 0 bytes!
+    // Load estimator counts shared linked cel ONCE (1 byte/pixel in indexed-v1) and empty cel as 0 bytes!
     timeline = insertNewFrame(timeline, [layer], 'empty', f2Id)
     const f3Id = timeline.frames[2]!.id
     const load = estimateProjectLoad({
@@ -105,7 +100,7 @@ describe('Unified 1-Frame Still & N-Frame Animation Engine + Load Estimator', ()
     expect(load.emptyCellCount).toBe(1)
     expect(load.linkedCellCount).toBe(2)
     expect(load.uniqueCelBufferCount).toBe(1)
-    expect(load.actualCelMemoryBytes).toBe(8 * 8 * 4)
+    expect(load.actualCelMemoryBytes).toBe(8 * 8)
 
     // Unlink f2 -> becomes independent, further edits do NOT affect f1
     const unlinked = unlinkCellToIndependent(
@@ -196,7 +191,7 @@ describe('Unified 1-Frame Still & N-Frame Animation Engine + Load Estimator', ()
 
   it('retroactively links independent cels, detects distinct pixel overwrites, switches link targets, prevents self-reference, and keeps remaining cels intact on frame deletion', () => {
     const bufA = createPixelBuffer(4, 4)
-    setPixel(bufA, 4, 4, 0, 0, { r: 255, g: 0, b: 0, a: 255 })
+    setPixel(bufA, 4, 4, 0, 0, 1)
     const layer: LayerRuntime = {
       id: 'l1',
       name: 'Layer 1',
@@ -211,19 +206,19 @@ describe('Unified 1-Frame Still & N-Frame Animation Engine + Load Estimator', ()
       data: bufA,
     }
 
-    // Frame 1: Cel A (Red at 0,0)
+    // Frame 1: Cel A (index 1 at 0,0)
     let tl = createSingleFrameTimelineFromLayers([layer], { frameId: 'f1' })
-    // Frame 2: Independent duplicate -> paint Green at (1,1) -> Cel B
+    // Frame 2: Independent duplicate -> paint index 2 at (1,1) -> Cel B
     tl = insertNewFrame(tl, [layer], 'duplicate-independent', 'f1')
     const f2Id = tl.frames[1]!.id
     const celBId = (tl.cels[makeCellKey('l1', f2Id)] as { kind: 'cel'; celId: string }).celId
-    setPixel(tl.celBuffers[celBId]!.data, 4, 4, 1, 1, { r: 0, g: 255, b: 0, a: 255 })
+    setPixel(tl.celBuffers[celBId]!.data, 4, 4, 1, 1, 2)
 
-    // Frame 3: Independent duplicate -> paint Blue at (2,2) -> Cel C
+    // Frame 3: Independent duplicate -> paint index 3 at (2,2) -> Cel C
     tl = insertNewFrame(tl, [layer], 'duplicate-independent', f2Id)
     const f3Id = tl.frames[2]!.id
     const celCId = (tl.cels[makeCellKey('l1', f3Id)] as { kind: 'cel'; celId: string }).celId
-    setPixel(tl.celBuffers[celCId]!.data, 4, 4, 2, 2, { r: 0, g: 0, b: 255, a: 255 })
+    setPixel(tl.celBuffers[celCId]!.data, 4, 4, 2, 2, 3)
 
     // Self-reference MUST be rejected
     const selfRes = linkCellToAnySourceCell(tl.cels, tl.celBuffers, 'l1', f2Id, 'l1', f2Id)
@@ -260,6 +255,6 @@ describe('Unified 1-Frame Still & N-Frame Animation Engine + Load Estimator', ()
     expect(afterDel).not.toBeNull()
     expect(getCellStateKind(afterDel.cels, afterDel.celBuffers, 'l1', f2Id)).toBe('independent')
     const projectedF2 = projectFrameLayers([layer], afterDel.cels, afterDel.celBuffers, f2Id, 4, 4)
-    expect(getPixel(projectedF2[0]!.data, 4, 4, 2, 2)).toEqual({ r: 0, g: 0, b: 255, a: 255 })
+    expect(getPixel(projectedF2[0]!.data, 4, 4, 2, 2)).toEqual({ r: 3, g: 3, b: 3, a: 255 })
   })
 })

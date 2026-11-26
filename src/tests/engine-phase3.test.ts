@@ -34,12 +34,26 @@ import {
   HistoryManager,
   type EditorRuntimeStateForHistory,
 } from '../engine/history'
-import type { FloatingShapeState, LayerRuntime } from '../types'
+import {
+  TRANSPARENT_INDEX,
+  type FloatingShapeState,
+  type LayerRuntime,
+  type ProjectPalette,
+} from '../types'
 
-const RED = { r: 255, g: 0, b: 0, a: 255 }
-const GREEN = { r: 0, g: 255, b: 0, a: 255 }
-const BLUE = { r: 0, g: 0, b: 255, a: 255 }
-const WHITE = { r: 255, g: 255, b: 255, a: 255 }
+const RED_IDX = 1
+const GREEN_IDX = 2
+const BLUE_IDX = 3
+const WHITE_IDX = 4
+const RED = { r: RED_IDX, g: RED_IDX, b: RED_IDX, a: 255 }
+const GREEN = { r: GREEN_IDX, g: GREEN_IDX, b: GREEN_IDX, a: 255 }
+const BLUE = { r: BLUE_IDX, g: BLUE_IDX, b: BLUE_IDX, a: 255 }
+const WHITE = { r: WHITE_IDX, g: WHITE_IDX, b: WHITE_IDX, a: 255 }
+
+const TEST_PALETTE: ProjectPalette = {
+  name: 'Test',
+  colors: ['#000000', '#FF0000', '#00FF00', '#0000FF', '#FFFFFF', '#C86432', '#808080'],
+}
 
 describe('Shape Transform (90deg / 5deg Nearest-Neighbor & Non-destructive)', () => {
   it('rotates 90deg losslessly and 5deg increments from original buffer with zero anti-aliasing', () => {
@@ -74,14 +88,11 @@ describe('Shape Transform (90deg / 5deg Nearest-Neighbor & Non-destructive)', ()
       ...baseState,
       rotationDeg: 15,
     })
-    for (let i = 0; i < rot15.buffer.length; i += 4) {
-      const a = rot15.buffer[i + 3]
-      expect(a === 0 || a === 255).toBe(true)
-      if (a === 255) {
-        const isRed = rot15.buffer[i] === 255 && rot15.buffer[i + 2] === 0
-        const isBlue = rot15.buffer[i] === 0 && rot15.buffer[i + 2] === 255
-        expect(isRed || isBlue).toBe(true)
-      }
+    for (let i = 0; i < rot15.buffer.length; i++) {
+      const idx = rot15.buffer[i]!
+      expect(
+        idx === TRANSPARENT_INDEX || idx === RED_IDX || idx === BLUE_IDX
+      ).toBe(true)
     }
 
     const layer = createPixelBuffer(12, 12)
@@ -169,12 +180,12 @@ describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Expo
     expect(MAX_LAYERS).toBe(100)
 
     const baseData = createPixelBuffer(4, 4)
-    setPixel(baseData, 4, 4, 1, 1, { r: 200, g: 100, b: 50, a: 255 })
+    setPixel(baseData, 4, 4, 1, 1, 5) // #C86432 (200, 100, 50)
 
     const clipData = createPixelBuffer(4, 4)
     for (let y = 0; y < 4; y++) {
       for (let x = 0; x < 4; x++) {
-        setPixel(clipData, 4, 4, x, y, { r: 128, g: 128, b: 128, a: 255 })
+        setPixel(clipData, 4, 4, x, y, 6) // #808080 (128, 128, 128)
       }
     }
 
@@ -205,14 +216,31 @@ describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Expo
       data: clipData,
     }
 
-    const comp = compositeLayers([baseLayer, clipLayer], 4, 4)
+    const comp = compositeLayers([baseLayer, clipLayer], 4, 4, {
+      palette: TEST_PALETTE,
+    })
     expect(getPixel(comp, 4, 4, 0, 0).a).toBe(0)
     const inside = getPixel(comp, 4, 4, 1, 1)
     expect(inside.a).toBe(255)
     expect(inside.r).toBeCloseTo(Math.round((200 * 128) / 255), 0)
 
-    const merged = mergeTwoLayers(baseLayer, clipLayer, 4, 4)
-    expect(Array.from(merged.data)).toEqual(Array.from(comp))
+    const merged = mergeTwoLayers(baseLayer, clipLayer, 4, 4, TEST_PALETTE)
+    const mergedComp = compositeLayers(
+      [
+        {
+          ...baseLayer,
+          offsetX: merged.offsetX,
+          offsetY: merged.offsetY,
+          dataWidth: merged.dataWidth,
+          dataHeight: merged.dataHeight,
+          data: merged.data,
+        },
+      ],
+      4,
+      4,
+      { palette: merged.nextPalette }
+    )
+    expect(Array.from(mergedComp)).toEqual(Array.from(comp))
   })
 
   it('computes valid export scales <= 4000px, defaults to floor(2000 / L) <= 2000px long edge, and encodes/decodes transparent PNG losslessly', () => {
@@ -234,7 +262,7 @@ describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Expo
     expect(getDefaultExportScale(128, 64)).toBe(15)  // rectangular L=128 -> 15x (1920x960px)
 
     const layerData = createPixelBuffer(2, 2)
-    setPixel(layerData, 2, 2, 0, 0, RED)
+    setPixel(layerData, 2, 2, 0, 0, RED_IDX)
     const layer: LayerRuntime = {
       id: 'l1',
       name: 'Layer 1',
@@ -249,14 +277,16 @@ describe('Compositor, Clipping, Blend Modes & Lossless Nearest-Neighbor PNG Expo
       data: layerData,
     }
 
-    const { png, outWidth, outHeight } = exportCompositePngBytes([layer], 2, 2, 3)
+    const { png, outWidth, outHeight } = exportCompositePngBytes([layer], 2, 2, 3, {
+      palette: TEST_PALETTE,
+    })
     expect(outWidth).toBe(6)
     expect(outHeight).toBe(6)
 
     const decoded = decodePngBasic(png)
     expect(decoded.width).toBe(6)
     expect(decoded.height).toBe(6)
-    expect(getPixel(decoded.data, 6, 6, 2, 2)).toEqual(RED)
+    expect(getPixel(decoded.data, 6, 6, 2, 2)).toEqual({ r: 255, g: 0, b: 0, a: 255 })
     expect(getPixel(decoded.data, 6, 6, 3, 2)).toEqual({ r: 0, g: 0, b: 0, a: 0 })
   })
 })
@@ -265,12 +295,12 @@ describe('Sparse Diff HistoryManager (Undo/Redo, Limits & Serialization)', () =>
   it('records sparse pixel diffs, enforces history limit, and round-trips serialization', () => {
     const mgr = new HistoryManager(2)
     const buf0 = createPixelBuffer(4, 4)
-    const buf1 = new Uint8ClampedArray(buf0)
-    setPixel(buf1, 4, 4, 0, 0, RED)
-    const buf2 = new Uint8ClampedArray(buf1)
-    setPixel(buf2, 4, 4, 1, 1, GREEN)
-    const buf3 = new Uint8ClampedArray(buf2)
-    setPixel(buf3, 4, 4, 2, 2, BLUE)
+    const buf1 = new Uint8Array(buf0)
+    setPixel(buf1, 4, 4, 0, 0, RED_IDX)
+    const buf2 = new Uint8Array(buf1)
+    setPixel(buf2, 4, 4, 1, 1, GREEN_IDX)
+    const buf3 = new Uint8Array(buf2)
+    setPixel(buf3, 4, 4, 2, 2, BLUE_IDX)
 
     const p1 = createPixelPatch('l1', buf0, buf1)!
     const p2 = createPixelPatch('l1', buf1, buf2)!

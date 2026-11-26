@@ -6,6 +6,7 @@ import type {
   LayerMeta,
   LayerRuntime,
   PlaybackDirection,
+  ProjectPalette,
 } from '../../types'
 import {
   getDefaultExportScale,
@@ -28,6 +29,7 @@ interface ExportGifModalProps {
   projectName: string
   width: number
   height: number
+  palette: ProjectPalette
   layerMetas: readonly LayerMeta[]
   frames: readonly FrameMeta[]
   cels: CelMap
@@ -47,6 +49,7 @@ export function ExportGifModal({
   projectName,
   width,
   height,
+  palette,
   layerMetas,
   frames,
   cels,
@@ -121,6 +124,7 @@ export function ExportGifModal({
         const res = await exportTimelineAnimatedGif({
           width,
           height,
+          palette,
           layerMetas,
           frames,
           cels,
@@ -152,6 +156,7 @@ export function ExportGifModal({
     open,
     width,
     height,
+    palette,
     layerMetas,
     frames,
     cels,
@@ -181,6 +186,7 @@ export function ExportGifModal({
       const res = await exportTimelineAnimatedGif({
         width,
         height,
+        palette,
         layerMetas,
         frames,
         cels,

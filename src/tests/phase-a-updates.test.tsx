@@ -30,8 +30,8 @@ import { HistoryManager } from '../engine/history'
 import { PixelSlider } from '../components/common/PixelSlider'
 import type { LayerRuntime } from '../types'
 
-const RED = { r: 240, g: 50, b: 60, a: 255 }
-const BLUE = { r: 40, g: 90, b: 230, a: 255 }
+const RED = { r: 1, g: 1, b: 1, a: 255 }
+const BLUE = { r: 2, g: 2, b: 2, a: 255 }
 const TRANSPARENT = { r: 0, g: 0, b: 0, a: 0 }
 
 describe('Phase A Additions: Transparent Slot, 9-Way Anchor Resize, Standard Presets, Multi-Layer Move, Backup Reminder & Out-of-Canvas Endpoints', () => {
@@ -66,14 +66,9 @@ describe('Phase A Additions: Transparent Slot, 9-Way Anchor Resize, Standard Pre
     expect(transparentCount).toBe(2)
     expect(redCount).toBe(2)
 
-    // 2. Line, Bezier & Shape with transparent color clear pixels to alpha=0
+    // 2. Line, Bezier & Shape with transparent color clear pixels to alpha=0 (TRANSPARENT_INDEX)
     const buf2 = createPixelBuffer(w, h)
-    for (let i = 0; i < w * h; i++) {
-      buf2[i * 4] = BLUE.r
-      buf2[i * 4 + 1] = BLUE.g
-      buf2[i * 4 + 2] = BLUE.b
-      buf2[i * 4 + 3] = 255
-    }
+    buf2.fill(BLUE.r)
     drawLine(buf2, { x: 0, y: 0 }, { x: 3, y: 0 }, {
       width: w,
       height: h,

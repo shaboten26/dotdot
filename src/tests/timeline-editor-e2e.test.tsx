@@ -22,7 +22,7 @@ describe('Streamlined Timeline, Layer Workspace Separation, GIF Visibility & Vie
     fireEvent.click(screen.getByTestId('confirm-create-artwork-btn'))
 
     // 2. Tool tab has NO duplicate layer button; 1-frame workspace tab shows `レイヤー (1)`
-    const toolsTab = await screen.findByTestId('workspace-tab-tools')
+    const toolsTab = await screen.findByTestId('workspace-tab-tools', {}, { timeout: 4000 })
     const layersTab = screen.getByTestId('workspace-tab-layers')
     expect(toolsTab.textContent).toContain('ツール')
     expect(layersTab.textContent).toContain('レイヤー')

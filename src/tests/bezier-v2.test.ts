@@ -7,7 +7,7 @@ import {
 import { createPixelBuffer, getPixel } from '../engine/pixelBuffer'
 import type { Point } from '../types'
 
-const INK = { r: 107, g: 94, b: 168, a: 255 }
+const INK = { r: 7, g: 7, b: 7, a: 255 }
 
 function is8Connected(pts: readonly Point[]): boolean {
   for (let i = 1; i < pts.length; i++) {

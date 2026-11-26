@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import {
+  MAX_OPAQUE_PALETTE_COLORS,
   TRANSPARENT_COLOR_INDEX,
   type LayerRuntime,
   type PaletteData,
@@ -54,6 +55,15 @@ interface PaletteSheetProps {
     frameScope: 'all-frames' | 'active-frame'
     updatePaletteSwatch: boolean
   }) => number
+  /** Counts how many pixels across all frames/layers currently reference a display slot */
+  onCountColorSlotUsage?: (displayIndex: number) => number
+  /** Safely deletes a palette slot while remapping any referencing pixels (Undo-able) */
+  onDeleteColorSlot?: (
+    displayIndex: number,
+    replacement:
+      | { kind: 'transparent' }
+      | { kind: 'displayIndex'; targetDisplayIndex: number }
+  ) => void
 }
 
 export function PaletteSheet({
@@ -71,12 +81,24 @@ export function PaletteSheet({
   layers,
   activeLayerId,
   onReplaceColor,
+  onCountColorSlotUsage,
+  onDeleteColorSlot,
 }: PaletteSheetProps) {
   const { t } = useI18n()
   const { reducedMotion, showToast } = useApp()
   const [tab, setTab] = useState<'hsv' | 'rgb' | 'hex'>('hsv')
   const [toolsModalOpen, setToolsModalOpen] = useState(false)
   const swatchGridRef = useRef<HTMLDivElement | null>(null)
+
+  // State for safe deletion dialog when a palette color is used by >=1 pixel
+  const [pendingDeleteDialog, setPendingDeleteDialog] = useState<{
+    displayIndex: number
+    hex: string
+    usageCount: number
+  } | null>(null)
+  const [deleteReplaceTarget, setDeleteReplaceTarget] = useState<
+    number | 'transparent'
+  >(0)
 
   const colorIds = palette.colors.map((_, idx) => `ps-${idx}`)
   const { dragState, getItemProps, shouldSuppressClick } = useLongPressReorder({
@@ -102,16 +124,15 @@ export function PaletteSheet({
   const editableColorIndex = isTransparentSelected
     ? 0
     : Math.max(0, Math.min(palette.colors.length - 1, selectedIndex))
-  const currentHex = palette.colors[editableColorIndex] ?? palette.colors[0] ?? '#000000'
+  const currentHex =
+    palette.colors[editableColorIndex] ?? palette.colors[0] ?? '#000000'
   const rgb = hexToRgba(currentHex)
   const [hsv, setHsv] = useState(() => hexToHsv(currentHex))
   const [hexInput, setHexInput] = useState(currentHex)
   const [nameInput, setNameInput] = useState(palette.name)
   const [lospecOpen, setLospecOpen] = useState(false)
   const nameInputRef = useRef<HTMLInputElement | null>(null)
-  /** Preserve selection across initial mouseup/pointerup after focusing the palette name input! */
   const selectAllOnMouseUpRef = useRef(false)
-  /** Suppress onBlur commit when user explicitly cancels via Escape */
   const skipNextBlurCommitRef = useRef(false)
 
   useEffect(() => {
@@ -166,16 +187,55 @@ export function PaletteSheet({
   }
 
   const handleAddColor = () => {
-    if (palette.colors.length >= 256) return
+    if (palette.colors.length >= MAX_OPAQUE_PALETTE_COLORS) {
+      showToast(t('paletteLimitReachedMsg'), 'info')
+      return
+    }
     const nextColors = [...palette.colors, currentHex]
     onUpdatePalette({ ...palette, colors: nextColors }, nextColors.length - 1)
   }
 
   const handleDeleteColor = () => {
     if (isTransparentSelected || palette.colors.length <= 1) return
+
+    if (onCountColorSlotUsage && onDeleteColorSlot) {
+      const usageCount = onCountColorSlotUsage(editableColorIndex)
+      if (usageCount > 0) {
+        const defaultReplacement = palette.colors.findIndex(
+          (_, idx) => idx !== editableColorIndex
+        )
+        setDeleteReplaceTarget(
+          defaultReplacement >= 0 ? defaultReplacement : 'transparent'
+        )
+        setPendingDeleteDialog({
+          displayIndex: editableColorIndex,
+          hex: currentHex,
+          usageCount,
+        })
+        return
+      }
+      onDeleteColorSlot(editableColorIndex, { kind: 'transparent' })
+      return
+    }
+
     const nextColors = palette.colors.filter((_, i) => i !== editableColorIndex)
     const nextIdx = Math.min(editableColorIndex, nextColors.length - 1)
     onUpdatePalette({ ...palette, colors: nextColors }, nextIdx)
+  }
+
+  const confirmDeleteUsedColor = () => {
+    if (!pendingDeleteDialog || !onDeleteColorSlot) return
+    const { displayIndex } = pendingDeleteDialog
+    if (deleteReplaceTarget === 'transparent') {
+      onDeleteColorSlot(displayIndex, { kind: 'transparent' })
+    } else {
+      onDeleteColorSlot(displayIndex, {
+        kind: 'displayIndex',
+        targetDisplayIndex: deleteReplaceTarget,
+      })
+    }
+    setPendingDeleteDialog(null)
+    showToast(t('paletteColorDeletedMsg'), 'success')
   }
 
   const moveColor = (delta: -1 | 1) => {
@@ -302,7 +362,8 @@ export function PaletteSheet({
             >
               {palette.author && (
                 <span>
-                  {t('lospecAuthorLabel')}: <strong className="text-[var(--text-primary)]">{palette.author}</strong>
+                  {t('lospecAuthorLabel')}:{' '}
+                  <strong className="text-[var(--text-primary)]">{palette.author}</strong>
                 </span>
               )}
               {palette.sourceUrl && (
@@ -332,7 +393,7 @@ export function PaletteSheet({
                   onUpdatePalette(
                     {
                       name: lib.name,
-                      colors: [...lib.colors],
+                      colors: [...lib.colors].slice(0, MAX_OPAQUE_PALETTE_COLORS),
                       sourcePaletteId: lib.id,
                       author: lib.author,
                       sourceUrl: lib.sourceUrl,
@@ -348,11 +409,14 @@ export function PaletteSheet({
           )}
         </div>
 
-        {/* Color Swatch Grid (Transparent Slot fixed at leftmost position, excluded from 256-color cap & reorder) */}
+        {/* Color Swatch Grid (Transparent Slot fixed at leftmost position, excluded from 255-color cap & reorder) */}
         <div className="space-y-1.5">
           <div className="flex flex-wrap items-center justify-between gap-1 text-xs">
-            <span className="text-[var(--text-secondary)]">
-              {palette.colors.length} / 256 {t('colorsCount')}
+            <span
+              className="text-[var(--text-secondary)]"
+              data-testid="palette-color-count-label"
+            >
+              {palette.colors.length} / {MAX_OPAQUE_PALETTE_COLORS} {t('colorsCount')}
             </span>
             <div className="flex flex-wrap items-center gap-1">
               <button
@@ -387,7 +451,7 @@ export function PaletteSheet({
               </button>
               <button
                 type="button"
-                disabled={palette.colors.length >= 256}
+                disabled={palette.colors.length >= MAX_OPAQUE_PALETTE_COLORS}
                 onClick={handleAddColor}
                 className="pixel-btn pixel-btn-teal min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1"
                 data-testid="palette-add-color"
@@ -412,7 +476,7 @@ export function PaletteSheet({
             ref={swatchGridRef}
             className="grid grid-cols-8 sm:grid-cols-10 gap-1.5 max-h-40 overflow-y-auto p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)]"
           >
-            {/* Fixed Leftmost Transparent Slot */}
+            {/* Fixed Leftmost Transparent Slot (Index 255 in 1-byte buffer) */}
             <button
               type="button"
               onClick={() => onSelectColor(TRANSPARENT_COLOR_INDEX)}
@@ -501,7 +565,7 @@ export function PaletteSheet({
             </span>
             <div className="space-y-0.5">
               <div className="text-xs font-bold text-[var(--text-primary)]">
-                {t('transparentSlotLabel')} (RGBA 0, 0, 0, 0)
+                {t('transparentSlotLabel')} (Index 255 / RGBA 0, 0, 0, 0)
               </div>
               <div className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
                 {t('transparentSlotHint')}
@@ -644,6 +708,102 @@ export function PaletteSheet({
         )}
       </div>
 
+      {/* Safe In-Use Color Deletion & Replacement Modal (Section 7) */}
+      <Modal
+        open={pendingDeleteDialog !== null}
+        title={t('deleteUsedColorTitle')}
+        onClose={() => setPendingDeleteDialog(null)}
+        maxWidthClass="max-w-md"
+      >
+        {pendingDeleteDialog && (
+          <div className="space-y-3 text-xs" data-testid="delete-used-color-modal">
+            <div className="p-2.5 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] flex items-center gap-2.5">
+              <span
+                className="w-8 h-8 border-2 border-[var(--border-strong)] shrink-0"
+                style={{ backgroundColor: pendingDeleteDialog.hex }}
+              />
+              <div>
+                <div className="font-bold text-[var(--text-primary)]">
+                  {pendingDeleteDialog.hex}
+                </div>
+                <div className="text-[11px] text-[var(--accent-rose)] font-bold">
+                  {pendingDeleteDialog.usageCount} px
+                </div>
+              </div>
+            </div>
+
+            <p className="leading-relaxed text-[var(--text-secondary)]">
+              {t('deleteUsedColorDesc')}
+            </p>
+
+            <div className="space-y-1.5">
+              <div className="font-bold text-[var(--text-primary)]">
+                {t('deleteUsedColorReplaceWithColor')}
+              </div>
+              <div className="flex flex-wrap gap-1.5 p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] max-h-32 overflow-y-auto">
+                <button
+                  type="button"
+                  onClick={() => setDeleteReplaceTarget('transparent')}
+                  style={getCheckerboardStyle(checkerDark, 6)}
+                  title={t('deleteUsedColorReplaceTransparent')}
+                  className={`w-8 h-8 flex items-center justify-center cursor-pointer ${
+                    deleteReplaceTarget === 'transparent'
+                      ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)]'
+                      : 'border border-[var(--border-pixel)]'
+                  }`}
+                  data-testid="delete-color-replace-transparent"
+                >
+                  <PixelIcon
+                    name="transparent"
+                    size={14}
+                    className="text-[var(--accent-rose)]"
+                  />
+                </button>
+                {palette.colors.map((hex, idx) => {
+                  if (idx === pendingDeleteDialog.displayIndex) return null
+                  const active = deleteReplaceTarget === idx
+                  return (
+                    <button
+                      key={`del-rep-${idx}-${hex}`}
+                      type="button"
+                      onClick={() => setDeleteReplaceTarget(idx)}
+                      style={{ backgroundColor: hex }}
+                      title={`#${idx + 1} ${hex}`}
+                      className={`w-8 h-8 cursor-pointer ${
+                        active
+                          ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)]'
+                          : 'border border-[var(--border-pixel)]'
+                      }`}
+                      data-testid={`delete-color-replace-slot-${idx}`}
+                    />
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setPendingDeleteDialog(null)}
+                className="pixel-btn min-h-[38px] px-3 text-xs font-bold"
+                data-testid="cancel-delete-used-color-btn"
+              >
+                {t('cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteUsedColor}
+                className="pixel-btn pixel-btn-danger min-h-[38px] px-3.5 text-xs font-bold flex items-center gap-1.5"
+                data-testid="confirm-delete-used-color-btn"
+              >
+                <PixelIcon name="trash" size={13} />
+                <span>{t('deleteUsedColorConfirmBtn')}</span>
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
       <LospecImportModal
         open={lospecOpen}
         onClose={() => setLospecOpen(false)}
@@ -667,7 +827,9 @@ export function PaletteSheet({
               sourceUrl:
                 mode === 'replace' ? fetched.sourceUrl : palette.sourceUrl,
             },
-            mode === 'replace' ? 0 : Math.min(palette.colors.length, merged.colors.length - 1)
+            mode === 'replace'
+              ? 0
+              : Math.min(palette.colors.length, merged.colors.length - 1)
           )
           if (alsoSaveToLib) {
             await onSaveToLibrary(fetched.name, fetched.colors, {

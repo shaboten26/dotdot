@@ -397,7 +397,8 @@ export function ProjectDetailPage() {
       layers,
       project.width,
       project.height,
-      previewScale
+      previewScale,
+      { palette: project.palette }
     ).png
   }, [displayProject, project, layers])
 
@@ -796,6 +797,7 @@ export function ProjectDetailPage() {
           projectName={activeProject.name}
           width={activeProject.width}
           height={activeProject.height}
+          palette={activeProject.palette}
           layers={layers}
           checkerDark={settings.checkerboardDark}
           initialIntent={exportIntent}
@@ -810,6 +812,7 @@ export function ProjectDetailPage() {
             projectName={activeProject.name}
             width={activeProject.width}
             height={activeProject.height}
+            palette={activeProject.palette}
             layerMetas={layers}
             frames={timeline.frames}
             cels={timeline.cels}
@@ -833,6 +836,7 @@ export function ProjectDetailPage() {
               projectName={activeProject.name}
               width={activeProject.width}
               height={activeProject.height}
+              palette={activeProject.palette}
               layerMetas={layers}
               frames={timeline.frames}
               cels={timeline.cels}
@@ -855,6 +859,7 @@ export function ProjectDetailPage() {
               cels={timeline.cels}
               celBuffers={timeline.celBuffers}
               fallbackSingleFrameLayers={layers}
+              palette={activeProject.palette}
               paletteColors={activeProject.palette.colors}
               onExported={() => showToast(t('toastExportedAseprite'), 'success')}
             />

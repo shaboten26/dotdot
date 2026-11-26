@@ -1,7 +1,7 @@
 import { ViewTransition, useEffect, useState } from 'react'
 import { useParams } from 'react-router'
 import { AnimatePresence, motion } from 'motion/react'
-import type { SymmetryMode, TilePreviewGrid, ToolId } from '../types'
+import type { ToolId } from '../types'
 import { useApp } from '../state/AppContext'
 import { useI18n } from '../i18n/I18nContext'
 import { useEditorController } from '../state/useEditorController'
@@ -13,7 +13,6 @@ import {
   MultiRowToolGrid,
   PaletteBar,
   SelectionReadyBar,
-  StampPlacementBar,
   ToolDetailPopover,
 } from '../components/editor/ToolPanels'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
@@ -21,7 +20,6 @@ import { LayerPanelContent, LayerSheet } from '../components/editor/LayerSheet'
 import { TimelinePanel } from '../components/editor/TimelinePanel'
 import { ExportGifModal } from '../components/editor/ExportGifModal'
 import { ExportSpriteSheetModal } from '../components/editor/ExportSpriteSheetModal'
-import { StampSheetModal } from '../components/editor/StampSheetModal'
 import { GlobalEditorSettingsModal } from '../components/editor/GlobalEditorSettingsModal'
 import {
   CanvasResizeModal,
@@ -52,15 +50,11 @@ export function EditorPage() {
     settings,
     reducedMotion,
     palettes,
-    stamps,
     sharedClipboard,
     setSharedClipboard,
     updateSettings,
     refreshProjects,
     addLibraryPalette,
-    addStamp,
-    renameStamp,
-    removeStamp,
     showToast,
   } = useApp()
   const { t } = useI18n()
@@ -79,7 +73,6 @@ export function EditorPage() {
   const [exportAseOpen, setExportAseOpen] = useState(false)
   const [importPngOpen, setImportPngOpen] = useState(false)
   const [importAseOpen, setImportAseOpen] = useState(false)
-  const [stampSheetOpen, setStampSheetOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   const [previewFlipX, setPreviewFlipX] = useState(false)
   const [previewFlipY, setPreviewFlipY] = useState(false)
@@ -101,9 +94,9 @@ export function EditorPage() {
     projectId: targetProjectId,
     historyLimit: settings.historyLimit,
     soundEnabled: settings.soundEnabled,
-    stamps,
     defaultSymmetryMode: settings.defaultSymmetryMode,
     defaultSeamlessWrapMode: settings.defaultSeamlessWrapMode,
+    defaultTilePreviewGrid: settings.defaultTilePreviewGrid,
     sharedClipboard,
     onUpdateSharedClipboard: setSharedClipboard,
     onSaved: () => {
@@ -120,6 +113,9 @@ export function EditorPage() {
         isTransparent ? t('toastTransparentPicked') : t('toastColorPicked'),
         'info'
       )
+    },
+    onPaletteLimitReached: () => {
+      showToast(t('paletteLimitEyedropperMsg'), 'info')
     },
   })
 
@@ -174,13 +170,6 @@ export function EditorPage() {
         if (editor.floatingShape) {
           e.preventDefault()
           editor.commitFloatingShape()
-          return
-        }
-        if (editor.stampSession) {
-          e.preventDefault()
-          if (editor.commitStampSession()) {
-            showToast(t('stampPlacedMsg'), 'success')
-          }
           return
         }
       }
@@ -526,7 +515,7 @@ export function EditorPage() {
           </AnimatePresence>
         </header>
 
-        {/* Non-Blocking Load Warning Banner (when cel memory or expanded GIF size enters caution/high tier) */}
+        {/* Non-Blocking Load Warning Banner */}
         {editor.loadEstimate &&
           editor.loadEstimate.level !== 'normal' &&
           !loadWarningDismissed && (
@@ -571,7 +560,6 @@ export function EditorPage() {
             stepPhase={editor.stepPhase}
             floatingShape={editor.floatingShape}
             moveSession={editor.moveSession}
-            stampSession={editor.stampSession}
             symmetryMode={editor.symmetryMode}
             showSymmetryGuide={settings.showSymmetryGuide}
             tilePreviewGrid={editor.tilePreviewGrid}
@@ -606,7 +594,6 @@ export function EditorPage() {
             }}
             onMoveFloatingShape={editor.moveFloatingShape}
             onUpdateMoveOffset={editor.updateActiveMoveOffset}
-            onMoveStampSession={editor.moveStampSession}
           />
         </main>
 
@@ -647,28 +634,6 @@ export function EditorPage() {
                 onDiscard={editor.discardFloatingShape}
               />
             </motion.div>
-          ) : editor.stampSession ? (
-            <motion.div
-              key="stamp-placement-bar"
-              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{
-                duration: reducedMotion ? 0 : 0.18,
-                ease: [0.22, 1, 0.36, 1],
-              }}
-            >
-              <StampPlacementBar
-                stampSession={editor.stampSession}
-                onMoveStep={editor.moveStampSession}
-                onFlip={editor.flipStampSession}
-                onCommit={() => {
-                  if (editor.commitStampSession()) {
-                    showToast(t('stampPlacedMsg'), 'success')
-                  }
-                }}
-                onCancel={editor.cancelStampSession}
-              />
-            </motion.div>
           ) : editor.hasSelection && !optionsOpen ? (
             <motion.div
               key="selection-ready-bar"
@@ -683,13 +648,12 @@ export function EditorPage() {
                 onStartMove={() => {
                   editor.startSelectionMove()
                 }}
-                onOpenStampRegister={() => setStampSheetOpen(true)}
                 onClearSelection={editor.clearCurrentSelection}
               />
             </motion.div>
           ) : null}
 
-          {!editor.moveSession && !editor.floatingShape && !editor.stampSession && (
+          {!editor.moveSession && !editor.floatingShape && (
             <ToolDetailPopover
               open={optionsOpen}
               onClose={() => setOptionsOpen(false)}
@@ -722,12 +686,10 @@ export function EditorPage() {
               onFlipSelection={editor.flipSelectedPixels}
               onInvertSelection={editor.invertCurrentSelection}
               onClearSelection={editor.clearCurrentSelection}
-              stamps={stamps}
-              onOpenStampSheet={() => setStampSheetOpen(true)}
             />
           )}
 
-          {/* Workspace Mode Switcher: `ツール` vs (`レイヤー` [1 frame] / `タイムライン` [>=2 frames]) + Always-Visible Arrow & Play Controls in the Same Zone */}
+          {/* Section 2: Clean Workspace Mode Switcher — ONLY `ツール` / (`レイヤー` | `タイムライン`) + Animation Frame Prev/Play/Next */}
           <div
             className="flex items-center justify-between gap-1.5 px-2.5 py-1 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] shrink-0"
             data-testid="workspace-mode-bar"
@@ -805,7 +767,7 @@ export function EditorPage() {
 
             {editor.timeline.frames.length >= 2 && (
               <div
-                className="flex items-center gap-1 shrink-0"
+                className="flex items-center gap-1 shrink-0 ml-auto"
                 data-testid="tabbar-frame-controls"
               >
                 <button
@@ -853,96 +815,9 @@ export function EditorPage() {
                 </button>
               </div>
             )}
-
-            {/* Compact Non-Intrusive Quick Toggles (Symmetry / Tile+Seamless / Stamps) */}
-            <div className="flex items-center gap-1 shrink-0 ml-auto">
-              <button
-                type="button"
-                onClick={() => {
-                  const order: SymmetryMode[] = [
-                    'none',
-                    'horizontal',
-                    'vertical',
-                    'quad',
-                  ]
-                  const next =
-                    order[(order.indexOf(editor.symmetryMode) + 1) % order.length]!
-                  editor.setSymmetryMode(next)
-                }}
-                title={`${t('symmetryLabel')}: ${editor.symmetryMode}`}
-                aria-pressed={editor.symmetryMode !== 'none'}
-                className={`min-w-[30px] min-h-[30px] px-1.5 text-[10px] font-bold flex items-center justify-center gap-0.5 ${
-                  editor.symmetryMode !== 'none'
-                    ? 'pixel-btn pixel-btn-teal'
-                    : 'pixel-btn'
-                }`}
-                data-testid="quick-symmetry-toggle-btn"
-              >
-                <PixelIcon name="symmetry" size={12} />
-                {editor.symmetryMode !== 'none' && (
-                  <span>
-                    {editor.symmetryMode === 'horizontal'
-                      ? 'H'
-                      : editor.symmetryMode === 'vertical'
-                        ? 'V'
-                        : '4'}
-                  </span>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  const order: TilePreviewGrid[] = ['off', '3x3', '5x5']
-                  const next =
-                    order[
-                      (order.indexOf(editor.tilePreviewGrid) + 1) % order.length
-                    ]!
-                  editor.setTilePreviewGrid(next)
-                }}
-                title={`${t('tilePreviewLabel')}: ${editor.tilePreviewGrid}`}
-                aria-pressed={
-                  editor.tilePreviewGrid !== 'off' ||
-                  editor.seamlessWrapMode !== 'none'
-                }
-                className={`min-w-[30px] min-h-[30px] px-1.5 text-[10px] font-bold flex items-center justify-center gap-0.5 ${
-                  editor.tilePreviewGrid !== 'off' ||
-                  editor.seamlessWrapMode !== 'none'
-                    ? 'pixel-btn pixel-btn-teal'
-                    : 'pixel-btn'
-                }`}
-                data-testid="quick-tile-toggle-btn"
-              >
-                <PixelIcon name="tile" size={12} />
-                {editor.tilePreviewGrid !== 'off' && (
-                  <span>{editor.tilePreviewGrid}</span>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setOptionsOpen(false)
-                  setStampSheetOpen(true)
-                }}
-                title={t('stampTitle')}
-                aria-pressed={
-                  Boolean(editor.toolSettings.patternStampId) ||
-                  editor.stampSession !== null
-                }
-                className={`min-w-[30px] min-h-[30px] px-1.5 flex items-center justify-center ${
-                  editor.toolSettings.patternStampId || editor.stampSession
-                    ? 'pixel-btn pixel-btn-active'
-                    : 'pixel-btn'
-                }`}
-                data-testid="quick-stamp-sheet-btn"
-              >
-                <PixelIcon name="stamp" size={12} />
-              </button>
-            </div>
           </div>
 
-          {/* 2. Workspace Content (`ツール` Multi-Row Grid OR `レイヤー` [1 frame, reusing original LayerPanelContent] / `タイムライン` [>=2 frames]) */}
+          {/* 2. Workspace Content (`ツール` Multi-Row Grid OR `レイヤー` [1 frame] / `タイムライン` [>=2 frames]) */}
           <motion.div
             key={
               workspaceTab === 'tools'
@@ -959,156 +834,158 @@ export function EditorPage() {
             }}
             className="flex flex-col shrink-0"
           >
-          {workspaceTab === 'tools' ? (
-            <MultiRowToolGrid
-              tool={editor.tool}
-              toolSettings={editor.toolSettings}
-              optionsOpen={optionsOpen}
-              globalSettingsOpen={globalSettingsOpen}
-              hasActivePreviewFlip={
-                previewFlipX ||
-                previewFlipY ||
-                editor.symmetryMode !== 'none' ||
-                editor.tilePreviewGrid !== 'off' ||
-                editor.seamlessWrapMode !== 'none'
-              }
-              canUndo={editor.canUndo}
-              canRedo={editor.canRedo}
-              hasSelection={editor.hasSelection}
-              onTapTool={handleTapTool}
-              onUndo={editor.undo}
-              onRedo={editor.redo}
-              onOpenGlobalSettings={() => {
-                setOptionsOpen(false)
-                setHeaderMenuOpen(false)
-                setGlobalSettingsOpen((prev) => !prev)
-              }}
-            />
-          ) : editor.timeline.frames.length <= 1 ? (
-            <div
-              className="px-2.5 py-2 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] shrink-0"
-              data-testid="inline-layers-workspace"
-            >
-              <LayerPanelContent
-                compactInline
+            {workspaceTab === 'tools' ? (
+              <MultiRowToolGrid
+                tool={editor.tool}
+                toolSettings={editor.toolSettings}
+                optionsOpen={optionsOpen}
+                globalSettingsOpen={globalSettingsOpen}
+                hasActivePreviewFlip={
+                  previewFlipX ||
+                  previewFlipY ||
+                  editor.symmetryMode !== 'none' ||
+                  editor.tilePreviewGrid !== 'off' ||
+                  editor.seamlessWrapMode !== 'none'
+                }
+                canUndo={editor.canUndo}
+                canRedo={editor.canRedo}
+                hasSelection={editor.hasSelection}
+                onTapTool={handleTapTool}
+                onUndo={editor.undo}
+                onRedo={editor.redo}
+                onOpenGlobalSettings={() => {
+                  setOptionsOpen(false)
+                  setHeaderMenuOpen(false)
+                  setGlobalSettingsOpen((prev) => !prev)
+                }}
+              />
+            ) : editor.timeline.frames.length <= 1 ? (
+              <div
+                className="px-2.5 py-2 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] shrink-0"
+                data-testid="inline-layers-workspace"
+              >
+                <LayerPanelContent
+                  compactInline
+                  palette={editor.palette}
+                  canvasWidth={editor.project.width}
+                  canvasHeight={editor.project.height}
+                  checkerDark={settings.checkerboardDark}
+                  layers={editor.layers}
+                  activeLayerId={editor.activeLayerId}
+                  selectedLayerIds={editor.selectedLayerIds}
+                  onSelectLayer={editor.setActiveLayerId}
+                  onToggleLayerSelected={editor.toggleLayerSelected}
+                  onClearLayerSelection={editor.clearLayerSelection}
+                  onStartMultiLayerMoveOnCanvas={() => {
+                    editor.startMultiLayerMove()
+                  }}
+                  onDuplicateSelectedLayers={() => {
+                    if (!editor.duplicateSelectedLayers()) {
+                      showToast(t('layerMaxReached'), 'warning')
+                    }
+                  }}
+                  onMergeSelectedLayers={() => {
+                    editor.mergeSelectedLayers()
+                  }}
+                  onDeleteSelectedLayers={() => {
+                    if (!editor.deleteSelectedLayers()) {
+                      showToast(t('cannotDeleteLastLayer'), 'warning')
+                    }
+                  }}
+                  onAddLayer={() => {
+                    if (!editor.addNewLayer()) {
+                      showToast(t('layerMaxReached'), 'warning')
+                    }
+                  }}
+                  onDuplicateLayer={(id) => {
+                    if (!editor.duplicateLayer(id)) {
+                      showToast(t('layerMaxReached'), 'warning')
+                    }
+                  }}
+                  onDeleteLayer={(id) => {
+                    if (!editor.deleteLayer(id)) {
+                      showToast(t('cannotDeleteLastLayer'), 'warning')
+                    }
+                  }}
+                  onMergeDown={editor.mergeLayerDown}
+                  onUpdateLayer={editor.updateLayerProps}
+                  onReorderLayers={editor.reorderLayers}
+                  onClearLayer={editor.clearLayerPixels}
+                  onCopyLayer={(id) => {
+                    if (editor.copyLayerToClipboard(id)) {
+                      showToast(t('toastCopied'))
+                    }
+                  }}
+                  onFlipLayer={editor.flipLayer}
+                  onStartLayerMoveOnCanvas={(id) => {
+                    editor.startLayerMove(id)
+                  }}
+                  onAddFirstAnimationFrame={() => {
+                    editor.duplicateFrame('independent')
+                  }}
+                />
+              </div>
+            ) : (
+              <TimelinePanel
+                palette={editor.palette}
                 canvasWidth={editor.project.width}
                 canvasHeight={editor.project.height}
                 checkerDark={settings.checkerboardDark}
                 layers={editor.layers}
                 activeLayerId={editor.activeLayerId}
-                selectedLayerIds={editor.selectedLayerIds}
+                timeline={editor.timeline}
+                selectedCellKeys={editor.selectedCellKeys}
+                celClipboard={editor.celClipboard}
+                isPlaying={editor.isPlaying}
+                playbackSpeed={editor.playbackSpeed}
+                onionSkin={editor.onionSkin}
                 onSelectLayer={editor.setActiveLayerId}
-                onToggleLayerSelected={editor.toggleLayerSelected}
-                onClearLayerSelection={editor.clearLayerSelection}
-                onStartMultiLayerMoveOnCanvas={() => {
-                  editor.startMultiLayerMove()
-                }}
-                onDuplicateSelectedLayers={() => {
-                  if (!editor.duplicateSelectedLayers()) {
-                    showToast(t('layerMaxReached'), 'warning')
-                  }
-                }}
-                onMergeSelectedLayers={() => {
-                  editor.mergeSelectedLayers()
-                }}
-                onDeleteSelectedLayers={() => {
-                  if (!editor.deleteSelectedLayers()) {
-                    showToast(t('cannotDeleteLastLayer'), 'warning')
-                  }
-                }}
+                onUpdateLayer={editor.updateLayerProps}
                 onAddLayer={() => {
                   if (!editor.addNewLayer()) {
                     showToast(t('layerMaxReached'), 'warning')
                   }
                 }}
-                onDuplicateLayer={(id) => {
-                  if (!editor.duplicateLayer(id)) {
-                    showToast(t('layerMaxReached'), 'warning')
+                onOpenLayerSheet={() => setLayersOpen(true)}
+                onSelectFrame={editor.selectFrame}
+                onAddEmptyFrame={() => {
+                  editor.addEmptyFrame()
+                }}
+                onDuplicateFrame={(mode) => {
+                  editor.duplicateFrame(mode)
+                }}
+                onDeleteFrame={(fid) => {
+                  if (!editor.deleteFrame(fid)) {
+                    showToast(t('cannotDeleteLastFrame'), 'warning')
                   }
                 }}
-                onDeleteLayer={(id) => {
-                  if (!editor.deleteLayer(id)) {
-                    showToast(t('cannotDeleteLastLayer'), 'warning')
-                  }
-                }}
-                onMergeDown={editor.mergeLayerDown}
-                onUpdateLayer={editor.updateLayerProps}
-                onReorderLayers={editor.reorderLayers}
-                onClearLayer={editor.clearLayerPixels}
-                onCopyLayer={(id) => {
-                  if (editor.copyLayerToClipboard(id)) {
+                onSetFrameDuration={editor.setFrameDuration}
+                onSetDefaultFrameDuration={editor.setDefaultFrameDuration}
+                onApplyBatchDuration={editor.applyBatchDuration}
+                onClearCell={editor.clearCell}
+                onUnlinkCell={editor.unlinkCell}
+                onLinkCellToAny={editor.linkCellToAny}
+                onToggleCellSelected={editor.toggleCellSelected}
+                onClearCellSelection={editor.clearCellSelection}
+                onBatchClearCells={editor.batchClearSelectedCells}
+                onBatchUnlinkCells={editor.batchUnlinkSelectedCells}
+                onBatchLinkCells={editor.batchLinkSelectedCells}
+                onCopyActiveCell={() => {
+                  if (editor.copyActiveCell()) {
                     showToast(t('toastCopied'))
                   }
                 }}
-                onFlipLayer={editor.flipLayer}
-                onStartLayerMoveOnCanvas={(id) => {
-                  editor.startLayerMove(id)
+                onPasteToActiveCell={(asLinked) => {
+                  if (editor.pasteToActiveCell(asLinked)) {
+                    showToast(t('toastPasted'))
+                  }
                 }}
-                onAddFirstAnimationFrame={() => {
-                  editor.duplicateFrame('independent')
-                }}
+                onSetPlaybackSpeed={editor.setPlaybackSpeed}
+                onSetPlaybackDirection={editor.setPlaybackDirection}
+                onSetLoopPlayback={editor.setLoopPlayback}
+                onUpdateOnionSkin={editor.updateOnionSkin}
               />
-            </div>
-          ) : (
-            <TimelinePanel
-              canvasWidth={editor.project.width}
-              canvasHeight={editor.project.height}
-              checkerDark={settings.checkerboardDark}
-              layers={editor.layers}
-              activeLayerId={editor.activeLayerId}
-              timeline={editor.timeline}
-              selectedCellKeys={editor.selectedCellKeys}
-              celClipboard={editor.celClipboard}
-              isPlaying={editor.isPlaying}
-              playbackSpeed={editor.playbackSpeed}
-              onionSkin={editor.onionSkin}
-              onSelectLayer={editor.setActiveLayerId}
-              onUpdateLayer={editor.updateLayerProps}
-              onAddLayer={() => {
-                if (!editor.addNewLayer()) {
-                  showToast(t('layerMaxReached'), 'warning')
-                }
-              }}
-              onOpenLayerSheet={() => setLayersOpen(true)}
-              onSelectFrame={editor.selectFrame}
-              onAddEmptyFrame={() => {
-                editor.addEmptyFrame()
-              }}
-              onDuplicateFrame={(mode) => {
-                editor.duplicateFrame(mode)
-              }}
-              onDeleteFrame={(fid) => {
-                if (!editor.deleteFrame(fid)) {
-                  showToast(t('cannotDeleteLastFrame'), 'warning')
-                }
-              }}
-              onSetFrameDuration={editor.setFrameDuration}
-              onSetDefaultFrameDuration={editor.setDefaultFrameDuration}
-              onApplyBatchDuration={editor.applyBatchDuration}
-              onClearCell={editor.clearCell}
-              onUnlinkCell={editor.unlinkCell}
-              onLinkCellToAny={editor.linkCellToAny}
-              onToggleCellSelected={editor.toggleCellSelected}
-              onClearCellSelection={editor.clearCellSelection}
-              onBatchClearCells={editor.batchClearSelectedCells}
-              onBatchUnlinkCells={editor.batchUnlinkSelectedCells}
-              onBatchLinkCells={editor.batchLinkSelectedCells}
-              onCopyActiveCell={() => {
-                if (editor.copyActiveCell()) {
-                  showToast(t('toastCopied'))
-                }
-              }}
-              onPasteToActiveCell={(asLinked) => {
-                if (editor.pasteToActiveCell(asLinked)) {
-                  showToast(t('toastPasted'))
-                }
-              }}
-              onSetPlaybackSpeed={editor.setPlaybackSpeed}
-              onSetPlaybackDirection={editor.setPlaybackDirection}
-              onSetLoopPlayback={editor.setLoopPlayback}
-              onUpdateOnionSkin={editor.updateOnionSkin}
-            />
-          )}
+            )}
           </motion.div>
 
           {/* 3. Palette Swatch Strip (with fixed leftmost Transparent Slot & Drag Reorder) */}
@@ -1137,7 +1014,6 @@ export function EditorPage() {
               stepPhase={editor.stepPhase}
               floatingShape={editor.floatingShape}
               moveSession={editor.moveSession}
-              stampSession={editor.stampSession}
               isContinuousDrawing={editor.isContinuousDrawing}
               activeHexColor={editor.activeHexColor}
               isTransparentColor={editor.isTransparentColorSelected}
@@ -1147,11 +1023,6 @@ export function EditorPage() {
               onCancelStep={editor.cancelMultiStep}
               onCommitShape={editor.commitFloatingShape}
               onCommitMove={editor.commitActiveMove}
-              onCommitStamp={() => {
-                if (editor.commitStampSession()) {
-                  showToast(t('stampPlacedMsg'), 'success')
-                }
-              }}
             />
           )}
         </section>
@@ -1175,11 +1046,14 @@ export function EditorPage() {
           layers={editor.layers}
           activeLayerId={editor.activeLayerId}
           onReplaceColor={editor.replaceProjectColor}
+          onCountColorSlotUsage={editor.countPaletteSlotUsage}
+          onDeleteColorSlot={editor.deletePaletteColorSlot}
         />
 
         <LayerSheet
           open={layersOpen}
           onClose={() => setLayersOpen(false)}
+          palette={editor.palette}
           canvasWidth={editor.project.width}
           canvasHeight={editor.project.height}
           checkerDark={settings.checkerboardDark}
@@ -1249,6 +1123,7 @@ export function EditorPage() {
           projectName={editor.project.name}
           width={editor.project.width}
           height={editor.project.height}
+          palette={editor.palette}
           layers={editor.layers}
           checkerDark={settings.checkerboardDark}
           onClose={() => setExportOpen(false)}
@@ -1261,6 +1136,7 @@ export function EditorPage() {
           projectName={editor.project.name}
           width={editor.project.width}
           height={editor.project.height}
+          palette={editor.palette}
           layerMetas={editor.layers}
           frames={editor.timeline.frames}
           cels={editor.timeline.cels}
@@ -1294,53 +1170,13 @@ export function EditorPage() {
           onChangeSeamlessWrapMode={editor.setSeamlessWrapMode}
         />
 
-        <StampSheetModal
-          open={stampSheetOpen}
-          onClose={() => setStampSheetOpen(false)}
-          stamps={stamps}
-          checkerDark={settings.checkerboardDark}
-          hasSelection={editor.hasSelection}
-          activePatternStampId={editor.toolSettings.patternStampId}
-          onExtractSelection={editor.extractActiveSelectionAsStamp}
-          onCreateStamp={async (name, width, height, data) => {
-            const created = await addStamp(name, width, height, data)
-            showToast(t('stampSavedMsg'), 'success')
-            return created
-          }}
-          onRenameStamp={renameStamp}
-          onDeleteStamp={async (id) => {
-            const ok = await removeStamp(id)
-            if (ok) {
-              if (editor.toolSettings.patternStampId === id) {
-                editor.setToolSettings((prev) => ({
-                  ...prev,
-                  patternStampId: null,
-                }))
-              }
-              showToast(t('stampDeletedMsg'), 'info')
-            }
-            return ok
-          }}
-          onPlaceStamp={(stamp) => {
-            editor.startStampPlacement(stamp)
-          }}
-          onTogglePatternStamp={(stampId) => {
-            editor.setToolSettings((prev) => ({
-              ...prev,
-              patternStampId: stampId,
-            }))
-            if (stampId) {
-              editor.selectTool('pen')
-            }
-          }}
-        />
-
         <ExportSpriteSheetModal
           open={exportSpriteOpen}
           onClose={() => setExportSpriteOpen(false)}
           projectName={editor.project.name}
           width={editor.project.width}
           height={editor.project.height}
+          palette={editor.palette}
           layerMetas={editor.layers}
           frames={editor.timeline.frames}
           cels={editor.timeline.cels}
@@ -1363,6 +1199,7 @@ export function EditorPage() {
           cels={editor.timeline.cels}
           celBuffers={editor.timeline.celBuffers}
           fallbackSingleFrameLayers={editor.layers}
+          palette={editor.palette}
           paletteColors={editor.palette.colors}
           onExported={() => showToast(t('toastExportedAseprite'), 'success')}
         />
@@ -1374,7 +1211,7 @@ export function EditorPage() {
           allowImportAsLayer={true}
           defaultTarget="new-layer"
           onImportAsLayer={(params) => {
-            const ok = editor.importBufferAsNewLayer(params)
+            const ok = editor.importPngAsNewLayer(params)
             if (ok) {
               showToast(t('importPngSuccessLayer'), 'success')
             } else {

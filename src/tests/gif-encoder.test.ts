@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { createPixelBuffer, setPixel } from '../engine/pixelBuffer'
 import {
   encodeAnimatedGif,
   encodeAnimatedGifSync,
@@ -206,14 +205,32 @@ function parseGif89a(bytes: Uint8Array): ParsedGifSummary {
   }
 }
 
+function makeRgbaFrame(width: number, height: number): Uint8ClampedArray {
+  return new Uint8ClampedArray(width * height * 4)
+}
+
+function setRgbaPixel(
+  buf: Uint8ClampedArray,
+  width: number,
+  x: number,
+  y: number,
+  c: { r: number; g: number; b: number; a: number }
+): void {
+  const off = (y * width + x) * 4
+  buf[off] = c.r
+  buf[off + 1] = c.g
+  buf[off + 2] = c.b
+  buf[off + 3] = c.a
+}
+
 describe('GIF89a Animated Encoder (Disposal=2, Dither/Matte Semi-Transparency, <=256 Quantization, Ping-Pong, Scale & Cancel)', () => {
   it('encodes multi-frame transparent animation with Disposal=2, exact LZW reconstruction, ~2000px default scale, and loop control', () => {
-    const f1 = createPixelBuffer(80, 80)
-    setPixel(f1, 80, 80, 2, 2, { r: 255, g: 40, b: 80, a: 255 })
-    const f2 = createPixelBuffer(80, 80)
-    setPixel(f2, 80, 80, 10, 10, { r: 40, g: 200, b: 255, a: 255 })
-    const f3 = createPixelBuffer(80, 80)
-    setPixel(f3, 80, 80, 20, 20, { r: 120, g: 255, b: 90, a: 255 })
+    const f1 = makeRgbaFrame(80, 80)
+    setRgbaPixel(f1, 80, 2, 2, { r: 255, g: 40, b: 80, a: 255 })
+    const f2 = makeRgbaFrame(80, 80)
+    setRgbaPixel(f2, 80, 10, 10, { r: 40, g: 200, b: 255, a: 255 })
+    const f3 = makeRgbaFrame(80, 80)
+    setRgbaPixel(f3, 80, 20, 20, { r: 120, g: 255, b: 90, a: 255 })
 
     // Default scale on 80x80 -> 25x (2000x2000px)
     const defaultRes = encodeAnimatedGifSync({
@@ -274,11 +291,11 @@ describe('GIF89a Animated Encoder (Disposal=2, Dither/Matte Semi-Transparency, <
   })
 
   it('handles semi-transparent pixels via 4x4 Bayer Dither vs Matte blend and quantizes >256 colors cleanly within <=256 limit', () => {
-    const semi = createPixelBuffer(16, 16)
+    const semi = makeRgbaFrame(16, 16)
     // Fill upper half with 50% alpha red, lower half fully transparent
     for (let y = 0; y < 8; y++) {
       for (let x = 0; x < 16; x++) {
-        setPixel(semi, 16, 16, x, y, { r: 240, g: 60, b: 80, a: 128 })
+        setRgbaPixel(semi, 16, x, y, { r: 240, g: 60, b: 80, a: 128 })
       }
     }
 
@@ -316,10 +333,10 @@ describe('GIF89a Animated Encoder (Disposal=2, Dither/Matte Semi-Transparency, <
     }
 
     // Over 500 distinct colors + transparency -> quantized strictly to <= 256 table entries (255 opaque + 1 transparent)
-    const manyColors = createPixelBuffer(32, 32)
+    const manyColors = makeRgbaFrame(32, 32)
     for (let y = 0; y < 30; y++) {
       for (let x = 0; x < 32; x++) {
-        setPixel(manyColors, 32, 32, x, y, {
+        setRgbaPixel(manyColors, 32, x, y, {
           r: (x * 8) & 0xff,
           g: (y * 8) & 0xff,
           b: ((x + y) * 4) & 0xff,
@@ -337,12 +354,12 @@ describe('GIF89a Animated Encoder (Disposal=2, Dither/Matte Semi-Transparency, <
   })
 
   it('supports async progress reporting and AbortController cancellation', async () => {
-    const f1 = createPixelBuffer(16, 16)
-    setPixel(f1, 16, 16, 1, 1, { r: 255, g: 0, b: 0, a: 255 })
-    const f2 = createPixelBuffer(16, 16)
-    setPixel(f2, 16, 16, 2, 2, { r: 0, g: 255, b: 0, a: 255 })
-    const f3 = createPixelBuffer(16, 16)
-    setPixel(f3, 16, 16, 3, 3, { r: 0, g: 0, b: 255, a: 255 })
+    const f1 = makeRgbaFrame(16, 16)
+    setRgbaPixel(f1, 16, 1, 1, { r: 255, g: 0, b: 0, a: 255 })
+    const f2 = makeRgbaFrame(16, 16)
+    setRgbaPixel(f2, 16, 2, 2, { r: 0, g: 255, b: 0, a: 255 })
+    const f3 = makeRgbaFrame(16, 16)
+    setRgbaPixel(f3, 16, 3, 3, { r: 0, g: 0, b: 255, a: 255 })
 
     const progressSteps: Array<[number, number]> = []
     const okRes = await encodeAnimatedGif({

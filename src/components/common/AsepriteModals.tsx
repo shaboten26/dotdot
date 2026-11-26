@@ -5,6 +5,7 @@ import type {
   FrameMeta,
   LayerMeta,
   LayerRuntime,
+  ProjectPalette,
   ProjectRecord,
 } from '../../types'
 import {
@@ -42,6 +43,8 @@ function formatAseWarning(item: AsepriteWarningItem): string {
       return `キャンバスサイズ (${item.detail}) がdotdotの上限 (256×256) を超えているため読み込めません。`
     case 'clipping-note':
       return item.detail
+    case 'colors-quantized':
+      return `不透明色数が255色を超えているため (${item.detail}) 知覚的な255色インデックスパレットへ減色されます。`
   }
 }
 
@@ -114,8 +117,8 @@ export function ImportAsepriteModal({
           activeFrameId: parsed.frames[0]?.id,
         },
         palette: {
+          ...parsed.palette,
           name: `${projectName.trim() || 'Aseprite'} Palette`,
-          colors: parsed.palette.colors,
         },
       })
       onImportedProject?.(created)
@@ -279,6 +282,7 @@ interface ExportAsepriteModalProps {
   cels: CelMap
   celBuffers: Readonly<Record<string, CelBufferRuntime>>
   fallbackSingleFrameLayers?: readonly LayerRuntime[]
+  palette?: ProjectPalette
   paletteColors: readonly string[]
   onExported?: () => void
 }
@@ -294,6 +298,7 @@ export function ExportAsepriteModal({
   cels,
   celBuffers,
   fallbackSingleFrameLayers,
+  palette,
   paletteColors,
   onExported,
 }: ExportAsepriteModalProps) {
@@ -309,6 +314,7 @@ export function ExportAsepriteModal({
       cels,
       celBuffers,
       fallbackSingleFrameLayers,
+      palette,
       paletteColors,
     })
   }, [
@@ -320,6 +326,7 @@ export function ExportAsepriteModal({
     cels,
     celBuffers,
     fallbackSingleFrameLayers,
+    palette,
     paletteColors,
   ])
 
