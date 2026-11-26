@@ -1,6 +1,13 @@
-import type { BrushShape, DitherPatternId, Point, RGBA } from '../types'
+import type {
+  BrushShape,
+  DitherPatternId,
+  Point,
+  RGBA,
+  SeamlessWrapMode,
+  SymmetryMode,
+} from '../types'
 import { shouldDrawWithDither } from './dithering'
-import { isInBounds } from './pixelBuffer'
+import { expandSymmetricPoints, resolveCanvasPoint } from './symmetry'
 
 const stampCache = new Map<string, Point[]>()
 
@@ -50,6 +57,12 @@ export function getBrushOffsets(size: number, shape: BrushShape): readonly Point
   return offsets
 }
 
+export interface PatternTileSource {
+  width: number
+  height: number
+  data: Uint8Array | Uint8ClampedArray
+}
+
 export interface StampOptions {
   width: number
   height: number
@@ -59,34 +72,39 @@ export interface StampOptions {
   dither?: DitherPatternId
   erase?: boolean
   selectionMask?: Uint8Array | null
+  symmetry?: SymmetryMode
+  seamlessWrap?: SeamlessWrapMode
+  patternTile?: PatternTileSource | null
 }
 
-/**
- * Stamp brush at center (cx, cy) onto target RGBA buffer.
- */
-export function stampBrushAt(
+function stampSingleCenter(
   buffer: Uint8ClampedArray,
   cx: number,
   cy: number,
-  options: StampOptions
+  offsets: readonly Point[],
+  options: StampOptions,
+  mirrorX = false,
+  mirrorY = false
 ): void {
   const {
     width,
     height,
-    size,
-    shape,
     color,
     dither = 1,
     erase = false,
     selectionMask = null,
+    seamlessWrap = 'none',
+    patternTile = null,
   } = options
 
-  const offsets = getBrushOffsets(size, shape)
   for (let i = 0; i < offsets.length; i++) {
-    const px = cx + offsets[i].x
-    const py = cy + offsets[i].y
-    if (!isInBounds(px, py, width, height)) continue
+    const ox = mirrorX ? -offsets[i]!.x : offsets[i]!.x
+    const oy = mirrorY ? -offsets[i]!.y : offsets[i]!.y
+    const resolved = resolveCanvasPoint(cx + ox, cy + oy, width, height, seamlessWrap)
+    if (!resolved) continue
 
+    const px = resolved.x
+    const py = resolved.y
     const pIndex = py * width + px
     if (selectionMask && selectionMask[pIndex] === 0) continue
 
@@ -96,21 +114,65 @@ export function stampBrushAt(
       buffer[idx + 1] = 0
       buffer[idx + 2] = 0
       buffer[idx + 3] = 0
-    } else {
-      if (!shouldDrawWithDither(dither, px, py)) continue
-      const idx = pIndex * 4
-      if (color.a === 0) {
-        buffer[idx] = 0
-        buffer[idx + 1] = 0
-        buffer[idx + 2] = 0
-        buffer[idx + 3] = 0
-      } else {
-        buffer[idx] = color.r
-        buffer[idx + 1] = color.g
-        buffer[idx + 2] = color.b
-        buffer[idx + 3] = color.a
-      }
+      continue
     }
+
+    if (!shouldDrawWithDither(dither, px, py)) continue
+
+    if (patternTile && patternTile.width > 0 && patternTile.height > 0) {
+      const tx = ((px % patternTile.width) + patternTile.width) % patternTile.width
+      const ty = ((py % patternTile.height) + patternTile.height) % patternTile.height
+      const sIdx = (ty * patternTile.width + tx) * 4
+      const sa = patternTile.data[sIdx + 3]!
+      // Transparent pixels inside a pattern brush motif keep existing canvas pixels untouched
+      if (sa === 0) continue
+      const idx = pIndex * 4
+      buffer[idx] = patternTile.data[sIdx]!
+      buffer[idx + 1] = patternTile.data[sIdx + 1]!
+      buffer[idx + 2] = patternTile.data[sIdx + 2]!
+      buffer[idx + 3] = sa
+      continue
+    }
+
+    const idx = pIndex * 4
+    if (color.a === 0) {
+      buffer[idx] = 0
+      buffer[idx + 1] = 0
+      buffer[idx + 2] = 0
+      buffer[idx + 3] = 0
+    } else {
+      buffer[idx] = color.r
+      buffer[idx + 1] = color.g
+      buffer[idx + 2] = color.b
+      buffer[idx + 3] = color.a
+    }
+  }
+}
+
+/**
+ * Stamp brush at center (cx, cy) onto target RGBA buffer, honoring optional Symmetry,
+ * Seamless torus wrap, and Pattern Brush tiling.
+ */
+export function stampBrushAt(
+  buffer: Uint8ClampedArray,
+  cx: number,
+  cy: number,
+  options: StampOptions
+): void {
+  const { width, height, size, shape, symmetry = 'none' } = options
+  const offsets = getBrushOffsets(size, shape)
+
+  if (symmetry === 'none') {
+    stampSingleCenter(buffer, cx, cy, offsets, options, false, false)
+    return
+  }
+
+  const centers = expandSymmetricPoints({ x: cx, y: cy }, width, height, symmetry)
+  for (let c = 0; c < centers.length; c++) {
+    const pt = centers[c]!
+    const mx = pt.x !== Math.round(cx)
+    const my = pt.y !== Math.round(cy)
+    stampSingleCenter(buffer, pt.x, pt.y, offsets, options, mx, my)
   }
 }
 
@@ -123,6 +185,6 @@ export function stampPoints(
   options: StampOptions
 ): void {
   for (let i = 0; i < points.length; i++) {
-    stampBrushAt(buffer, points[i].x, points[i].y, options)
+    stampBrushAt(buffer, points[i]!.x, points[i]!.y, options)
   }
 }

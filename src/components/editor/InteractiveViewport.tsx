@@ -5,6 +5,10 @@ import type {
   CursorDisplaySize,
   FloatingShapeState,
   Point,
+  SeamlessWrapMode,
+  StampPlacementSession,
+  SymmetryMode,
+  TilePreviewGrid,
   ToolId,
   ToolSettings,
   WorldSelectionMask,
@@ -54,6 +58,11 @@ interface InteractiveViewportProps {
   stepPhase: MultiStepPhase
   floatingShape: FloatingShapeState | null
   moveSession: ActiveMoveSession | null
+  stampSession?: StampPlacementSession | null
+  symmetryMode?: SymmetryMode
+  showSymmetryGuide?: boolean
+  tilePreviewGrid?: TilePreviewGrid
+  seamlessWrapMode?: SeamlessWrapMode
   hasSelection: boolean
   selectionMask: Uint8Array | null
   worldSelection?: WorldSelectionMask | null
@@ -77,6 +86,7 @@ interface InteractiveViewportProps {
   onDoubleTapEyedropper: () => void
   onMoveFloatingShape: (dx: number, dy: number) => void
   onUpdateMoveOffset: (dx: number, dy: number) => void
+  onMoveStampSession?: (dx: number, dy: number) => void
 }
 
 interface ActivePointerInfo {
@@ -264,6 +274,11 @@ export function InteractiveViewport({
   stepPhase,
   floatingShape,
   moveSession,
+  stampSession = null,
+  symmetryMode = 'none',
+  showSymmetryGuide = true,
+  tilePreviewGrid = 'off',
+  seamlessWrapMode = 'none',
   hasSelection,
   selectionMask,
   worldSelection = null,
@@ -286,6 +301,7 @@ export function InteractiveViewport({
   onDoubleTapEyedropper,
   onMoveFloatingShape,
   onUpdateMoveOffset,
+  onMoveStampSession,
 }: InteractiveViewportProps) {
   const { reducedMotion } = useApp()
   const { t } = useI18n()
@@ -322,6 +338,7 @@ export function InteractiveViewport({
   const [antsOffset, setAntsOffset] = useState(0)
 
   const allowsOutOfBoundsPoint =
+    seamlessWrapMode !== 'none' ||
     tool === 'line' ||
     tool === 'shape' ||
     (tool === 'fill' && toolSettings.fillMode === 'gradient' && stepPhase.kind === 'gradient-end') ||
@@ -370,6 +387,7 @@ export function InteractiveViewport({
       | 'pan'
       | 'floating-drag'
       | 'move-session-drag'
+      | 'stamp-drag'
     startVx: number
     startVy: number
     lastVx: number
@@ -455,8 +473,13 @@ export function InteractiveViewport({
 
   useEffect(() => {
     if (viewportSize.w <= 0 || viewportSize.h <= 0) return
-    setTransform(computeFitViewport(width, height, viewportSize.w, viewportSize.h, 0.86))
-  }, [width, height, fitTrigger, viewportSize.w, viewportSize.h])
+    const tileMult =
+      tilePreviewGrid === '5x5' ? 5 : tilePreviewGrid === '3x3' ? 3 : 1
+    const fitRatio = tileMult > 1 ? 0.9 / tileMult : 0.86
+    setTransform(
+      computeFitViewport(width, height, viewportSize.w, viewportSize.h, fitRatio)
+    )
+  }, [width, height, fitTrigger, viewportSize.w, viewportSize.h, tilePreviewGrid])
 
   useEffect(() => {
     const canvas = displayCanvasRef.current
@@ -633,6 +656,74 @@ export function InteractiveViewport({
 
     ctx.restore()
 
+    // 2b. Surrounding Real-Time Tile Preview (`3x3` or `5x5` around center canvas `(0,0)`)
+    // Strictly visual-only: never duplicates project layer data!
+    const tileRadius =
+      tilePreviewGrid === '5x5' ? 2 : tilePreviewGrid === '3x3' ? 1 : 0
+    if (
+      tileRadius > 0 &&
+      offscreenCanvasRef.current &&
+      compositedBuffer &&
+      compositedBuffer.length === width * height * 4
+    ) {
+      const off = offscreenCanvasRef.current
+      for (let ty = -tileRadius; ty <= tileRadius; ty++) {
+        for (let tx = -tileRadius; tx <= tileRadius; tx++) {
+          if (tx === 0 && ty === 0) continue
+          const tLeft = devLeft + tx * devW
+          const tTop = devTop + ty * devH
+          if (
+            tLeft + devW < 0 ||
+            tTop + devH < 0 ||
+            tLeft > devViewportW ||
+            tTop > devViewportH
+          ) {
+            continue
+          }
+
+          ctx.save()
+          ctx.beginPath()
+          ctx.rect(tLeft, tTop, devW, devH)
+          ctx.clip()
+
+          // Subtle checkerboard background for neighboring tiles
+          ctx.fillStyle = checkerboardDark ? '#212632' : '#ebe5d7'
+          ctx.fillRect(tLeft, tTop, devW, devH)
+          ctx.fillStyle = checkerboardDark ? '#191d27' : '#dcd4c2'
+          for (let r = 0; r < rows; r++) {
+            const y0 = tTop + r * checkCell
+            const hCell = Math.min(checkCell, tTop + devH - y0)
+            if (hCell <= 0) continue
+            for (let c = r % 2; c < cols; c += 2) {
+              const x0 = tLeft + c * checkCell
+              const wCell = Math.min(checkCell, tLeft + devW - x0)
+              if (wCell <= 0) continue
+              ctx.fillRect(x0, y0, wCell, hCell)
+            }
+          }
+
+          ctx.save()
+          ctx.globalAlpha = 0.88
+          ctx.imageSmoothingEnabled = false
+          ctx.translate(
+            previewFlipX ? tLeft + devW : tLeft,
+            previewFlipY ? tTop + devH : tTop
+          )
+          ctx.scale(previewFlipX ? -1 : 1, previewFlipY ? -1 : 1)
+          ctx.drawImage(off, 0, 0, width, height, 0, 0, devW, devH)
+          ctx.restore()
+
+          ctx.strokeStyle = checkerboardDark
+            ? 'rgba(148, 163, 184, 0.35)'
+            : 'rgba(76, 85, 101, 0.32)'
+          ctx.lineWidth = Math.max(1, Math.round(dpr))
+          ctx.setLineDash([Math.round(3 * dpr), Math.round(3 * dpr)])
+          ctx.strokeRect(tLeft, tTop, devW, devH)
+          ctx.restore()
+        }
+      }
+    }
+
     // 3. Crisp Symmetric 4-Sided Outer Pixel Frame
     const borderPx = Math.max(2, Math.round(2 * dpr))
     ctx.fillStyle = checkerboardDark ? '#646f84' : '#4c5565'
@@ -640,6 +731,40 @@ export function InteractiveViewport({
     ctx.fillRect(devLeft - borderPx, devTop + devH, devW + borderPx * 2, borderPx)
     ctx.fillRect(devLeft - borderPx, devTop, borderPx, devH)
     ctx.fillRect(devLeft + devW, devTop, borderPx, devH)
+
+    // 3b. Symmetry Axis Guide Overlay (NEVER baked into layer/exported pixel data!)
+    if (symmetryMode !== 'none' && showSymmetryGuide && !isPlaying) {
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(devLeft, devTop, devW, devH)
+      ctx.clip()
+
+      const drawAxisLine = (x0: number, y0: number, x1: number, y1: number) => {
+        ctx.save()
+        ctx.strokeStyle = 'rgba(24, 21, 33, 0.72)'
+        ctx.lineWidth = Math.max(2, Math.round(2 * dpr))
+        ctx.setLineDash([Math.round(5 * dpr), Math.round(4 * dpr)])
+        ctx.beginPath()
+        ctx.moveTo(x0, y0)
+        ctx.lineTo(x1, y1)
+        ctx.stroke()
+
+        ctx.strokeStyle = '#62b3a6'
+        ctx.lineWidth = Math.max(1, Math.round(1.25 * dpr))
+        ctx.stroke()
+        ctx.restore()
+      }
+
+      if (symmetryMode === 'horizontal' || symmetryMode === 'quad') {
+        const midX = Math.round(devLeft + devW / 2)
+        drawAxisLine(midX, devTop, midX, devTop + devH)
+      }
+      if (symmetryMode === 'vertical' || symmetryMode === 'quad') {
+        const midY = Math.round(devTop + devH / 2)
+        drawAxisLine(devLeft, midY, devLeft + devW, midY)
+      }
+      ctx.restore()
+    }
 
     // 4. Animated Marching Ants Selection Boundary Overlay
     // - Strictly an overlay (NEVER baked into layer pixel data).
@@ -784,6 +909,29 @@ export function InteractiveViewport({
       drawPixelHandle(ctx, bx + bw, by, '#8476c4', dpr)
       drawPixelHandle(ctx, bx, by + bh, '#8476c4', dpr)
       drawPixelHandle(ctx, bx + bw, by + bh, '#8476c4', dpr)
+    }
+
+    // 6b. Active Stamp Placement Frame & Corner Handles
+    if (stampSession) {
+      const [bx, bx1] = pixelSpanX(stampSession.x, stampSession.width)
+      const [by, by1] = pixelSpanY(stampSession.y, stampSession.height)
+      const bw = bx1 - bx
+      const bh = by1 - by
+
+      ctx.save()
+      ctx.strokeStyle = '#181521'
+      ctx.lineWidth = Math.max(2, Math.round(2.5 * dpr))
+      ctx.strokeRect(bx, by, bw, bh)
+      ctx.setLineDash([Math.round(4 * dpr), Math.round(3 * dpr)])
+      ctx.strokeStyle = '#62b3a6'
+      ctx.lineWidth = Math.max(1.5, Math.round(1.5 * dpr))
+      ctx.strokeRect(bx, by, bw, bh)
+      ctx.restore()
+
+      drawPixelHandle(ctx, bx, by, '#62b3a6', dpr)
+      drawPixelHandle(ctx, bx + bw, by, '#62b3a6', dpr)
+      drawPixelHandle(ctx, bx, by + bh, '#62b3a6', dpr)
+      drawPixelHandle(ctx, bx + bw, by + bh, '#62b3a6', dpr)
     }
 
     // 7. Multi-step Control Handles & Guide Lines (also visible outside canvas bounds!)
@@ -1073,6 +1221,10 @@ export function InteractiveViewport({
     antsOffset,
     floatingShape,
     moveSession,
+    stampSession,
+    symmetryMode,
+    showSymmetryGuide,
+    tilePreviewGrid,
     stepPhase,
     cursor,
     modality,
@@ -1201,6 +1353,24 @@ export function InteractiveViewport({
         return
       }
 
+      if (stampSession) {
+        cancelPendingSingleTap()
+        singleGestureRef.current = {
+          pointerId: e.pointerId,
+          mode: 'stamp-drag',
+          startVx: vx,
+          startVy: vy,
+          lastVx: vx,
+          lastVy: vy,
+          startCanvasPt: { x: 0, y: 0 },
+          moved: false,
+          hadMultiTouch: false,
+          accumFloatX: 0,
+          accumFloatY: 0,
+        }
+        return
+      }
+
       const rawCanvasPt = mapScreenToLogicalPixel(vx, vy)
 
       if (detected === 'touch') {
@@ -1305,6 +1475,7 @@ export function InteractiveViewport({
       spacePressed,
       moveSession,
       floatingShape,
+      stampSession,
       mapScreenToLogicalPixel,
       allowsOutOfBoundsPoint,
       width,
@@ -1431,6 +1602,20 @@ export function InteractiveViewport({
           return
         }
 
+        if (g.mode === 'stamp-drag') {
+          const effScale = Math.max(0.5, transform.scale)
+          g.accumFloatX += effDxCss / effScale
+          g.accumFloatY += effDyCss / effScale
+          const moveX = Math.trunc(g.accumFloatX)
+          const moveY = Math.trunc(g.accumFloatY)
+          if (moveX !== 0 || moveY !== 0) {
+            g.accumFloatX -= moveX
+            g.accumFloatY -= moveY
+            onMoveStampSession?.(moveX, moveY)
+          }
+          return
+        }
+
         if (g.mode === 'touch-cursor') {
           // Section 4-2: Touching/tapping alone MUST NOT move the cursor!
           // Only start moving the cursor AFTER the finger slides past TOUCH_SLIDE_DEADZONE_PX,
@@ -1499,7 +1684,8 @@ export function InteractiveViewport({
         e.pointerType === 'mouse' &&
         activePointersRef.current.size === 0 &&
         !floatingShape &&
-        !moveSession
+        !moveSession &&
+        !stampSession
       ) {
         const rawPt = mapScreenToLogicalPixel(vx, vy)
         if (allowsOutOfBoundsPoint && stepPhase.kind !== 'idle') {
@@ -1524,11 +1710,13 @@ export function InteractiveViewport({
       cursorSpeed,
       onUpdateMoveOffset,
       onMoveFloatingShape,
+      onMoveStampSession,
       allowsOutOfBoundsPoint,
       onMoveCursor,
       onBeginDrawAt,
       floatingShape,
       moveSession,
+      stampSession,
       stepPhase.kind,
     ]
   )
@@ -1670,6 +1858,10 @@ export function InteractiveViewport({
     statusIcon = toolSettings.shapeType === 'ellipse' ? 'ellipse' : 'rect'
     statusPrimary = t('statusWaitingConfirm')
     statusSub = `${((floatingShape.rotationDeg % 360) + 360) % 360}°`
+  } else if (stampSession) {
+    statusIcon = 'stamp'
+    statusPrimary = stampSession.name
+    statusSub = `${stampSession.x},${stampSession.y}`
   } else {
     if (tool === 'pen') {
       statusPrimary = t('toolPen')
@@ -1724,7 +1916,7 @@ export function InteractiveViewport({
       className={`relative w-full h-full overflow-hidden bg-[var(--canvas-well)] select-none ${
         spacePressed
           ? 'cursor-grab'
-          : floatingShape || moveSession
+          : floatingShape || moveSession || stampSession
             ? 'cursor-move'
             : modality === 'mouse'
               ? 'cursor-crosshair'

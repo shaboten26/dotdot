@@ -1,8 +1,15 @@
-import type { BrushShape, DitherPatternId, Point, RGBA } from '../types'
-import { stampPoints } from './brush'
+import type {
+  BrushShape,
+  DitherPatternId,
+  Point,
+  RGBA,
+  SeamlessWrapMode,
+  SymmetryMode,
+} from '../types'
+import { stampPoints, type PatternTileSource } from './brush'
 import { shouldDrawWithDither } from './dithering'
-import { isInBounds } from './pixelBuffer'
 import { bresenhamLinePoints, filterPixelPerfectPoints } from './pixelPerfect'
+import { expandSymmetricBounds, resolveCanvasPoint } from './symmetry'
 
 export interface LineDrawOptions {
   width: number
@@ -13,6 +20,9 @@ export interface LineDrawOptions {
   pixelPerfect?: boolean
   color: RGBA
   selectionMask?: Uint8Array | null
+  symmetry?: SymmetryMode
+  seamlessWrap?: SeamlessWrapMode
+  patternTile?: PatternTileSource | null
 }
 
 /**
@@ -223,6 +233,8 @@ export interface ShapeRasterOptions {
   dither?: DitherPatternId
   color: RGBA
   selectionMask?: Uint8Array | null
+  symmetry?: SymmetryMode
+  seamlessWrap?: SeamlessWrapMode
 }
 
 function plotShapePixel(
@@ -231,11 +243,21 @@ function plotShapePixel(
   y: number,
   options: ShapeRasterOptions
 ): void {
-  const { width, height, dither = 1, color, selectionMask } = options
-  if (!isInBounds(x, y, width, height)) return
-  const pIdx = y * width + x
+  const {
+    width,
+    height,
+    dither = 1,
+    color,
+    selectionMask,
+    seamlessWrap = 'none',
+  } = options
+  const resolved = resolveCanvasPoint(x, y, width, height, seamlessWrap)
+  if (!resolved) return
+  const px = resolved.x
+  const py = resolved.y
+  const pIdx = py * width + px
   if (selectionMask && selectionMask[pIdx] === 0) return
-  if (!shouldDrawWithDither(dither, x, y)) return
+  if (!shouldDrawWithDither(dither, px, py)) return
 
   const bIdx = pIdx * 4
   if (color.a === 0) {
@@ -260,20 +282,28 @@ export function rasterizeRectangle(
   options: ShapeRasterOptions
 ): void {
   const stroke = Math.max(1, Math.round(options.strokeSize ?? 1))
-  const { minX, minY, maxX, maxY } = bounds
+  const boxes = expandSymmetricBounds(
+    bounds,
+    options.width,
+    options.height,
+    options.symmetry ?? 'none'
+  )
 
-  for (let y = minY; y <= maxY; y++) {
-    for (let x = minX; x <= maxX; x++) {
-      if (options.filled) {
-        plotShapePixel(buffer, x, y, options)
-      } else {
-        const onBorder =
-          x - minX < stroke ||
-          maxX - x < stroke ||
-          y - minY < stroke ||
-          maxY - y < stroke
-        if (onBorder) {
+  for (const box of boxes) {
+    const { minX, minY, maxX, maxY } = box
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        if (options.filled) {
           plotShapePixel(buffer, x, y, options)
+        } else {
+          const onBorder =
+            x - minX < stroke ||
+            maxX - x < stroke ||
+            y - minY < stroke ||
+            maxY - y < stroke
+          if (onBorder) {
+            plotShapePixel(buffer, x, y, options)
+          }
         }
       }
     }
@@ -318,34 +348,43 @@ export function rasterizeEllipse(
   bounds: BoundingBox,
   options: ShapeRasterOptions
 ): void {
-  const { minX, minY, width: bw, height: bh } = bounds
+  const boxes = expandSymmetricBounds(
+    bounds,
+    options.width,
+    options.height,
+    options.symmetry ?? 'none'
+  )
   const stroke = Math.max(1, Math.round(options.strokeSize ?? 1))
-  const outer = buildFilledEllipseMask(bw, bh)
 
-  if (options.filled || bw <= stroke * 2 || bh <= stroke * 2) {
-    for (let ly = 0; ly < bh; ly++) {
-      for (let lx = 0; lx < bw; lx++) {
-        if (outer[ly * bw + lx] === 1) {
-          plotShapePixel(buffer, minX + lx, minY + ly, options)
+  for (const box of boxes) {
+    const { minX, minY, width: bw, height: bh } = box
+    const outer = buildFilledEllipseMask(bw, bh)
+
+    if (options.filled || bw <= stroke * 2 || bh <= stroke * 2) {
+      for (let ly = 0; ly < bh; ly++) {
+        for (let lx = 0; lx < bw; lx++) {
+          if (outer[ly * bw + lx] === 1) {
+            plotShapePixel(buffer, minX + lx, minY + ly, options)
+          }
         }
       }
+      continue
     }
-    return
-  }
 
-  const innerW = bw - stroke * 2
-  const innerH = bh - stroke * 2
-  const inner = buildFilledEllipseMask(innerW, innerH)
+    const innerW = bw - stroke * 2
+    const innerH = bh - stroke * 2
+    const inner = buildFilledEllipseMask(innerW, innerH)
 
-  for (let ly = 0; ly < bh; ly++) {
-    for (let lx = 0; lx < bw; lx++) {
-      if (outer[ly * bw + lx] === 0) continue
-      const ix = lx - stroke
-      const iy = ly - stroke
-      const insideInner =
-        ix >= 0 && iy >= 0 && ix < innerW && iy < innerH && inner[iy * innerW + ix] === 1
-      if (!insideInner) {
-        plotShapePixel(buffer, minX + lx, minY + ly, options)
+    for (let ly = 0; ly < bh; ly++) {
+      for (let lx = 0; lx < bw; lx++) {
+        if (outer[ly * bw + lx] === 0) continue
+        const ix = lx - stroke
+        const iy = ly - stroke
+        const insideInner =
+          ix >= 0 && iy >= 0 && ix < innerW && iy < innerH && inner[iy * innerW + ix] === 1
+        if (!insideInner) {
+          plotShapePixel(buffer, minX + lx, minY + ly, options)
+        }
       }
     }
   }

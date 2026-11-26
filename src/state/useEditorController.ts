@@ -15,6 +15,11 @@ import {
   type ProjectRecord,
   type ResizeAnchor,
   type RGBA,
+  type SeamlessWrapMode,
+  type StampAsset,
+  type StampPlacementSession,
+  type SymmetryMode,
+  type TilePreviewGrid,
   type ToolId,
   type ToolSettings,
   type WorldSelectionMask,
@@ -100,6 +105,9 @@ import {
   type TimelineState,
 } from '../engine/animation'
 import { estimateProjectLoad } from '../engine/loadEstimator'
+import { applyStampToBuffer, extractStampFromSelection } from '../engine/stamp'
+import { resolveCanvasPoint } from '../engine/symmetry'
+import { replaceColorAcrossTimeline } from '../engine/paletteTools'
 import { clampCanvasPoint } from '../utils/coordinates'
 import { playUiTick } from '../utils/sound'
 
@@ -149,6 +157,7 @@ const DEFAULT_TOOL_SETTINGS: ToolSettings = {
   penShape: 'square',
   penDither: 1,
   pixelPerfect: true,
+  patternStampId: null,
 
   eraserSize: 1,
   eraserShape: 'square',
@@ -194,6 +203,10 @@ export interface UseEditorOptions {
   projectId: string | null
   historyLimit: number | 'unlimited'
   soundEnabled: boolean
+  stamps?: readonly StampAsset[]
+  defaultSymmetryMode?: SymmetryMode
+  defaultTilePreviewGrid?: TilePreviewGrid
+  defaultSeamlessWrapMode?: SeamlessWrapMode
   sharedClipboard?: ClipboardBuffer | null
   onUpdateSharedClipboard?: (clip: ClipboardBuffer | null) => void
   onSaved?: () => void
@@ -207,6 +220,10 @@ export function useEditorController(options: UseEditorOptions) {
     projectId,
     historyLimit,
     soundEnabled,
+    stamps = [],
+    defaultSymmetryMode = 'none',
+    defaultTilePreviewGrid = 'off',
+    defaultSeamlessWrapMode = 'none',
     sharedClipboard,
     onUpdateSharedClipboard,
     onSaved,
@@ -270,6 +287,12 @@ export function useEditorController(options: UseEditorOptions) {
   const [stepPhase, setStepPhase] = useState<MultiStepPhase>({ kind: 'idle' })
   const [floatingShape, setFloatingShape] = useState<FloatingShapeState | null>(null)
   const [moveSession, setMoveSession] = useState<ActiveMoveSession | null>(null)
+  const [stampSession, setStampSession] = useState<StampPlacementSession | null>(null)
+  const [symmetryMode, setSymmetryMode] = useState<SymmetryMode>(defaultSymmetryMode)
+  const [tilePreviewGrid, setTilePreviewGrid] =
+    useState<TilePreviewGrid>(defaultTilePreviewGrid)
+  const [seamlessWrapMode, setSeamlessWrapMode] =
+    useState<SeamlessWrapMode>(defaultSeamlessWrapMode)
   const [selectionMask, setSelectionMask] = useState<Uint8Array | null>(null)
   const [worldSelection, setWorldSelection] = useState<WorldSelectionMask | null>(null)
   const [localClipboard, setLocalClipboard] = useState<ClipboardBuffer | null>(null)
@@ -369,6 +392,9 @@ export function useEditorController(options: UseEditorOptions) {
       setPalette({
         name: loaded.project.palette.name,
         colors: loadedColors,
+        ...(loaded.project.palette.originalColors
+          ? { originalColors: [...loaded.project.palette.originalColors] }
+          : {}),
         sourcePaletteId: loaded.project.palette.sourcePaletteId,
         author: loaded.project.palette.author,
         sourceUrl: loaded.project.palette.sourceUrl,
@@ -386,6 +412,10 @@ export function useEditorController(options: UseEditorOptions) {
       setStepPhase({ kind: 'idle' })
       setFloatingShape(null)
       setMoveSession(null)
+      setStampSession(null)
+      setSymmetryMode(defaultSymmetryMode)
+      setTilePreviewGrid(defaultTilePreviewGrid)
+      setSeamlessWrapMode(defaultSeamlessWrapMode)
       setSelectionMask(null)
       setWorldSelection(null)
       strokeRef.current = null
@@ -507,6 +537,9 @@ export function useEditorController(options: UseEditorOptions) {
         palette: {
           name: nextPalette.name,
           colors: [...nextPalette.colors],
+          ...(nextPalette.originalColors
+            ? { originalColors: [...nextPalette.originalColors] }
+            : {}),
           sourcePaletteId: nextPalette.sourcePaletteId,
           author: nextPalette.author,
           sourceUrl: nextPalette.sourceUrl,
@@ -787,6 +820,17 @@ export function useEditorController(options: UseEditorOptions) {
    * Note: If Transparent Color is selected, `floatingShape` stores a mask (`a = 255, r=g=b=0`) with a dedicated erase flag
    * or we apply `compositeFloatingShapeOntoLayer` directly; for transparent shapes we commit directly on placement!
    */
+  const activePatternTile = useMemo(() => {
+    if (!toolSettings.patternStampId) return null
+    const found = stamps.find((s) => s.id === toolSettings.patternStampId)
+    if (!found || found.width <= 0 || found.height <= 0) return null
+    return {
+      width: found.width,
+      height: found.height,
+      data: found.data,
+    }
+  }, [toolSettings.patternStampId, stamps])
+
   const commitFloatingShape = useCallback(() => {
     if (!floatingShape || !project || !activeLayer || !activeLayerCanvasView) return
     const afterView = compositeFloatingShapeOntoLayer(
@@ -794,7 +838,9 @@ export function useEditorController(options: UseEditorOptions) {
       project.width,
       project.height,
       floatingShape,
-      effectiveSelectionMask
+      effectiveSelectionMask,
+      symmetryMode,
+      seamlessWrapMode
     )
     setFloatingShape(null)
     playUiTick('draw', soundEnabled)
@@ -805,6 +851,8 @@ export function useEditorController(options: UseEditorOptions) {
     activeLayer,
     activeLayerCanvasView,
     effectiveSelectionMask,
+    symmetryMode,
+    seamlessWrapMode,
     soundEnabled,
     commitLayerCanvasViewChange,
   ])
@@ -812,6 +860,98 @@ export function useEditorController(options: UseEditorOptions) {
   const discardFloatingShape = useCallback(() => {
     setFloatingShape(null)
   }, [])
+
+  const startStampPlacement = useCallback(
+    (stamp: StampAsset): boolean => {
+      if (!project || !activeLayer || activeLayer.locked || !activeLayer.visible) {
+        return false
+      }
+      if (isPlaying) {
+        setIsPlaying(false)
+      }
+      setStepPhase({ kind: 'idle' })
+      setFloatingShape(null)
+      setMoveSession(null)
+      const startX = Math.round(cursorRef.current.x - Math.floor(stamp.width / 2))
+      const startY = Math.round(cursorRef.current.y - Math.floor(stamp.height / 2))
+      setStampSession({
+        stampId: stamp.id,
+        name: stamp.name,
+        width: stamp.width,
+        height: stamp.height,
+        data: new Uint8ClampedArray(stamp.data),
+        x: startX,
+        y: startY,
+        flipX: false,
+        flipY: false,
+      })
+      playUiTick('step', soundEnabled)
+      return true
+    },
+    [project, activeLayer, isPlaying, soundEnabled]
+  )
+
+  const moveStampSession = useCallback((dx: number, dy: number) => {
+    const sx = Math.trunc(dx)
+    const sy = Math.trunc(dy)
+    if (sx === 0 && sy === 0) return
+    setStampSession((prev) =>
+      prev ? { ...prev, x: prev.x + sx, y: prev.y + sy } : null
+    )
+  }, [])
+
+  const flipStampSession = useCallback((axis: 'horizontal' | 'vertical') => {
+    setStampSession((prev) => {
+      if (!prev) return null
+      return axis === 'horizontal'
+        ? { ...prev, flipX: !prev.flipX }
+        : { ...prev, flipY: !prev.flipY }
+    })
+  }, [])
+
+  const commitStampSession = useCallback((): boolean => {
+    if (!stampSession || !project || !activeLayer || !activeLayerCanvasView) {
+      return false
+    }
+    const afterView = new Uint8ClampedArray(activeLayerCanvasView)
+    applyStampToBuffer(afterView, {
+      canvasWidth: project.width,
+      canvasHeight: project.height,
+      stampWidth: stampSession.width,
+      stampHeight: stampSession.height,
+      stampData: stampSession.data,
+      topLeftX: stampSession.x,
+      topLeftY: stampSession.y,
+      flipX: stampSession.flipX,
+      flipY: stampSession.flipY,
+      symmetry: symmetryMode,
+      seamlessWrap: seamlessWrapMode,
+      selectionMask: effectiveSelectionMask,
+    })
+    setStampSession(null)
+    playUiTick('draw', soundEnabled)
+    commitLayerCanvasViewChange(activeLayer.id, afterView, 'Stamp')
+    return true
+  }, [
+    stampSession,
+    project,
+    activeLayer,
+    activeLayerCanvasView,
+    symmetryMode,
+    seamlessWrapMode,
+    effectiveSelectionMask,
+    soundEnabled,
+    commitLayerCanvasViewChange,
+  ])
+
+  const cancelStampSession = useCallback(() => {
+    setStampSession(null)
+  }, [])
+
+  const extractActiveSelectionAsStamp = useCallback(() => {
+    if (!activeLayer || !effectiveWorldSelection) return null
+    return extractStampFromSelection(activeLayer, effectiveWorldSelection)
+  }, [activeLayer, effectiveWorldSelection])
 
   /**
    * Start interactive Selection Move mode (Section 7 + Off-Canvas World Preservation)
@@ -1153,6 +1293,25 @@ export function useEditorController(options: UseEditorOptions) {
       return liveStrokeBuffer
     }
 
+    if (stampSession) {
+      const buf = new Uint8ClampedArray(activeLayerCanvasView)
+      applyStampToBuffer(buf, {
+        canvasWidth: w,
+        canvasHeight: h,
+        stampWidth: stampSession.width,
+        stampHeight: stampSession.height,
+        stampData: stampSession.data,
+        topLeftX: stampSession.x,
+        topLeftY: stampSession.y,
+        flipX: stampSession.flipX,
+        flipY: stampSession.flipY,
+        symmetry: symmetryMode,
+        seamlessWrap: seamlessWrapMode,
+        selectionMask: effectiveSelectionMask,
+      })
+      return { layerId: activeLayer.id, data: buf }
+    }
+
     if (floatingShape) {
       return {
         layerId: activeLayer.id,
@@ -1161,7 +1320,9 @@ export function useEditorController(options: UseEditorOptions) {
           w,
           h,
           floatingShape,
-          effectiveSelectionMask
+          effectiveSelectionMask,
+          symmetryMode,
+          seamlessWrapMode
         ),
       }
     }
@@ -1181,6 +1342,8 @@ export function useEditorController(options: UseEditorOptions) {
         fixedRatio: toolSettings.gradientFixedRatio,
         steps: toolSettings.gradientSteps,
         selectionMask: effectiveSelectionMask,
+        symmetry: symmetryMode,
+        seamlessWrap: seamlessWrapMode,
       })
       return { layerId: activeLayer.id, data: buf }
     }
@@ -1196,6 +1359,8 @@ export function useEditorController(options: UseEditorOptions) {
         pixelPerfect: toolSettings.linePixelPerfect,
         color: activeRgba,
         selectionMask: effectiveSelectionMask,
+        symmetry: symmetryMode,
+        seamlessWrap: seamlessWrapMode,
       })
       return { layerId: activeLayer.id, data: buf }
     }
@@ -1211,6 +1376,8 @@ export function useEditorController(options: UseEditorOptions) {
         pixelPerfect: toolSettings.linePixelPerfect,
         color: activeRgba,
         selectionMask: effectiveSelectionMask,
+        symmetry: symmetryMode,
+        seamlessWrap: seamlessWrapMode,
       })
       return { layerId: activeLayer.id, data: buf }
     }
@@ -1225,6 +1392,8 @@ export function useEditorController(options: UseEditorOptions) {
         dither: toolSettings.lineDither,
         color: activeRgba,
         selectionMask: effectiveSelectionMask,
+        symmetry: symmetryMode,
+        seamlessWrap: seamlessWrapMode,
       })
       return { layerId: activeLayer.id, data: buf }
     }
@@ -1239,6 +1408,8 @@ export function useEditorController(options: UseEditorOptions) {
         dither: toolSettings.lineDither,
         color: activeRgba,
         selectionMask: effectiveSelectionMask,
+        symmetry: symmetryMode,
+        seamlessWrap: seamlessWrapMode,
       })
       return { layerId: activeLayer.id, data: buf }
     }
@@ -1258,6 +1429,8 @@ export function useEditorController(options: UseEditorOptions) {
         dither: toolSettings.shapeDither,
         color: activeRgba,
         selectionMask: effectiveSelectionMask,
+        symmetry: symmetryMode,
+        seamlessWrap: seamlessWrapMode,
       }
       if (toolSettings.shapeType === 'rect') {
         rasterizeRectangle(buf, bounds, shapeOpts)
@@ -1298,6 +1471,9 @@ export function useEditorController(options: UseEditorOptions) {
         dither: brushDither,
         erase: tool === 'eraser',
         selectionMask: effectiveSelectionMask,
+        symmetry: symmetryMode,
+        seamlessWrap: seamlessWrapMode,
+        patternTile: tool === 'pen' ? activePatternTile : null,
       })
       return { layerId: activeLayer.id, data: buf }
     }
@@ -1310,6 +1486,7 @@ export function useEditorController(options: UseEditorOptions) {
     moveSession,
     layers,
     liveStrokeBuffer,
+    stampSession,
     floatingShape,
     effectiveSelectionMask,
     stepPhase,
@@ -1317,6 +1494,9 @@ export function useEditorController(options: UseEditorOptions) {
     activeRgba,
     toolSettings,
     tool,
+    symmetryMode,
+    seamlessWrapMode,
+    activePatternTile,
   ])
 
   const compositedBuffer = useMemo(() => {
@@ -1350,13 +1530,24 @@ export function useEditorController(options: UseEditorOptions) {
       if (floatingShape) {
         commitFloatingShape()
       }
+      if (stampSession) {
+        commitStampSession()
+      }
       setStepPhase({ kind: 'idle' })
       if (nextTool === 'eyedropper' && tool !== 'eyedropper') {
         prevToolBeforeEyedropperRef.current = tool
       }
       setTool(nextTool)
     },
-    [moveSession, commitActiveMove, floatingShape, commitFloatingShape, tool]
+    [
+      moveSession,
+      commitActiveMove,
+      floatingShape,
+      commitFloatingShape,
+      stampSession,
+      commitStampSession,
+      tool,
+    ]
   )
 
   const cancelMultiStep = useCallback(() => {
@@ -1367,7 +1558,10 @@ export function useEditorController(options: UseEditorOptions) {
     if (moveSession) {
       setMoveSession(null)
     }
-  }, [floatingShape, moveSession])
+    if (stampSession) {
+      setStampSession(null)
+    }
+  }, [floatingShape, moveSession, stampSession])
 
   const recomputeContinuousStroke = useCallback(
     (
@@ -1391,22 +1585,47 @@ export function useEditorController(options: UseEditorOptions) {
         dither: mode === 'pen' ? toolSettings.penDither : 1,
         erase: mode === 'eraser',
         selectionMask: effectiveSelectionMask,
+        symmetry: symmetryMode,
+        seamlessWrap: seamlessWrapMode,
+        patternTile: mode === 'pen' ? activePatternTile : null,
       })
       return nextBuf
     },
-    [project, toolSettings, activeRgba, effectiveSelectionMask]
+    [
+      project,
+      toolSettings,
+      activeRgba,
+      effectiveSelectionMask,
+      symmetryMode,
+      seamlessWrapMode,
+      activePatternTile,
+    ]
   )
 
   /**
    * Section 12: Allow cursor / endpoint coordinates outside `[0..width-1, 0..height-1]`
-   * when `allowOutOfBounds` is true (Line, Bezier, Shape, Select area, Gradient Fill)!
+   * when `allowOutOfBounds` is true (Line, Bezier, Shape, Select area, Gradient Fill, or Seamless Wrap)!
    */
   const moveCursorTo = useCallback(
     (pt: Point, allowOutOfBounds = false) => {
       if (!project) return
-      const nextPt = allowOutOfBounds
-        ? normalizeWorldPoint(pt)
+      const seamlessActive = seamlessWrapMode !== 'none'
+      const wrappedForCursor = seamlessActive
+        ? resolveCanvasPoint(
+            pt.x,
+            pt.y,
+            project.width,
+            project.height,
+            seamlessWrapMode
+          ) ?? clampCanvasPoint(pt, project.width, project.height)
         : clampCanvasPoint(pt, project.width, project.height)
+
+      const nextPt =
+        allowOutOfBounds && !seamlessActive
+          ? normalizeWorldPoint(pt)
+          : allowOutOfBounds && seamlessActive && (tool === 'line' || tool === 'shape' || tool === 'select')
+            ? normalizeWorldPoint(pt)
+            : wrappedForCursor
 
       cursorRef.current = nextPt
       setCursor((prev) =>
@@ -1415,10 +1634,14 @@ export function useEditorController(options: UseEditorOptions) {
 
       const st = strokeRef.current
       if (st && st.active) {
-        const clamped = clampCanvasPoint(pt, project.width, project.height)
+        // Keep raw stroke coordinates continuous across canvas borders when seamlessWrapMode is active
+        // so Bresenham segments cross the edge cleanly without jumping backward across the canvas!
+        const strokePt = seamlessActive
+          ? normalizeWorldPoint(pt)
+          : clampCanvasPoint(pt, project.width, project.height)
         const last = st.rawPoints[st.rawPoints.length - 1]
-        if (!last || last.x !== clamped.x || last.y !== clamped.y) {
-          st.rawPoints.push(clamped)
+        if (!last || last.x !== strokePt.x || last.y !== strokePt.y) {
+          st.rawPoints.push(strokePt)
           const updated = recomputeContinuousStroke(
             st.rawPoints,
             st.baseCanvasView,
@@ -1429,7 +1652,7 @@ export function useEditorController(options: UseEditorOptions) {
         }
       }
     },
-    [project, recomputeContinuousStroke]
+    [project, seamlessWrapMode, tool, recomputeContinuousStroke]
   )
 
   /**
@@ -1536,11 +1759,16 @@ export function useEditorController(options: UseEditorOptions) {
         commitFloatingShape()
         return
       }
+      if (stampSession) {
+        commitStampSession()
+        return
+      }
       if (activeLayer.locked && tool !== 'eyedropper' && tool !== 'select') {
         return
       }
 
       const supportsOutOfCanvasEndpoint =
+        seamlessWrapMode !== 'none' ||
         tool === 'line' ||
         tool === 'shape' ||
         (tool === 'fill' && toolSettings.fillMode === 'gradient' && stepPhase.kind === 'gradient-end') ||
@@ -1555,7 +1783,17 @@ export function useEditorController(options: UseEditorOptions) {
           : clampCanvasPoint(cursor, project.width, project.height)
 
       if (targetPoint) {
-        setCursor(pt)
+        const displayCursor =
+          seamlessWrapMode !== 'none' && tool !== 'line' && tool !== 'shape' && tool !== 'select'
+            ? resolveCanvasPoint(
+                pt.x,
+                pt.y,
+                project.width,
+                project.height,
+                seamlessWrapMode
+              ) ?? clampCanvasPoint(pt, project.width, project.height)
+            : pt
+        setCursor(displayCursor)
       }
 
       const w = project.width
@@ -1563,15 +1801,16 @@ export function useEditorController(options: UseEditorOptions) {
 
       if (tool === 'pen' || tool === 'eraser') {
         if (!activeLayer.visible) return
-        const clampedPt = clampCanvasPoint(pt, w, h)
+        const startStrokePt =
+          seamlessWrapMode !== 'none' ? pt : clampCanvasPoint(pt, w, h)
         const baseCopy = new Uint8ClampedArray(activeLayerCanvasView)
-        const initialPreview = recomputeContinuousStroke([clampedPt], baseCopy, tool)
+        const initialPreview = recomputeContinuousStroke([startStrokePt], baseCopy, tool)
         strokeRef.current = {
           active: true,
           tool,
           layerId: activeLayer.id,
           baseCanvasView: baseCopy,
-          rawPoints: [clampedPt],
+          rawPoints: [startStrokePt],
           latestPreview: initialPreview,
         }
         setIsContinuousDrawing(true)
@@ -1581,7 +1820,11 @@ export function useEditorController(options: UseEditorOptions) {
       }
 
       if (tool === 'eyedropper') {
-        const clampedPt = clampCanvasPoint(pt, w, h)
+        const clampedPt =
+          seamlessWrapMode !== 'none'
+            ? resolveCanvasPoint(pt.x, pt.y, w, h, seamlessWrapMode) ??
+              clampCanvasPoint(pt, w, h)
+            : clampCanvasPoint(pt, w, h)
         pickColorAtCanvasPoint(clampedPt, { restorePreviousTool: true })
         return
       }
@@ -1589,23 +1832,33 @@ export function useEditorController(options: UseEditorOptions) {
       if (tool === 'fill') {
         if (!activeLayer.visible) return
         if (toolSettings.fillMode === 'normal') {
-          const clampedPt = clampCanvasPoint(pt, w, h)
+          const seedPt =
+            seamlessWrapMode !== 'none'
+              ? resolveCanvasPoint(pt.x, pt.y, w, h, seamlessWrapMode) ??
+                clampCanvasPoint(pt, w, h)
+              : clampCanvasPoint(pt, w, h)
           const after = new Uint8ClampedArray(activeLayerCanvasView)
           applyFloodFill(after, {
             width: w,
             height: h,
-            seedX: clampedPt.x,
-            seedY: clampedPt.y,
+            seedX: seedPt.x,
+            seedY: seedPt.y,
             color: activeRgba,
             connectivity: toolSettings.fillConnectivity,
             dither: toolSettings.fillDither,
             selectionMask: effectiveSelectionMask,
+            symmetry: symmetryMode,
+            seamlessWrap: seamlessWrapMode,
           })
           playUiTick('draw', soundEnabled)
           commitLayerCanvasViewChange(activeLayer.id, after, 'Fill')
         } else {
           if (stepPhase.kind !== 'gradient-end') {
-            const clampedStart = clampCanvasPoint(pt, w, h)
+            const clampedStart =
+              seamlessWrapMode !== 'none'
+                ? resolveCanvasPoint(pt.x, pt.y, w, h, seamlessWrapMode) ??
+                  clampCanvasPoint(pt, w, h)
+                : clampCanvasPoint(pt, w, h)
             setStepPhase({ kind: 'gradient-end', start: clampedStart })
             playUiTick('step', soundEnabled)
           } else {
@@ -1623,6 +1876,8 @@ export function useEditorController(options: UseEditorOptions) {
               fixedRatio: toolSettings.gradientFixedRatio,
               steps: toolSettings.gradientSteps,
               selectionMask: effectiveSelectionMask,
+              symmetry: symmetryMode,
+              seamlessWrap: seamlessWrapMode,
             })
             setStepPhase({ kind: 'idle' })
             playUiTick('draw', soundEnabled)
@@ -1649,6 +1904,8 @@ export function useEditorController(options: UseEditorOptions) {
               pixelPerfect: toolSettings.linePixelPerfect,
               color: activeRgba,
               selectionMask: effectiveSelectionMask,
+              symmetry: symmetryMode,
+              seamlessWrap: seamlessWrapMode,
             })
             setStepPhase({ kind: 'idle' })
             playUiTick('draw', soundEnabled)
@@ -1679,6 +1936,8 @@ export function useEditorController(options: UseEditorOptions) {
               dither: toolSettings.lineDither,
               color: activeRgba,
               selectionMask: effectiveSelectionMask,
+              symmetry: symmetryMode,
+              seamlessWrap: seamlessWrapMode,
             })
             setStepPhase({ kind: 'idle' })
             playUiTick('draw', soundEnabled)
@@ -1714,6 +1973,8 @@ export function useEditorController(options: UseEditorOptions) {
               dither: toolSettings.shapeDither,
               color: activeRgba,
               selectionMask: effectiveSelectionMask,
+              symmetry: symmetryMode,
+              seamlessWrap: seamlessWrapMode,
             }
             if (toolSettings.shapeType === 'rect') {
               rasterizeRectangle(after, bounds, shapeOpts)
@@ -1901,10 +2162,13 @@ export function useEditorController(options: UseEditorOptions) {
       project,
       activeLayer,
       activeLayerCanvasView,
+      isPlaying,
       moveSession,
       commitActiveMove,
       floatingShape,
       commitFloatingShape,
+      stampSession,
+      commitStampSession,
       tool,
       toolSettings,
       stepPhase,
@@ -1914,6 +2178,9 @@ export function useEditorController(options: UseEditorOptions) {
       pickColorAtCanvasPoint,
       activeRgba,
       effectiveSelectionMask,
+      effectiveWorldSelection,
+      symmetryMode,
+      seamlessWrapMode,
       commitLayerCanvasViewChange,
       selectionMask,
       syncHistoryCounts,
@@ -2990,6 +3257,9 @@ export function useEditorController(options: UseEditorOptions) {
       const normalized: ProjectPalette = {
         name: nextPalette.name.trim() || 'Palette',
         colors: safeColors,
+        ...(nextPalette.originalColors
+          ? { originalColors: [...nextPalette.originalColors] }
+          : {}),
         sourcePaletteId: nextPalette.sourcePaletteId,
         author: nextPalette.author,
         sourceUrl: nextPalette.sourceUrl,
@@ -2999,8 +3269,20 @@ export function useEditorController(options: UseEditorOptions) {
         label: 'Edit Palette',
         timestamp: Date.now(),
         kind: 'palette',
-        beforePalette: { ...palette, colors: [...palette.colors] },
-        afterPalette: { ...normalized, colors: [...normalized.colors] },
+        beforePalette: {
+          ...palette,
+          colors: [...palette.colors],
+          ...(palette.originalColors
+            ? { originalColors: [...palette.originalColors] }
+            : {}),
+        },
+        afterPalette: {
+          ...normalized,
+          colors: [...normalized.colors],
+          ...(normalized.originalColors
+            ? { originalColors: [...normalized.originalColors] }
+            : {}),
+        },
       })
       syncHistoryCounts()
 
@@ -3025,6 +3307,188 @@ export function useEditorController(options: UseEditorOptions) {
       layers,
       activeLayerId,
     ]
+  )
+
+  /**
+   * Replace `sourceHex` with `targetHexOrTransparent` across layers/frames while keeping Linked Cels intact.
+   * Commits a single atomic `HistoryEntry` (`pixelPatches` per unique `celId`) for 1-step Undo/Redo!
+   */
+  const replaceProjectColor = useCallback(
+    (params: {
+      sourceHex: string
+      targetHexOrTransparent: string | 'transparent'
+      layerScope?: 'all' | 'active-layer'
+      frameScope?: 'all-frames' | 'active-frame'
+      updatePaletteSwatch?: boolean
+    }): number => {
+      if (!project) return 0
+      const curTl = timelineRef.current
+      const res = replaceColorAcrossTimeline({
+        sourceHex: params.sourceHex,
+        targetHexOrTransparent: params.targetHexOrTransparent,
+        layerMetas: layers,
+        frames: curTl.frames,
+        cels: curTl.cels,
+        celBuffers: curTl.celBuffers,
+        activeFrameId: curTl.activeFrameId,
+        canvasWidth: project.width,
+        canvasHeight: project.height,
+        layerScope: params.layerScope ?? 'all',
+        targetLayerId: activeLayerId,
+        frameScope: params.frameScope ?? 'all-frames',
+      })
+
+      let nextPal = palette
+      if (
+        params.updatePaletteSwatch &&
+        params.targetHexOrTransparent !== 'transparent'
+      ) {
+        const srcUpper = params.sourceHex.toUpperCase()
+        const dstUpper = params.targetHexOrTransparent.toUpperCase()
+        if (srcUpper !== dstUpper) {
+          const nextColors = palette.colors.map((c) =>
+            c.toUpperCase() === srcUpper ? dstUpper : c
+          )
+          nextPal = { ...palette, colors: nextColors }
+        }
+      }
+
+      const paletteChanged = nextPal !== palette
+      if (res.pixelPatches.length === 0 && !paletteChanged) {
+        return 0
+      }
+
+      historyRef.current.push({
+        id: generateId('hist'),
+        label: 'Replace Color',
+        timestamp: Date.now(),
+        kind: res.pixelPatches.length > 0 ? 'pixel-diff' : 'palette',
+        frameId: curTl.activeFrameId,
+        pixelPatches: res.pixelPatches.length > 0 ? res.pixelPatches : undefined,
+        ...(paletteChanged
+          ? {
+              beforePalette: { ...palette, colors: [...palette.colors] },
+              afterPalette: { ...nextPal, colors: [...nextPal.colors] },
+            }
+          : {}),
+      })
+      syncHistoryCounts()
+
+      const nextTl: TimelineState = {
+        ...curTl,
+        celBuffers: res.nextCelBuffers,
+      }
+      timelineRef.current = nextTl
+      setTimeline(nextTl)
+      setLayers(res.nextActiveLayers)
+      if (paletteChanged) {
+        setPalette(nextPal)
+      }
+      playUiTick('draw', soundEnabled)
+      persistCommittedState(
+        project,
+        res.nextActiveLayers,
+        nextPal,
+        selectedColorIndex,
+        activeLayerId,
+        nextTl
+      )
+      return res.replacedPixelCount
+    },
+    [
+      project,
+      layers,
+      activeLayerId,
+      palette,
+      syncHistoryCounts,
+      soundEnabled,
+      persistCommittedState,
+      selectedColorIndex,
+    ]
+  )
+
+  /**
+   * Import external RGBA pixel buffer into the current project as a new non-destructive layer
+   * (supports buffers smaller, equal, or larger than canvas dimensions without silent cropping!).
+   */
+  const importBufferAsNewLayer = useCallback(
+    (params: {
+      name: string
+      width: number
+      height: number
+      data: Uint8Array | Uint8ClampedArray
+    }): boolean => {
+      if (!project || layers.length >= MAX_LAYERS) return false
+      const imgW = Math.max(1, Math.round(params.width))
+      const imgH = Math.max(1, Math.round(params.height))
+      const expected = imgW * imgH * 4
+      const clean = new Uint8ClampedArray(expected)
+      clean.set(params.data.subarray(0, Math.min(expected, params.data.length)))
+
+      return executeStructuralChange(
+        'Import Image Layer',
+        (curr, currActive, w, h, curTl) => {
+          if (curr.length >= MAX_LAYERS) return null
+          const newLayerId = generateId('layer')
+          const ox = Math.floor((w - imgW) / 2)
+          const oy = Math.floor((h - imgH) / 2)
+          const newLayer: LayerRuntime = {
+            id: newLayerId,
+            name: params.name.trim().slice(0, 40) || `Import ${curr.length + 1}`,
+            visible: true,
+            locked: false,
+            opacity: 100,
+            blendMode: 'normal',
+            clipping: false,
+            offsetX: ox,
+            offsetY: oy,
+            dataWidth: imgW,
+            dataHeight: imgH,
+            data: clean,
+          }
+          const idx = curr.findIndex((l) => l.id === currActive)
+          const insertAt = idx >= 0 ? idx + 1 : curr.length
+          const nextLayers = [
+            ...curr.slice(0, insertAt),
+            newLayer,
+            ...curr.slice(insertAt),
+          ]
+
+          const nextCels: CelMap = { ...curTl.cels }
+          const nextCelBuffers: Record<string, CelBufferRuntime> = {
+            ...curTl.celBuffers,
+          }
+          const cid = generateId('cel')
+          nextCelBuffers[cid] = {
+            id: cid,
+            offsetX: ox,
+            offsetY: oy,
+            dataWidth: imgW,
+            dataHeight: imgH,
+            data: new Uint8ClampedArray(clean),
+          }
+          for (const f of curTl.frames) {
+            nextCels[makeCellKey(newLayerId, f.id)] =
+              f.id === curTl.activeFrameId
+                ? { kind: 'cel', celId: cid }
+                : { kind: 'empty' }
+          }
+
+          return {
+            width: w,
+            height: h,
+            layers: nextLayers,
+            activeLayerId: newLayerId,
+            timeline: {
+              ...curTl,
+              cels: nextCels,
+              celBuffers: nextCelBuffers,
+            },
+          }
+        }
+      )
+    },
+    [project, layers.length, executeStructuralChange]
   )
 
   const renameProject = useCallback(
@@ -3052,6 +3516,10 @@ export function useEditorController(options: UseEditorOptions) {
     }
     if (floatingShape) {
       setFloatingShape(null)
+      return
+    }
+    if (stampSession) {
+      setStampSession(null)
       return
     }
     if (stepPhase.kind !== 'idle') {
@@ -3133,6 +3601,7 @@ export function useEditorController(options: UseEditorOptions) {
     project,
     moveSession,
     floatingShape,
+    stampSession,
     stepPhase.kind,
     layers,
     activeLayerId,
@@ -3247,6 +3716,9 @@ export function useEditorController(options: UseEditorOptions) {
       if (floatingShape) {
         setFloatingShape(null)
       }
+      if (stampSession) {
+        setStampSession(null)
+      }
       if (stepPhase.kind !== 'idle') {
         setStepPhase({ kind: 'idle' })
       }
@@ -3279,6 +3751,7 @@ export function useEditorController(options: UseEditorOptions) {
       project,
       moveSession,
       floatingShape,
+      stampSession,
       stepPhase.kind,
       layers,
       persistCommittedState,
@@ -4140,6 +4613,19 @@ export function useEditorController(options: UseEditorOptions) {
     updateActiveMoveOffset,
     commitActiveMove,
     cancelActiveMove,
+    stampSession,
+    startStampPlacement,
+    moveStampSession,
+    flipStampSession,
+    commitStampSession,
+    cancelStampSession,
+    extractActiveSelectionAsStamp,
+    symmetryMode,
+    setSymmetryMode,
+    tilePreviewGrid,
+    setTilePreviewGrid,
+    seamlessWrapMode,
+    setSeamlessWrapMode,
     selectionMask: displaySelectionMask,
     worldSelection: displayWorldSelection,
     hasSelection: effectiveWorldSelection !== null || effectiveSelectionMask !== null,
@@ -4150,6 +4636,7 @@ export function useEditorController(options: UseEditorOptions) {
       undoCount > 0 ||
       floatingShape !== null ||
       moveSession !== null ||
+      stampSession !== null ||
       stepPhase.kind !== 'idle',
     canRedo: redoCount > 0,
     undoCount,
@@ -4184,6 +4671,8 @@ export function useEditorController(options: UseEditorOptions) {
     translateLayer,
     resizeCanvas,
     updateProjectPalette,
+    replaceProjectColor,
+    importBufferAsNewLayer,
     renameProject,
     // Timeline, Cels, Playback, Onion Skin & Load Estimate
     timeline,
