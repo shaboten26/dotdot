@@ -1,15 +1,16 @@
-import type {
-  BrushShape,
-  DitherPatternId,
-  Point,
-  RGBA,
-  SeamlessWrapMode,
-  SymmetryMode,
+import {
+  TRANSPARENT_INDEX,
+  type BrushShape,
+  type DitherPatternId,
+  type Point,
+  type RGBA,
+  type SeamlessWrapMode,
+  type SymmetryMode,
 } from '../types'
 import { shouldDrawWithDither } from './dithering'
 import { expandSymmetricPoints, resolveCanvasPoint } from './symmetry'
 
-const stampCache = new Map<string, Point[]>()
+const brushOffsetCache = new Map<string, Point[]>()
 
 /**
  * Generate relative pixel offsets for a brush of given size (1..64) and shape ('square' | 'circle').
@@ -18,13 +19,13 @@ const stampCache = new Map<string, Point[]>()
 export function getBrushOffsets(size: number, shape: BrushShape): readonly Point[] {
   const clampedSize = Math.max(1, Math.min(64, Math.round(size)))
   const key = `${clampedSize}:${shape}`
-  const cached = stampCache.get(key)
+  const cached = brushOffsetCache.get(key)
   if (cached) return cached
 
   const offsets: Point[] = []
   if (clampedSize === 1) {
     offsets.push({ x: 0, y: 0 })
-    stampCache.set(key, offsets)
+    brushOffsetCache.set(key, offsets)
     return offsets
   }
 
@@ -38,9 +39,7 @@ export function getBrushOffsets(size: number, shape: BrushShape): readonly Point
       }
     }
   } else {
-    // Circle: measure distance from exact geometric center of [start .. end]
     const center = (start + end) / 2
-    // Slightly forgiving radius (+0.15) produces classic crisp pixel-art circles at small sizes (2,3,4,5...)
     const radius = clampedSize / 2
     const rSq = (radius - 0.05) * (radius - 0.05) + (clampedSize <= 3 ? 0.25 : 0.12)
     for (let dy = start; dy <= end; dy++) {
@@ -53,14 +52,28 @@ export function getBrushOffsets(size: number, shape: BrushShape): readonly Point
     }
   }
 
-  stampCache.set(key, offsets)
+  brushOffsetCache.set(key, offsets)
   return offsets
 }
 
-export interface PatternTileSource {
-  width: number
-  height: number
-  data: Uint8Array | Uint8ClampedArray
+export function resolveDrawColorIndex(
+  colorIndex?: number,
+  color?: number | RGBA,
+  erase = false
+): number {
+  if (erase) return TRANSPARENT_INDEX
+  if (typeof colorIndex === 'number') {
+    return colorIndex < 0 || colorIndex >= TRANSPARENT_INDEX
+      ? TRANSPARENT_INDEX
+      : colorIndex & 0xff
+  }
+  if (typeof color === 'number') {
+    return color < 0 || color >= TRANSPARENT_INDEX ? TRANSPARENT_INDEX : color & 0xff
+  }
+  if (color && typeof color === 'object') {
+    return color.a === 0 ? TRANSPARENT_INDEX : color.r & 0xff
+  }
+  return 0
 }
 
 export interface StampOptions {
@@ -68,33 +81,34 @@ export interface StampOptions {
   height: number
   size: number
   shape: BrushShape
-  color: RGBA
+  /** Fixed palette index (`0..254`) or `TRANSPARENT_INDEX` (`255`) */
+  colorIndex?: number
+  /** Optional fallback for callers passing index/RGBA */
+  color?: number | RGBA
   dither?: DitherPatternId
   erase?: boolean
   selectionMask?: Uint8Array | null
   symmetry?: SymmetryMode
   seamlessWrap?: SeamlessWrapMode
-  patternTile?: PatternTileSource | null
 }
 
-function stampSingleCenter(
-  buffer: Uint8ClampedArray,
+function paintSingleCenter(
+  buffer: Uint8Array,
   cx: number,
   cy: number,
   offsets: readonly Point[],
   options: StampOptions,
+  targetIdx: number,
   mirrorX = false,
   mirrorY = false
 ): void {
   const {
     width,
     height,
-    color,
     dither = 1,
     erase = false,
     selectionMask = null,
     seamlessWrap = 'none',
-    patternTile = null,
   } = options
 
   for (let i = 0; i < offsets.length; i++) {
@@ -109,61 +123,35 @@ function stampSingleCenter(
     if (selectionMask && selectionMask[pIndex] === 0) continue
 
     if (erase) {
-      const idx = pIndex * 4
-      buffer[idx] = 0
-      buffer[idx + 1] = 0
-      buffer[idx + 2] = 0
-      buffer[idx + 3] = 0
+      buffer[pIndex] = TRANSPARENT_INDEX
       continue
     }
 
     if (!shouldDrawWithDither(dither, px, py)) continue
-
-    if (patternTile && patternTile.width > 0 && patternTile.height > 0) {
-      const tx = ((px % patternTile.width) + patternTile.width) % patternTile.width
-      const ty = ((py % patternTile.height) + patternTile.height) % patternTile.height
-      const sIdx = (ty * patternTile.width + tx) * 4
-      const sa = patternTile.data[sIdx + 3]!
-      // Transparent pixels inside a pattern brush motif keep existing canvas pixels untouched
-      if (sa === 0) continue
-      const idx = pIndex * 4
-      buffer[idx] = patternTile.data[sIdx]!
-      buffer[idx + 1] = patternTile.data[sIdx + 1]!
-      buffer[idx + 2] = patternTile.data[sIdx + 2]!
-      buffer[idx + 3] = sa
-      continue
-    }
-
-    const idx = pIndex * 4
-    if (color.a === 0) {
-      buffer[idx] = 0
-      buffer[idx + 1] = 0
-      buffer[idx + 2] = 0
-      buffer[idx + 3] = 0
-    } else {
-      buffer[idx] = color.r
-      buffer[idx + 1] = color.g
-      buffer[idx + 2] = color.b
-      buffer[idx + 3] = color.a
-    }
+    buffer[pIndex] = targetIdx
   }
 }
 
 /**
- * Stamp brush at center (cx, cy) onto target RGBA buffer, honoring optional Symmetry,
- * Seamless torus wrap, and Pattern Brush tiling.
+ * Paint brush at center `(cx, cy)` onto target 1-byte Indexed Color buffer,
+ * honoring optional Symmetry and Seamless torus wrap.
  */
 export function stampBrushAt(
-  buffer: Uint8ClampedArray,
+  buffer: Uint8Array,
   cx: number,
   cy: number,
   options: StampOptions
 ): void {
   const { width, height, size, shape, symmetry = 'none' } = options
   const offsets = getBrushOffsets(size, shape)
+  const targetIdx = resolveDrawColorIndex(
+    options.colorIndex,
+    options.color,
+    options.erase
+  )
 
   if (symmetry === 'none') {
-    stampSingleCenter(buffer, cx, cy, offsets, options, false, false)
+    paintSingleCenter(buffer, cx, cy, offsets, options, targetIdx, false, false)
     return
   }
 
@@ -172,15 +160,15 @@ export function stampBrushAt(
     const pt = centers[c]!
     const mx = pt.x !== Math.round(cx)
     const my = pt.y !== Math.round(cy)
-    stampSingleCenter(buffer, pt.x, pt.y, offsets, options, mx, my)
+    paintSingleCenter(buffer, pt.x, pt.y, offsets, options, targetIdx, mx, my)
   }
 }
 
 /**
- * Paint a list of center points onto buffer using brush stamp options.
+ * Paint a list of center points onto a 1-byte Indexed Color buffer.
  */
 export function stampPoints(
-  buffer: Uint8ClampedArray,
+  buffer: Uint8Array,
   points: readonly Point[],
   options: StampOptions
 ): void {

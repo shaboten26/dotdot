@@ -1,5 +1,6 @@
 import {
   TRANSPARENT_COLOR_INDEX,
+  TRANSPARENT_INDEX,
   type CelBufferRuntime,
   type CelMap,
   type FrameMeta,
@@ -12,6 +13,13 @@ import { hexToRgba, normalizeHex, rgbaToHex } from './color'
 import { compositeLayers } from './compositor'
 import { makeCellKey, projectFrameLayers } from './animation'
 import { createLayerPixelPatch } from './history'
+import {
+  addColorToIndexedPalette,
+  displaySlotToPixelIndex,
+  findExactFixedIndex,
+  normalizeProjectPalette,
+  removeFixedIndexFromPalette,
+} from './indexedPalette'
 
 export type PaletteSortMode =
   | 'lightness-asc'
@@ -20,11 +28,11 @@ export type PaletteSortMode =
   | 'saturation-desc'
 
 export interface LabColor {
-  L: number // 0..100 perceptual lightness
+  L: number
   a: number
   b: number
-  chroma: number // sqrt(a^2 + b^2)
-  hueDeg: number // 0..360
+  chroma: number
+  hueDeg: number
 }
 
 function srgbChannelToLinear(c255: number): number {
@@ -39,18 +47,14 @@ function labF(t: number): number {
     : t / (3 * delta * delta) + 4 / 29
 }
 
-/**
- * Convert `#RRGGBB` sRGB hex into perceptual CIELAB (`L*a*b*`, D65 white point).
- */
 export function hexToCielab(hex: string): LabColor {
   const { r, g, b } = hexToRgba(hex)
   const lr = srgbChannelToLinear(r)
   const lg = srgbChannelToLinear(g)
   const lb = srgbChannelToLinear(b)
 
-  // sRGB -> XYZ (D65)
   const x = (0.4124564 * lr + 0.3575761 * lg + 0.1804375 * lb) / 0.95047
-  const y = (0.2126729 * lr + 0.7151522 * lg + 0.072175 * lb) / 1.0
+  const y = (0.2126729 * lr + 0.7151522 * lg + 0.072175 * lb)
   const z = (0.0193339 * lr + 0.119192 * lg + 0.9503041 * lb) / 1.08883
 
   const fx = labF(x)
@@ -73,73 +77,88 @@ export interface SortedPaletteResult {
 }
 
 /**
- * Sort `palette.colors` perceptually without altering any canvas pixels.
- * - Leftmost Transparent Slot (`TRANSPARENT_COLOR_INDEX = -1`) stays untouched at `-1`.
- * - Active selected color index tracks its original swatch to its new position.
- * - Snapshots `originalColors` before the first sort so "元の順番へ戻す" restores the pre-sort order.
+ * Sort ONLY `palette.displayOrder` (& `palette.colors`) perceptually in CIELAB space
+ * WITHOUT changing `palette.colorTable` fixed indices (`0..254`) or any pixel buffers (Section 7-2 & 10)!
  */
 export function sortProjectPalette(
   palette: ProjectPalette,
   selectedColorIndex: number,
   mode: PaletteSortMode
 ): SortedPaletteResult {
-  if (palette.colors.length <= 1) {
-    return { palette, nextSelectedIndex: selectedColorIndex }
+  const norm = normalizeProjectPalette(palette)
+  if (norm.displayOrder!.length <= 1) {
+    return { palette: norm, nextSelectedIndex: selectedColorIndex }
   }
 
+  const originalDisplayOrder =
+    norm.originalDisplayOrder && norm.originalDisplayOrder.length > 0
+      ? [...norm.originalDisplayOrder]
+      : [...norm.displayOrder!]
+
   const originalColors =
-    palette.originalColors && palette.originalColors.length > 0
-      ? [...palette.originalColors]
-      : [...palette.colors]
+    norm.originalColors && norm.originalColors.length > 0
+      ? [...norm.originalColors]
+      : [...norm.colors]
 
-  const indexed = palette.colors.map((hex, origIdx) => ({
-    hex,
-    origIdx,
-    lab: hexToCielab(hex),
-  }))
+  const selectedFixed =
+    selectedColorIndex !== TRANSPARENT_COLOR_INDEX &&
+    selectedColorIndex >= 0 &&
+    selectedColorIndex < norm.displayOrder!.length
+      ? norm.displayOrder![selectedColorIndex]
+      : null
 
-  indexed.sort((p, q) => {
+  const items = norm.displayOrder!.map((fixedIdx, displayPos) => {
+    const hex = norm.colorTable![fixedIdx]!
+    return {
+      fixedIdx,
+      hex,
+      displayPos,
+      lab: hexToCielab(hex),
+    }
+  })
+
+  items.sort((p, q) => {
     if (mode === 'lightness-asc') {
       if (Math.abs(p.lab.L - q.lab.L) > 1e-4) return p.lab.L - q.lab.L
-      return p.origIdx - q.origIdx
+      return p.displayPos - q.displayPos
     }
     if (mode === 'lightness-desc') {
       if (Math.abs(q.lab.L - p.lab.L) > 1e-4) return q.lab.L - p.lab.L
-      return p.origIdx - q.origIdx
+      return p.displayPos - q.displayPos
     }
     if (mode === 'hue') {
-      // Group near-achromatic grays (`chroma < 4.5`) first sorted by lightness, then chromatic hues 0..360°
       const pGray = p.lab.chroma < 4.5
       const qGray = q.lab.chroma < 4.5
       if (pGray !== qGray) return pGray ? -1 : 1
       if (pGray && qGray) {
-        return p.lab.L - q.lab.L || p.origIdx - q.origIdx
+        return p.lab.L - q.lab.L || p.displayPos - q.displayPos
       }
       if (Math.abs(p.lab.hueDeg - q.lab.hueDeg) > 1e-3) {
         return p.lab.hueDeg - q.lab.hueDeg
       }
-      return q.lab.L - p.lab.L || p.origIdx - q.origIdx
+      return q.lab.L - p.lab.L || p.displayPos - q.displayPos
     }
-    // 'saturation-desc' (perceptual CIELAB chroma descending, tie-broken by lightness)
     if (Math.abs(q.lab.chroma - p.lab.chroma) > 1e-4) {
       return q.lab.chroma - p.lab.chroma
     }
-    return q.lab.L - p.lab.L || p.origIdx - q.origIdx
+    return q.lab.L - p.lab.L || p.displayPos - q.displayPos
   })
 
-  const nextColors = indexed.map((item) => item.hex)
+  const nextDisplayOrder = items.map((it) => it.fixedIdx)
+  const nextColors = nextDisplayOrder.map((idx) => norm.colorTable![idx]!)
+
   let nextSelectedIndex = selectedColorIndex
-  if (selectedColorIndex !== TRANSPARENT_COLOR_INDEX && selectedColorIndex >= 0) {
-    const movedPos = indexed.findIndex((item) => item.origIdx === selectedColorIndex)
-    if (movedPos >= 0) {
-      nextSelectedIndex = movedPos
-    }
+  if (selectedFixed !== null && selectedFixed !== undefined) {
+    const movedPos = nextDisplayOrder.indexOf(selectedFixed)
+    if (movedPos >= 0) nextSelectedIndex = movedPos
   }
 
   return {
     palette: {
-      ...palette,
+      ...norm,
+      displayOrder: nextDisplayOrder,
       colors: nextColors,
+      originalDisplayOrder,
       originalColors,
     },
     nextSelectedIndex,
@@ -147,71 +166,92 @@ export function sortProjectPalette(
 }
 
 /**
- * Restore `palette.colors` back to `palette.originalColors` (preserving any newly added colors at the end
- * and omitting any colors deleted since the snapshot).
+ * Restore `palette.displayOrder` (& `palette.colors`) back to `originalDisplayOrder`
+ * WITHOUT changing `colorTable` or any pixel indices!
  */
 export function restorePaletteOriginalOrder(
   palette: ProjectPalette,
   selectedColorIndex: number
 ): SortedPaletteResult | null {
-  if (!palette.originalColors || palette.originalColors.length === 0) {
+  const norm = normalizeProjectPalette(palette)
+  if (
+    (!norm.originalDisplayOrder || norm.originalDisplayOrder.length === 0) &&
+    (!norm.originalColors || norm.originalColors.length === 0)
+  ) {
     return null
   }
 
-  const selectedHex =
-    selectedColorIndex >= 0 ? palette.colors[selectedColorIndex]?.toUpperCase() : null
+  const selectedFixed =
+    selectedColorIndex !== TRANSPARENT_COLOR_INDEX &&
+    selectedColorIndex >= 0 &&
+    selectedColorIndex < norm.displayOrder!.length
+      ? norm.displayOrder![selectedColorIndex]
+      : null
 
-  // Count occurrences in current palette (handles potential duplicate hexes gracefully)
-  const remainingCounts = new Map<string, string[]>()
-  for (const hex of palette.colors) {
-    const key = hex.toUpperCase()
-    const bucket = remainingCounts.get(key) ?? []
-    bucket.push(hex)
-    remainingCounts.set(key, bucket)
-  }
+  const activeSet = new Set(norm.displayOrder!)
+  const restoredOrder: number[] = []
+  const placed = new Set<number>()
 
-  const restored: string[] = []
-  for (const origHex of palette.originalColors) {
-    const key = origHex.toUpperCase()
-    const bucket = remainingCounts.get(key)
-    if (bucket && bucket.length > 0) {
-      restored.push(bucket.shift()!)
+  if (norm.originalDisplayOrder && norm.originalDisplayOrder.length > 0) {
+    for (const fixedIdx of norm.originalDisplayOrder) {
+      if (activeSet.has(fixedIdx) && !placed.has(fixedIdx)) {
+        placed.add(fixedIdx)
+        restoredOrder.push(fixedIdx)
+      }
+    }
+  } else if (norm.originalColors) {
+    for (const origHex of norm.originalColors) {
+      const clean = normalizeHex(origHex)
+      if (!clean) continue
+      const match = norm.displayOrder!.find(
+        (idx) => !placed.has(idx) && norm.colorTable![idx] === clean
+      )
+      if (match !== undefined) {
+        placed.add(match)
+        restoredOrder.push(match)
+      }
     }
   }
-  // Append any colors added after `originalColors` was snapshotted
-  for (const hex of palette.colors) {
-    const key = hex.toUpperCase()
-    const bucket = remainingCounts.get(key)
-    if (bucket && bucket.length > 0) {
-      restored.push(bucket.shift()!)
+
+  for (const fixedIdx of norm.displayOrder!) {
+    if (!placed.has(fixedIdx)) {
+      placed.add(fixedIdx)
+      restoredOrder.push(fixedIdx)
     }
   }
 
+  const nextColors = restoredOrder.map((idx) => norm.colorTable![idx]!)
   let nextSelectedIndex = selectedColorIndex
-  if (selectedColorIndex !== TRANSPARENT_COLOR_INDEX && selectedHex) {
-    const idx = restored.findIndex((c) => c.toUpperCase() === selectedHex)
-    if (idx >= 0) nextSelectedIndex = idx
+  if (selectedFixed !== null && selectedFixed !== undefined) {
+    const pos = restoredOrder.indexOf(selectedFixed)
+    if (pos >= 0) nextSelectedIndex = pos
   }
 
-  const { originalColors: _cleared, ...restPalette } = palette
+  const {
+    originalDisplayOrder: _dropOrder,
+    originalColors: _dropColors,
+    ...restPalette
+  } = norm
+
   return {
     palette: {
       ...restPalette,
-      colors: restored,
+      displayOrder: restoredOrder,
+      colors: nextColors,
     },
     nextSelectedIndex,
   }
 }
 
 export interface ColorUsageEntry {
-  hex: string // '#RRGGBB' uppercase
+  hex: string
   pixelCount: number
-  /** Share of opaque pixels (`0..100`) */
   opaqueRatioPercent: number
-  /** Share of total canvas pixels (`0..100`) */
   canvasRatioPercent: number
-  /** Matching index in `palette.colors`, or `-1` if painted via layer blend / imported PNG outside current palette */
+  /** Current UI display slot (`0..colors.length-1`), or `-1` if blended composite color */
   paletteIndex: number
+  /** Fixed palette index (`0..254`), or `-1` if blended composite color */
+  fixedIndex?: number
 }
 
 export interface ArtworkColorAnalysis {
@@ -220,36 +260,46 @@ export interface ArtworkColorAnalysis {
   transparentPixels: number
   usedColorCount: number
   entries: ColorUsageEntry[]
-  unusedPaletteColors: Array<{ index: number; hex: string }>
+  unusedPaletteColors: Array<{ index: number; fixedIndex: number; hex: string }>
 }
 
-/**
- * Read-only color usage analysis on either the visible composite or a specific layer.
- * Never modifies pixel buffers or palettes.
- */
 export function analyzeArtworkColors(params: {
   width: number
   height: number
   layers: readonly LayerRuntime[]
-  paletteColors: readonly string[]
+  palette?: ProjectPalette
+  paletteColors?: readonly string[]
   targetLayerId?: string | 'composite'
 }): ArtworkColorAnalysis {
   const {
     width,
     height,
     layers,
+    palette: rawPalette,
     paletteColors,
     targetLayerId = 'composite',
   } = params
+
+  const normPalette = normalizeProjectPalette(
+    rawPalette ?? {
+      name: 'Palette',
+      colors: paletteColors ? [...paletteColors] : ['#000000', '#FFFFFF'],
+    }
+  )
 
   let sampleBuffer: Uint8ClampedArray
   if (targetLayerId !== 'composite') {
     const found = layers.find((l) => l.id === targetLayerId)
     sampleBuffer = found
-      ? compositeLayers([{ ...found, visible: true, opacity: 100, blendMode: 'normal', clipping: false }], width, height)
+      ? compositeLayers(
+          [{ ...found, visible: true, opacity: 100, blendMode: 'normal', clipping: false }],
+          width,
+          height,
+          { palette: normPalette }
+        )
       : new Uint8ClampedArray(width * height * 4)
   } else {
-    sampleBuffer = compositeLayers(layers, width, height)
+    sampleBuffer = compositeLayers(layers, width, height, { palette: normPalette })
   }
 
   const totalCanvasPixels = width * height
@@ -272,34 +322,51 @@ export function analyzeArtworkColors(params: {
     counts.set(hex, (counts.get(hex) ?? 0) + 1)
   }
 
-  const paletteLookup = new Map<string, number>()
-  paletteColors.forEach((c, idx) => {
-    const key = c.toUpperCase()
-    if (!paletteLookup.has(key)) {
-      paletteLookup.set(key, idx)
+  const displayLookup = new Map<string, { displayIdx: number; fixedIdx: number }>()
+  normPalette.displayOrder!.forEach((fixedIdx, displayIdx) => {
+    const hex = normPalette.colorTable![fixedIdx]!.toUpperCase()
+    if (!displayLookup.has(hex)) {
+      displayLookup.set(hex, { displayIdx, fixedIdx })
     }
   })
 
   const entries: ColorUsageEntry[] = Array.from(counts.entries())
-    .map(([hex, pixelCount]) => ({
-      hex,
-      pixelCount,
-      opaqueRatioPercent:
-        opaquePixels > 0 ? Math.round((pixelCount / opaquePixels) * 1000) / 10 : 0,
-      canvasRatioPercent:
-        totalCanvasPixels > 0
-          ? Math.round((pixelCount / totalCanvasPixels) * 1000) / 10
-          : 0,
-      paletteIndex: paletteLookup.get(hex) ?? -1,
-    }))
+    .map(([hex, pixelCount]) => {
+      const info = displayLookup.get(hex)
+      return {
+        hex,
+        pixelCount,
+        opaqueRatioPercent:
+          opaquePixels > 0 ? Math.round((pixelCount / opaquePixels) * 1000) / 10 : 0,
+        canvasRatioPercent:
+          totalCanvasPixels > 0
+            ? Math.round((pixelCount / totalCanvasPixels) * 1000) / 10
+            : 0,
+        paletteIndex: info ? info.displayIdx : -1,
+        fixedIndex: info ? info.fixedIdx : -1,
+      }
+    })
     .sort((a, b) => b.pixelCount - a.pixelCount || a.hex.localeCompare(b.hex))
 
+  // Also check raw layer indices so colors referenced on layers under blend/opacity aren't falsely marked unused
+  const usedFixedIndices = new Set<number>()
+  const inspectLayers =
+    targetLayerId !== 'composite'
+      ? layers.filter((l) => l.id === targetLayerId)
+      : layers.filter((l) => l.visible)
+  for (const l of inspectLayers) {
+    for (let i = 0; i < l.data.length; i++) {
+      const v = l.data[i]!
+      if (v !== TRANSPARENT_INDEX) usedFixedIndices.add(v)
+    }
+  }
+
   const usedHexSet = new Set(counts.keys())
-  const unusedPaletteColors: Array<{ index: number; hex: string }> = []
-  paletteColors.forEach((c, index) => {
-    const norm = c.toUpperCase()
-    if (!usedHexSet.has(norm)) {
-      unusedPaletteColors.push({ index, hex: norm })
+  const unusedPaletteColors: Array<{ index: number; fixedIndex: number; hex: string }> = []
+  normPalette.displayOrder!.forEach((fixedIndex, index) => {
+    const hex = normPalette.colorTable![fixedIndex]!.toUpperCase()
+    if (!usedHexSet.has(hex) && !usedFixedIndices.has(fixedIndex)) {
+      unusedPaletteColors.push({ index, fixedIndex, hex })
     }
   })
 
@@ -313,10 +380,68 @@ export function analyzeArtworkColors(params: {
   }
 }
 
+/**
+ * Count how many pixels across ALL referenced cel buffers (or fallback layers) in the project
+ * currently reference `fixedIndex` (`0..254`). Used before deleting a palette color (Section 7-8).
+ */
+export function countFixedIndexUsageAcrossProject(params: {
+  fixedIndex: number
+  cels?: CelMap
+  celBuffers?: Readonly<Record<string, CelBufferRuntime>>
+  layers?: readonly LayerRuntime[]
+}): { pixelCount: number; celCount: number } {
+  const { fixedIndex, cels, celBuffers, layers } = params
+  if (fixedIndex < 0 || fixedIndex >= TRANSPARENT_INDEX) {
+    return { pixelCount: 0, celCount: 0 }
+  }
+
+  let pixelCount = 0
+  let celCount = 0
+
+  if (celBuffers && cels && Object.keys(celBuffers).length > 0) {
+    const referencedIds = new Set<string>()
+    for (const ref of Object.values(cels)) {
+      if (ref?.kind === 'cel' && celBuffers[ref.celId]) {
+        referencedIds.add(ref.celId)
+      }
+    }
+    for (const celId of referencedIds) {
+      const data = celBuffers[celId]!.data
+      let hits = 0
+      for (let i = 0; i < data.length; i++) {
+        if (data[i] === fixedIndex) hits++
+      }
+      if (hits > 0) {
+        celCount++
+        pixelCount += hits
+      }
+    }
+    return { pixelCount, celCount }
+  }
+
+  if (layers) {
+    for (const l of layers) {
+      let hits = 0
+      for (let i = 0; i < l.data.length; i++) {
+        if (l.data[i] === fixedIndex) hits++
+      }
+      if (hits > 0) {
+        celCount++
+        pixelCount += hits
+      }
+    }
+  }
+  return { pixelCount, celCount }
+}
+
 export interface ReplaceColorParams {
-  sourceHex: string
-  /** Target `#RRGGBB` or `'transparent'` to erase matching pixels to alpha 0 */
+  /** Source `#RRGGBB` or explicit `sourceFixedIndex` (`0..254`) */
+  sourceHex?: string
+  sourceFixedIndex?: number
+  /** Target `#RRGGBB`, `'transparent'`, or explicit `targetFixedIndex` */
   targetHexOrTransparent: string | 'transparent'
+  targetFixedIndex?: number
+  palette: ProjectPalette
   layerMetas: readonly LayerMeta[]
   frames: readonly FrameMeta[]
   cels: CelMap
@@ -324,7 +449,6 @@ export interface ReplaceColorParams {
   activeFrameId: string
   canvasWidth: number
   canvasHeight: number
-  /** `'all'` replaces across all layers & frames; `'active-layer'` restricts to `targetLayerId` */
   layerScope?: 'all' | 'active-layer'
   targetLayerId?: string
   frameScope?: 'all-frames' | 'active-frame'
@@ -333,22 +457,25 @@ export interface ReplaceColorParams {
 export interface ReplaceColorResult {
   replacedPixelCount: number
   affectedCelCount: number
+  nextPalette: ProjectPalette
   nextCelBuffers: Record<string, CelBufferRuntime>
   nextActiveLayers: LayerRuntime[]
   pixelPatches: PixelPatch[]
 }
 
 /**
- * Replace `sourceHex` with `targetHexOrTransparent` while strictly preserving Linked Cels (`celId` sharing):
- * - Deduplicates target `celId`s so shared linked cels are modified once in-place without unlinking!
- * - Produces sparse `PixelPatch[]` with `celId` so a single Undo/Redo restores every frame & linked cel atomically.
+ * Replace a palette color (by `sourceFixedIndex` or `sourceHex`) with another palette color or `TRANSPARENT_INDEX (255)`
+ * across unique `celId` buffers while preserving Linked Cel sharing and 1-step Undo/Redo!
  */
 export function replaceColorAcrossTimeline(
   params: ReplaceColorParams
 ): ReplaceColorResult {
   const {
     sourceHex,
+    sourceFixedIndex,
     targetHexOrTransparent,
+    targetFixedIndex,
+    palette: rawPalette,
     layerMetas,
     frames,
     cels,
@@ -361,11 +488,28 @@ export function replaceColorAcrossTimeline(
     frameScope = 'all-frames',
   } = params
 
-  const normSrc = normalizeHex(sourceHex)
-  if (!normSrc) {
+  let workingPalette = normalizeProjectPalette(rawPalette)
+
+  // Collect all fixed indices matching `sourceFixedIndex` or `sourceHex`
+  const srcIndices = new Set<number>()
+  if (typeof sourceFixedIndex === 'number' && sourceFixedIndex >= 0 && sourceFixedIndex < TRANSPARENT_INDEX) {
+    srcIndices.add(sourceFixedIndex)
+  } else if (sourceHex) {
+    const normSrc = normalizeHex(sourceHex)
+    if (normSrc) {
+      for (const fIdx of workingPalette.displayOrder!) {
+        if (workingPalette.colorTable![fIdx] === normSrc) {
+          srcIndices.add(fIdx)
+        }
+      }
+    }
+  }
+
+  if (srcIndices.size === 0) {
     return {
       replacedPixelCount: 0,
       affectedCelCount: 0,
+      nextPalette: workingPalette,
       nextCelBuffers: { ...celBuffers },
       nextActiveLayers: projectFrameLayers(
         layerMetas,
@@ -379,21 +523,66 @@ export function replaceColorAcrossTimeline(
     }
   }
 
-  const srcRgba = hexToRgba(normSrc)
-  const dstRgba =
-    targetHexOrTransparent === 'transparent'
-      ? { r: 0, g: 0, b: 0, a: 0 }
-      : hexToRgba(normalizeHex(targetHexOrTransparent) ?? normSrc, 255)
-
-  if (
-    dstRgba.a > 0 &&
-    srcRgba.r === dstRgba.r &&
-    srcRgba.g === dstRgba.g &&
-    srcRgba.b === dstRgba.b
+  let dstIndex: number
+  if (targetHexOrTransparent === 'transparent') {
+    dstIndex = TRANSPARENT_INDEX
+  } else if (
+    typeof targetFixedIndex === 'number' &&
+    targetFixedIndex >= 0 &&
+    targetFixedIndex < TRANSPARENT_INDEX
   ) {
+    dstIndex = targetFixedIndex
+  } else {
+    const normDst = normalizeHex(targetHexOrTransparent)
+    if (!normDst) {
+      return {
+        replacedPixelCount: 0,
+        affectedCelCount: 0,
+        nextPalette: workingPalette,
+        nextCelBuffers: { ...celBuffers },
+        nextActiveLayers: projectFrameLayers(
+          layerMetas,
+          cels,
+          celBuffers,
+          activeFrameId,
+          canvasWidth,
+          canvasHeight
+        ),
+        pixelPatches: [],
+      }
+    }
+    const existing = findExactFixedIndex(workingPalette, normDst)
+    if (existing >= 0) {
+      dstIndex = existing
+    } else {
+      const added = addColorToIndexedPalette(workingPalette, normDst)
+      if (!added) {
+        return {
+          replacedPixelCount: 0,
+          affectedCelCount: 0,
+          nextPalette: workingPalette,
+          nextCelBuffers: { ...celBuffers },
+          nextActiveLayers: projectFrameLayers(
+            layerMetas,
+            cels,
+            celBuffers,
+            activeFrameId,
+            canvasWidth,
+            canvasHeight
+          ),
+          pixelPatches: [],
+        }
+      }
+      workingPalette = added.palette
+      dstIndex = added.fixedIndex
+    }
+  }
+
+  if (srcIndices.size === 1 && srcIndices.has(dstIndex)) {
     return {
       replacedPixelCount: 0,
       affectedCelCount: 0,
+      nextPalette: workingPalette,
       nextCelBuffers: { ...celBuffers },
       nextActiveLayers: projectFrameLayers(
         layerMetas,
@@ -417,7 +606,6 @@ export function replaceColorAcrossTimeline(
       ? frames.filter((f) => f.id === activeFrameId)
       : frames
 
-  // Collect unique `(celId -> representative layerId)` pairs so linked cels are processed once!
   const targetCelMap = new Map<string, string>()
   for (const layer of targetLayers) {
     for (const frame of targetFrames) {
@@ -435,28 +623,12 @@ export function replaceColorAcrossTimeline(
 
   for (const [celId, ownerLayerId] of targetCelMap.entries()) {
     const origCel = celBuffers[celId]!
-    const nextData = new Uint8ClampedArray(origCel.data)
+    const nextData = new Uint8Array(origCel.data)
     let celChangedCount = 0
 
-    for (let i = 0; i < nextData.length; i += 4) {
-      const a = nextData[i + 3]!
-      if (a === 0) continue
-      if (
-        nextData[i] === srcRgba.r &&
-        nextData[i + 1] === srcRgba.g &&
-        nextData[i + 2] === srcRgba.b
-      ) {
-        if (dstRgba.a === 0) {
-          nextData[i] = 0
-          nextData[i + 1] = 0
-          nextData[i + 2] = 0
-          nextData[i + 3] = 0
-        } else {
-          nextData[i] = dstRgba.r
-          nextData[i + 1] = dstRgba.g
-          nextData[i + 2] = dstRgba.b
-          // Preserve existing non-zero alpha (255 in standard pixel art)
-        }
+    for (let i = 0; i < nextData.length; i++) {
+      if (srcIndices.has(nextData[i]!)) {
+        nextData[i] = dstIndex
         celChangedCount++
       }
     }
@@ -481,12 +653,9 @@ export function replaceColorAcrossTimeline(
         ...dummyBefore,
         data: nextData,
       }
-      const diff = createLayerPixelPatch(dummyBefore, dummyAfter)
+      const diff = createLayerPixelPatch(dummyBefore, dummyAfter, celId)
       if (diff) {
-        pixelPatches.push({
-          ...diff,
-          celId,
-        })
+        pixelPatches.push(diff)
       }
       nextCelBuffers[celId] = {
         ...origCel,
@@ -507,8 +676,104 @@ export function replaceColorAcrossTimeline(
   return {
     replacedPixelCount,
     affectedCelCount,
+    nextPalette: workingPalette,
     nextCelBuffers,
     nextActiveLayers,
     pixelPatches,
+  }
+}
+
+/**
+ * Delete a palette display slot safely (Section 7-8):
+ * - Replaces any referencing pixels across ALL unlocked & locked cels with `replacementDisplaySlot` or `'transparent'` (`255`)
+ * - Removes the fixed index from `palette`
+ * - Returns combined `pixelPatches` + `nextPalette` + `nextSelectedSlot` for 1-step atomic Undo/Redo!
+ */
+export function deletePaletteSlotWithReplacement(params: {
+  palette: ProjectPalette
+  deleteDisplaySlot: number
+  selectedDisplaySlot: number
+  replacementTarget: { kind: 'transparent' } | { kind: 'slot'; displaySlot: number }
+  layerMetas: readonly LayerMeta[]
+  frames: readonly FrameMeta[]
+  cels: CelMap
+  celBuffers: Readonly<Record<string, CelBufferRuntime>>
+  activeFrameId: string
+  canvasWidth: number
+  canvasHeight: number
+}): {
+  nextPalette: ProjectPalette
+  nextSelectedSlot: number
+  nextCelBuffers: Record<string, CelBufferRuntime>
+  nextActiveLayers: LayerRuntime[]
+  pixelPatches: PixelPatch[]
+  replacedPixelCount: number
+} | null {
+  const {
+    palette,
+    deleteDisplaySlot,
+    selectedDisplaySlot,
+    replacementTarget,
+    layerMetas,
+    frames,
+    cels,
+    celBuffers,
+    activeFrameId,
+    canvasWidth,
+    canvasHeight,
+  } = params
+
+  const norm = normalizeProjectPalette(palette)
+  if (
+    deleteDisplaySlot < 0 ||
+    deleteDisplaySlot >= norm.displayOrder!.length ||
+    norm.displayOrder!.length <= 1
+  ) {
+    return null
+  }
+
+  const deleteFixed = displaySlotToPixelIndex(norm, deleteDisplaySlot)
+  const dstFixed =
+    replacementTarget.kind === 'transparent'
+      ? TRANSPARENT_INDEX
+      : displaySlotToPixelIndex(norm, replacementTarget.displaySlot)
+
+  if (dstFixed === deleteFixed) return null
+
+  // Replace across ALL cels (including locked layers, since the palette slot itself is being deleted!)
+  const unlockedAllMetas = layerMetas.map((m) => ({ ...m, locked: false }))
+  const replaced = replaceColorAcrossTimeline({
+    sourceFixedIndex: deleteFixed,
+    targetHexOrTransparent:
+      replacementTarget.kind === 'transparent'
+        ? 'transparent'
+        : norm.colorTable![dstFixed] ?? '#000000',
+    targetFixedIndex: dstFixed,
+    palette: norm,
+    layerMetas: unlockedAllMetas,
+    frames,
+    cels,
+    celBuffers,
+    activeFrameId,
+    canvasWidth,
+    canvasHeight,
+    layerScope: 'all',
+    frameScope: 'all-frames',
+  })
+
+  const removed = removeFixedIndexFromPalette(
+    replaced.nextPalette,
+    deleteFixed,
+    selectedDisplaySlot
+  )
+  if (!removed) return null
+
+  return {
+    nextPalette: removed.palette,
+    nextSelectedSlot: removed.nextSelectedSlot,
+    nextCelBuffers: replaced.nextCelBuffers,
+    nextActiveLayers: replaced.nextActiveLayers,
+    pixelPatches: replaced.pixelPatches,
+    replacedPixelCount: replaced.replacedPixelCount,
   }
 }

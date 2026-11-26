@@ -7,6 +7,7 @@ import type {
   SeamlessWrapMode,
   SymmetryMode,
 } from '../types'
+import { resolveDrawColorIndex } from './brush'
 import { GRADIENT_PATTERN_STEPS, shouldDrawWithDither } from './dithering'
 import { pixelsMatchAt } from './pixelBuffer'
 import { expandSymmetricPoints, resolveCanvasPoint } from './symmetry'
@@ -30,13 +31,11 @@ const DIRS_8: ReadonlyArray<readonly [number, number]> = [
 ]
 
 /**
- * Extract connected same-color region starting at (seedX, seedY).
- * Returns Uint8Array mask of length width * height (1 = in connected region, 0 = outside).
- * If selectionMask is provided, flood fill is constrained inside selectionMask.
- * When `seamlessWrap` is active (`'horizontal' | 'vertical' | 'both'`), connectivity wraps across the opposite canvas edge!
+ * Extract connected same-index region starting at `(seedX, seedY)` on a 1-byte Indexed Color buffer.
+ * Returns `Uint8Array` mask of length `width * height` (`1` = in connected region, `0` = outside).
  */
 export function computeConnectedRegion(
-  buffer: Uint8ClampedArray,
+  buffer: Uint8Array,
   width: number,
   height: number,
   seedX: number,
@@ -54,9 +53,7 @@ export function computeConnectedRegion(
   const seedIdx = sy * width + sx
   if (selectionMask && selectionMask[seedIdx] === 0) return region
 
-  const seedByteOffset = seedIdx * 4
   const dirs = connectivity === 8 ? DIRS_8 : DIRS_4
-
   const queue = new Int32Array(width * height)
   let head = 0
   let tail = 0
@@ -83,7 +80,7 @@ export function computeConnectedRegion(
       if (region[nIdx] === 1) continue
       if (selectionMask && selectionMask[nIdx] === 0) continue
 
-      if (pixelsMatchAt(buffer, seedByteOffset, nIdx * 4)) {
+      if (pixelsMatchAt(buffer, seedIdx, nIdx)) {
         region[nIdx] = 1
         queue[tail++] = nIdx
       }
@@ -98,7 +95,8 @@ export interface NormalFillOptions {
   height: number
   seedX: number
   seedY: number
-  color: RGBA
+  colorIndex?: number
+  color?: number | RGBA
   connectivity: Connectivity
   dither: DitherPatternId
   selectionMask?: Uint8Array | null
@@ -107,12 +105,10 @@ export interface NormalFillOptions {
 }
 
 /**
- * Perform standard or dithered flood fill in-place on `buffer`.
- * Pixels where dither mask is '.' remain completely unchanged (original color & alpha kept).
- * Honors optional Symmetry (fills symmetric seed regions in a single atomic operation) and Seamless torus wrap.
+ * Perform standard or dithered flood fill in-place on a 1-byte Indexed Color `buffer`.
  */
 export function applyFloodFill(
-  buffer: Uint8ClampedArray,
+  buffer: Uint8Array,
   options: NormalFillOptions
 ): void {
   const {
@@ -120,17 +116,15 @@ export function applyFloodFill(
     height,
     seedX,
     seedY,
-    color,
     connectivity,
     dither,
     selectionMask,
     symmetry = 'none',
     seamlessWrap = 'none',
   } = options
+  const targetIdx = resolveDrawColorIndex(options.colorIndex, options.color, false)
 
   const seeds = expandSymmetricPoints({ x: seedX, y: seedY }, width, height, symmetry)
-  // Compute all seed regions against the initial pre-fill buffer so symmetric fills behave consistently
-  // even when two symmetric seeds belong to separate regions of different or identical colors!
   const combinedRegion = new Uint8Array(width * height)
   for (const s of seeds) {
     const part = computeConnectedRegion(
@@ -154,19 +148,7 @@ export function applyFloodFill(
       const pIdx = rowOffset + x
       if (combinedRegion[pIdx] === 0) continue
       if (!shouldDrawWithDither(dither, x, y)) continue
-
-      const bIdx = pIdx * 4
-      if (color.a === 0) {
-        buffer[bIdx] = 0
-        buffer[bIdx + 1] = 0
-        buffer[bIdx + 2] = 0
-        buffer[bIdx + 3] = 0
-      } else {
-        buffer[bIdx] = color.r
-        buffer[bIdx + 1] = color.g
-        buffer[bIdx + 2] = color.b
-        buffer[bIdx + 3] = color.a
-      }
+      buffer[pIdx] = targetIdx
     }
   }
 }
@@ -178,8 +160,8 @@ export interface GradientFillOptions {
   startY: number
   endX: number
   endY: number
-  color: RGBA
-  /** Optional connectivity (defaults to 4-way for gradient mode) */
+  colorIndex?: number
+  color?: number | RGBA
   connectivity?: Connectivity
   gradientType?: GradientType
   fixedRatio?: boolean
@@ -190,12 +172,13 @@ export interface GradientFillOptions {
 }
 
 function applySingleGradientPass(
-  sourceBuffer: Uint8ClampedArray,
-  targetBuffer: Uint8ClampedArray,
-  options: Omit<GradientFillOptions, 'symmetry'>
+  sourceBuffer: Uint8Array,
+  targetBuffer: Uint8Array,
+  options: Omit<GradientFillOptions, 'symmetry'>,
+  targetIdx: number
 ): void {
   if (options.gradientType === 'radial') {
-    applyRadialGradientPass(sourceBuffer, targetBuffer, options)
+    applyRadialGradientPass(sourceBuffer, targetBuffer, options, targetIdx)
     return
   }
 
@@ -206,7 +189,6 @@ function applySingleGradientPass(
     startY,
     endX,
     endY,
-    color,
     connectivity = 4,
     steps,
     selectionMask,
@@ -256,27 +238,16 @@ function applySingleGradientPass(
 
       const patternId = patternSeq[stepIndex]!
       if (!shouldDrawWithDither(patternId, x, y)) continue
-
-      const bIdx = pIdx * 4
-      if (color.a === 0) {
-        targetBuffer[bIdx] = 0
-        targetBuffer[bIdx + 1] = 0
-        targetBuffer[bIdx + 2] = 0
-        targetBuffer[bIdx + 3] = 0
-      } else {
-        targetBuffer[bIdx] = color.r
-        targetBuffer[bIdx + 1] = color.g
-        targetBuffer[bIdx + 2] = color.b
-        targetBuffer[bIdx + 3] = color.a
-      }
+      targetBuffer[pIdx] = targetIdx
     }
   }
 }
 
 function applyRadialGradientPass(
-  sourceBuffer: Uint8ClampedArray,
-  targetBuffer: Uint8ClampedArray,
-  options: Omit<GradientFillOptions, 'symmetry'>
+  sourceBuffer: Uint8Array,
+  targetBuffer: Uint8Array,
+  options: Omit<GradientFillOptions, 'symmetry'>,
+  targetIdx: number
 ): void {
   const {
     width,
@@ -285,7 +256,6 @@ function applyRadialGradientPass(
     startY,
     endX,
     endY,
-    color,
     connectivity = 4,
     fixedRatio = false,
     steps,
@@ -348,34 +318,24 @@ function applyRadialGradientPass(
 
       const patternId = patternSeq[stepIndex]!
       if (!shouldDrawWithDither(patternId, x, y)) continue
-
-      const bIdx = pIdx * 4
-      if (color.a === 0) {
-        targetBuffer[bIdx] = 0
-        targetBuffer[bIdx + 1] = 0
-        targetBuffer[bIdx + 2] = 0
-        targetBuffer[bIdx + 3] = 0
-      } else {
-        targetBuffer[bIdx] = color.r
-        targetBuffer[bIdx + 1] = color.g
-        targetBuffer[bIdx + 2] = color.b
-        targetBuffer[bIdx + 3] = color.a
-      }
+      targetBuffer[pIdx] = targetIdx
     }
   }
 }
 
 export function applyGradientFloodFill(
-  buffer: Uint8ClampedArray,
+  buffer: Uint8Array,
   options: GradientFillOptions
 ): void {
   const { width, height, startX, startY, endX, endY, symmetry = 'none' } = options
+  const targetIdx = resolveDrawColorIndex(options.colorIndex, options.color, false)
+
   if (symmetry === 'none') {
-    applySingleGradientPass(buffer, buffer, options)
+    applySingleGradientPass(buffer, buffer, options, targetIdx)
     return
   }
 
-  const snapshot = new Uint8ClampedArray(buffer)
+  const snapshot = new Uint8Array(buffer)
   const pairs: Array<{ sx: number; sy: number; ex: number; ey: number }> = [
     { sx: startX, sy: startY, ex: endX, ey: endY },
   ]
@@ -395,18 +355,23 @@ export function applyGradientFloodFill(
   }
 
   for (const p of pairs) {
-    applySingleGradientPass(snapshot, buffer, {
-      ...options,
-      startX: p.sx,
-      startY: p.sy,
-      endX: p.ex,
-      endY: p.ey,
-    })
+    applySingleGradientPass(
+      snapshot,
+      buffer,
+      {
+        ...options,
+        startX: p.sx,
+        startY: p.sy,
+        endX: p.ex,
+        endY: p.ey,
+      },
+      targetIdx
+    )
   }
 }
 
 export function applyRadialGradientFloodFill(
-  buffer: Uint8ClampedArray,
+  buffer: Uint8Array,
   options: GradientFillOptions
 ): void {
   applyGradientFloodFill(buffer, { ...options, gradientType: 'radial' })

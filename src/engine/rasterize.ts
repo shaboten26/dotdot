@@ -6,7 +6,7 @@ import type {
   SeamlessWrapMode,
   SymmetryMode,
 } from '../types'
-import { stampPoints, type PatternTileSource } from './brush'
+import { resolveDrawColorIndex, stampPoints } from './brush'
 import { shouldDrawWithDither } from './dithering'
 import { bresenhamLinePoints, filterPixelPerfectPoints } from './pixelPerfect'
 import { expandSymmetricBounds, resolveCanvasPoint } from './symmetry'
@@ -18,19 +18,15 @@ export interface LineDrawOptions {
   shape: BrushShape
   dither: DitherPatternId
   pixelPerfect?: boolean
-  color: RGBA
+  colorIndex?: number
+  color?: number | RGBA
   selectionMask?: Uint8Array | null
   symmetry?: SymmetryMode
   seamlessWrap?: SeamlessWrapMode
-  patternTile?: PatternTileSource | null
 }
 
-/**
- * Draw straight pixel line from p0 to p1 using shared brush & dithering engine.
- * Supports out-of-canvas start/end coordinates and optional Pixel-Perfect L-corner filtering (Section 2 & 12).
- */
 export function drawLine(
-  buffer: Uint8ClampedArray,
+  buffer: Uint8Array,
   p0: Point,
   p1: Point,
   options: LineDrawOptions
@@ -40,9 +36,6 @@ export function drawLine(
   stampPoints(buffer, pts, options)
 }
 
-/**
- * Evaluate cubic Bezier B(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3
- */
 export function evaluateCubicBezier(
   p0: Point,
   p1: Point,
@@ -62,9 +55,6 @@ export function evaluateCubicBezier(
   }
 }
 
-/**
- * Raw 8-connected integer rasterization of a cubic Bezier curve before pixel-perfect pruning.
- */
 export function rasterizeCubicBezierRawPoints(
   p0: Point,
   p1: Point,
@@ -93,7 +83,7 @@ export function rasterizeCubicBezierRawPoints(
 
     const bridge = bresenhamLinePoints(prevX, prevY, rx, ry)
     for (let j = 1; j < bridge.length; j++) {
-      points.push(bridge[j])
+      points.push(bridge[j]!)
     }
     prevX = rx
     prevY = ry
@@ -102,13 +92,6 @@ export function rasterizeCubicBezierRawPoints(
   return points
 }
 
-/**
- * Spec v2 Section 9:
- * Generate a 1px Pixel-Perfect cubic Bezier centerline:
- * - Eliminates L-shaped corner jaggies and redundant 2x2 pixel clumps
- * - Preserves 8-connected continuity from P0 to P3
- * - Zero anti-aliasing (strictly integer coordinates)
- */
 export function rasterizeCubicBezierPoints(
   p0: Point,
   p1: Point,
@@ -118,23 +101,17 @@ export function rasterizeCubicBezierPoints(
   const raw = rasterizeCubicBezierRawPoints(p0, p1, p2, p3)
   if (raw.length <= 2) return raw
 
-  // Pass 1: Standard sequential L-corner removal
   const pass1 = filterPixelPerfectPoints(raw)
   if (pass1.length <= 2) return pass1
 
-  // Pass 2: Suppress any remaining redundant corners or tight turn 2x2 clumps
-  // while strictly preserving start point, end point, and 8-neighbor path connectivity.
-  const out: Point[] = [pass1[0]]
+  const out: Point[] = [pass1[0]!]
   for (let i = 1; i < pass1.length - 1; i++) {
-    const prev = out[out.length - 1]
-    const curr = pass1[i]
-    const next = pass1[i + 1]
+    const prev = out[out.length - 1]!
+    const curr = pass1[i]!
+    const next = pass1[i + 1]!
 
-    // Skip exact duplicate if any
     if (curr.x === prev.x && curr.y === prev.y) continue
 
-    // If prev and next are already 8-connected (|dx|<=1 && |dy|<=1) and curr forms an L-elbow
-    // (i.e. orthogonal to both prev and next, or collapsing a tight hairpin 2x2), prune curr
     const dxPN = Math.abs(next.x - prev.x)
     const dyPN = Math.abs(next.y - prev.y)
     const prevNext8Connected = dxPN <= 1 && dyPN <= 1 && (dxPN > 0 || dyPN > 0)
@@ -153,8 +130,8 @@ export function rasterizeCubicBezierPoints(
     out.push(curr)
   }
 
-  const last = pass1[pass1.length - 1]
-  const tail = out[out.length - 1]
+  const last = pass1[pass1.length - 1]!
+  const tail = out[out.length - 1]!
   if (tail.x !== last.x || tail.y !== last.y) {
     out.push(last)
   }
@@ -162,14 +139,8 @@ export function rasterizeCubicBezierPoints(
   return out
 }
 
-/**
- * Draw cubic Bezier curve onto buffer (Spec v2 Section 9):
- * - Size 1: draws the exact 1px pixel-perfect curve.
- * - Size >= 2: first generates the exact Size-1 pixel-perfect centerline, then thickens along
- *   that centerline using the selected brush shape ('circle' | 'square') and dithering.
- */
 export function drawCubicBezier(
-  buffer: Uint8ClampedArray,
+  buffer: Uint8Array,
   p0: Point,
   p1: Point,
   p2: Point,
@@ -189,9 +160,6 @@ export interface BoundingBox {
   height: number
 }
 
-/**
- * Compute integer bounding box from start point and end point, optionally enforcing 1:1 fixed aspect ratio.
- */
 export function computeShapeBounds(
   start: Point,
   end: Point,
@@ -231,23 +199,24 @@ export interface ShapeRasterOptions {
   filled: boolean
   strokeSize?: number
   dither?: DitherPatternId
-  color: RGBA
+  colorIndex?: number
+  color?: number | RGBA
   selectionMask?: Uint8Array | null
   symmetry?: SymmetryMode
   seamlessWrap?: SeamlessWrapMode
 }
 
 function plotShapePixel(
-  buffer: Uint8ClampedArray,
+  buffer: Uint8Array,
   x: number,
   y: number,
-  options: ShapeRasterOptions
+  options: ShapeRasterOptions,
+  targetIdx: number
 ): void {
   const {
     width,
     height,
     dither = 1,
-    color,
     selectionMask,
     seamlessWrap = 'none',
   } = options
@@ -258,30 +227,16 @@ function plotShapePixel(
   const pIdx = py * width + px
   if (selectionMask && selectionMask[pIdx] === 0) return
   if (!shouldDrawWithDither(dither, px, py)) return
-
-  const bIdx = pIdx * 4
-  if (color.a === 0) {
-    buffer[bIdx] = 0
-    buffer[bIdx + 1] = 0
-    buffer[bIdx + 2] = 0
-    buffer[bIdx + 3] = 0
-  } else {
-    buffer[bIdx] = color.r
-    buffer[bIdx + 1] = color.g
-    buffer[bIdx + 2] = color.b
-    buffer[bIdx + 3] = color.a
-  }
+  buffer[pIdx] = targetIdx
 }
 
-/**
- * Rasterize axis-aligned rectangle (filled or outline) with zero anti-aliasing.
- */
 export function rasterizeRectangle(
-  buffer: Uint8ClampedArray,
+  buffer: Uint8Array,
   bounds: BoundingBox,
   options: ShapeRasterOptions
 ): void {
   const stroke = Math.max(1, Math.round(options.strokeSize ?? 1))
+  const targetIdx = resolveDrawColorIndex(options.colorIndex, options.color, false)
   const boxes = expandSymmetricBounds(
     bounds,
     options.width,
@@ -294,7 +249,7 @@ export function rasterizeRectangle(
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {
         if (options.filled) {
-          plotShapePixel(buffer, x, y, options)
+          plotShapePixel(buffer, x, y, options, targetIdx)
         } else {
           const onBorder =
             x - minX < stroke ||
@@ -302,7 +257,7 @@ export function rasterizeRectangle(
             y - minY < stroke ||
             maxY - y < stroke
           if (onBorder) {
-            plotShapePixel(buffer, x, y, options)
+            plotShapePixel(buffer, x, y, options, targetIdx)
           }
         }
       }
@@ -310,9 +265,6 @@ export function rasterizeRectangle(
   }
 }
 
-/**
- * Compute boolean mask of filled ellipse inside bounds [0..w-1, 0..h-1] with exact quadrant symmetry.
- */
 export function buildFilledEllipseMask(w: number, h: number): Uint8Array {
   const mask = new Uint8Array(w * h)
   if (w <= 0 || h <= 0) return mask
@@ -340,14 +292,12 @@ export function buildFilledEllipseMask(w: number, h: number): Uint8Array {
   return mask
 }
 
-/**
- * Rasterize ellipse / circle inside `bounds` (filled or crisp pixel outline, no anti-aliasing).
- */
 export function rasterizeEllipse(
-  buffer: Uint8ClampedArray,
+  buffer: Uint8Array,
   bounds: BoundingBox,
   options: ShapeRasterOptions
 ): void {
+  const targetIdx = resolveDrawColorIndex(options.colorIndex, options.color, false)
   const boxes = expandSymmetricBounds(
     bounds,
     options.width,
@@ -364,7 +314,7 @@ export function rasterizeEllipse(
       for (let ly = 0; ly < bh; ly++) {
         for (let lx = 0; lx < bw; lx++) {
           if (outer[ly * bw + lx] === 1) {
-            plotShapePixel(buffer, minX + lx, minY + ly, options)
+            plotShapePixel(buffer, minX + lx, minY + ly, options, targetIdx)
           }
         }
       }
@@ -383,7 +333,7 @@ export function rasterizeEllipse(
         const insideInner =
           ix >= 0 && iy >= 0 && ix < innerW && iy < innerH && inner[iy * innerW + ix] === 1
         if (!insideInner) {
-          plotShapePixel(buffer, minX + lx, minY + ly, options)
+          plotShapePixel(buffer, minX + lx, minY + ly, options, targetIdx)
         }
       }
     }

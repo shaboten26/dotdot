@@ -11,6 +11,7 @@ import type {
   TimelineSnapshot,
   WorldSelectionMask,
 } from '../types'
+import { normalizeProjectPalette } from './indexedPalette'
 import { createPixelBuffer, normalizeLayerGeometry } from './pixelBuffer'
 import { projectFrameLayers, pruneUnreferencedCelBuffers } from './animation'
 import {
@@ -19,9 +20,23 @@ import {
   projectWorldSelectionToCanvasMask,
 } from './selection'
 
+function clonePaletteSnapshot(p?: ProjectPalette): ProjectPalette | undefined {
+  if (!p) return undefined
+  const norm = normalizeProjectPalette(p)
+  return {
+    ...norm,
+    colors: [...norm.colors],
+    colorTable: norm.colorTable ? [...norm.colorTable] : undefined,
+    displayOrder: norm.displayOrder ? [...norm.displayOrder] : undefined,
+    originalDisplayOrder: norm.originalDisplayOrder
+      ? [...norm.originalDisplayOrder]
+      : undefined,
+  }
+}
+
 /**
- * Compute a compact sparse PixelPatch recording ONLY the pixels that changed between `beforeLayer` and `afterLayer`,
- * even if the layer's backing buffer expanded (e.g., when drawing on an offset layer or moving selection partially off-canvas!).
+ * Compute a compact sparse 1-byte-per-pixel `PixelPatch` recording ONLY the pixels that changed
+ * between `beforeLayer` and `afterLayer`, including backing geometry transitions.
  */
 export function createLayerPixelPatch(
   beforeLayer: Pick<
@@ -44,7 +59,7 @@ export function createLayerPixelPatch(
   const aW = afterLayer.dataWidth ?? 1
   const aH = afterLayer.dataHeight ?? 1
 
-  const sameGeometry = bOx === aOx && bOy === aOy && bW === aW && bH === aH
+  const sameGeometry = bOx === aOx && bOy === aOy && bW === aW && aH === bH
 
   if (sameGeometry && beforeLayer.data.length === afterLayer.data.length) {
     const base = createPixelPatch(beforeLayer.id, beforeLayer.data, afterLayer.data)
@@ -57,8 +72,6 @@ export function createLayerPixelPatch(
     }
   }
 
-  // Different geometry: align both into union world rectangle, compute sparse diff in union coordinates,
-  // and record beforeGeometry & afterGeometry so Undo/Redo restores exact geometry + pixels!
   const uMinX = Math.min(bOx, aOx)
   const uMinY = Math.min(bOy, aOy)
   const uMaxX = Math.max(bOx + bW, aOx + aW)
@@ -70,18 +83,18 @@ export function createLayerPixelPatch(
   for (let ly = 0; ly < bH; ly++) {
     const ny = bOy + ly - uMinY
     const nx = bOx - uMinX
-    const sOff = ly * bW * 4
-    const dOff = (ny * uW + nx) * 4
-    alignedBefore.set(beforeLayer.data.subarray(sOff, sOff + bW * 4), dOff)
+    const sOff = ly * bW
+    const dOff = ny * uW + nx
+    alignedBefore.set(beforeLayer.data.subarray(sOff, sOff + bW), dOff)
   }
 
   const alignedAfter = createPixelBuffer(uW, uH)
   for (let ly = 0; ly < aH; ly++) {
     const ny = aOy + ly - uMinY
     const nx = aOx - uMinX
-    const sOff = ly * aW * 4
-    const dOff = (ny * uW + nx) * 4
-    alignedAfter.set(afterLayer.data.subarray(sOff, sOff + aW * 4), dOff)
+    const sOff = ly * aW
+    const dOff = ny * uW + nx
+    alignedAfter.set(afterLayer.data.subarray(sOff, sOff + aW), dOff)
   }
 
   const diff = createPixelPatch(beforeLayer.id, alignedBefore, alignedAfter)
@@ -99,29 +112,22 @@ export function createLayerPixelPatch(
 }
 
 /**
- * Compute a compact sparse PixelPatch recording ONLY the pixels that actually changed
- * between `beforeBuf` and `afterBuf` of equal length. Returns `null` if zero pixels changed.
+ * Compute a compact sparse 1-byte `PixelPatch` between two equal-length Indexed Color buffers.
  */
 export function createPixelPatch(
   layerId: string,
-  beforeBuf: Uint8ClampedArray,
-  afterBuf: Uint8ClampedArray
+  beforeBuf: Uint8Array,
+  afterBuf: Uint8Array
 ): PixelPatch | null {
   if (beforeBuf.length !== afterBuf.length) {
     throw new Error('Buffer length mismatch when creating PixelPatch')
   }
 
-  const pixelCount = beforeBuf.length >>> 2
+  const pixelCount = beforeBuf.length
   const changedIndices: number[] = []
 
   for (let p = 0; p < pixelCount; p++) {
-    const bIdx = p * 4
-    if (
-      beforeBuf[bIdx] !== afterBuf[bIdx] ||
-      beforeBuf[bIdx + 1] !== afterBuf[bIdx + 1] ||
-      beforeBuf[bIdx + 2] !== afterBuf[bIdx + 2] ||
-      beforeBuf[bIdx + 3] !== afterBuf[bIdx + 3]
-    ) {
+    if (beforeBuf[p] !== afterBuf[p]) {
       changedIndices.push(p)
     }
   }
@@ -130,66 +136,45 @@ export function createPixelPatch(
 
   const n = changedIndices.length
   const indices = new Uint32Array(n)
-  const before = new Uint8Array(n * 4)
-  const after = new Uint8Array(n * 4)
+  const before = new Uint8Array(n)
+  const after = new Uint8Array(n)
 
   for (let i = 0; i < n; i++) {
-    const p = changedIndices[i]
+    const p = changedIndices[i]!
     indices[i] = p
-    const srcOff = p * 4
-    const dstOff = i * 4
-
-    before[dstOff] = beforeBuf[srcOff]
-    before[dstOff + 1] = beforeBuf[srcOff + 1]
-    before[dstOff + 2] = beforeBuf[srcOff + 2]
-    before[dstOff + 3] = beforeBuf[srcOff + 3]
-
-    after[dstOff] = afterBuf[srcOff]
-    after[dstOff + 1] = afterBuf[srcOff + 1]
-    after[dstOff + 2] = afterBuf[srcOff + 2]
-    after[dstOff + 3] = afterBuf[srcOff + 3]
+    before[i] = beforeBuf[p]!
+    after[i] = afterBuf[p]!
   }
 
   return { layerId, indices, before, after }
 }
 
-/**
- * Apply a PixelPatch in reverse (`direction = 'undo'`) or forward (`direction = 'redo'`) onto a flat equal-size buffer.
- */
 export function applyPixelPatch(
-  buffer: Uint8ClampedArray,
+  buffer: Uint8Array,
   patch: PixelPatch,
   direction: 'undo' | 'redo'
-): Uint8ClampedArray {
-  const next = new Uint8ClampedArray(buffer)
+): Uint8Array {
+  const next = new Uint8Array(buffer)
   const values = direction === 'undo' ? patch.before : patch.after
   const n = patch.indices.length
 
   for (let i = 0; i < n; i++) {
-    const p = patch.indices[i]
-    const dstOff = p * 4
-    const srcOff = i * 4
-    if (dstOff + 3 < next.length) {
-      next[dstOff] = values[srcOff]
-      next[dstOff + 1] = values[srcOff + 1]
-      next[dstOff + 2] = values[srcOff + 2]
-      next[dstOff + 3] = values[srcOff + 3]
+    const p = patch.indices[i]!
+    if (p < next.length && i < values.length) {
+      next[p] = values[i]!
     }
   }
 
   return next
 }
 
-/**
- * Apply a PixelPatch (with optional geometry transition) to a LayerRuntime or CelBufferRuntime-shaped object.
- */
 export function applyPatchToGeometryBuffer<
   T extends {
     offsetX: number
     offsetY: number
     dataWidth: number
     dataHeight: number
-    data: Uint8ClampedArray
+    data: Uint8Array
   },
 >(target: T, patch: PixelPatch, direction: 'undo' | 'redo'): T {
   const bGeo = patch.beforeGeometry
@@ -224,9 +209,9 @@ export function applyPatchToGeometryBuffer<
     const ny = (target.offsetY ?? srcGeo.offsetY) + ly - uMinY
     const nx = (target.offsetX ?? srcGeo.offsetX) - uMinX
     if (ny < 0 || ny >= uH) continue
-    const sOff = ly * target.dataWidth * 4
-    const dOff = (ny * uW + nx) * 4
-    const copyLen = Math.min(target.dataWidth, uW - nx) * 4
+    const sOff = ly * target.dataWidth
+    const dOff = ny * uW + nx
+    const copyLen = Math.min(target.dataWidth, uW - nx)
     if (nx >= 0 && copyLen > 0) {
       unionBuf.set(target.data.subarray(sOff, sOff + copyLen), dOff)
     }
@@ -238,9 +223,9 @@ export function applyPatchToGeometryBuffer<
   for (let ly = 0; ly < dstGeo.dataHeight; ly++) {
     const ny = dstGeo.offsetY + ly - uMinY
     const nx = dstGeo.offsetX - uMinX
-    const sOff = (ny * uW + nx) * 4
-    const dOff = ly * dstGeo.dataWidth * 4
-    targetBuf.set(patchedUnion.subarray(sOff, sOff + dstGeo.dataWidth * 4), dOff)
+    const sOff = ny * uW + nx
+    const dOff = ly * dstGeo.dataWidth
+    targetBuf.set(patchedUnion.subarray(sOff, sOff + dstGeo.dataWidth), dOff)
   }
 
   return {
@@ -296,7 +281,7 @@ export function restoreTimelineSnapshot(
 } {
   const celBuffers: Record<string, CelBufferRuntime> = {}
   for (const cb of snap.celBuffers) {
-    const raw = new Uint8ClampedArray(cb.data)
+    const raw = new Uint8Array(cb.data)
     const geo = normalizeLayerGeometry(
       {
         offsetX: cb.offsetX,
@@ -308,8 +293,8 @@ export function restoreTimelineSnapshot(
       canvasWidth,
       canvasHeight
     )
-    const expectedLen = geo.dataWidth * geo.dataHeight * 4
-    let data: Uint8ClampedArray
+    const expectedLen = geo.dataWidth * geo.dataHeight
+    let data: Uint8Array
     if (raw.byteLength === expectedLen) {
       data = raw
     } else {
@@ -398,18 +383,26 @@ export function restoreCanvasSnapshot(snapshot: CanvasSnapshot): {
     : undefined
 
   const baseLayers: LayerRuntime[] = snapshot.layers.map((item) => {
-    const data = new Uint8ClampedArray(item.data)
+    const raw = new Uint8Array(item.data)
     const geo = normalizeLayerGeometry(
       {
         offsetX: item.meta.offsetX,
         offsetY: item.meta.offsetY,
         dataWidth: item.meta.dataWidth,
         dataHeight: item.meta.dataHeight,
-        data,
+        data: raw,
       },
       snapshot.width,
       snapshot.height
     )
+    const expectedLen = geo.dataWidth * geo.dataHeight
+    let data: Uint8Array
+    if (raw.byteLength === expectedLen) {
+      data = raw
+    } else {
+      data = createPixelBuffer(geo.dataWidth, geo.dataHeight)
+      data.set(raw.subarray(0, Math.min(raw.length, expectedLen)))
+    }
     return {
       ...item.meta,
       locked: Boolean(item.meta.locked),
@@ -547,7 +540,7 @@ export function applyHistoryEntry(
     )
 
     if (hasCelMode && nextCelBuffers && nextCels) {
-      let updatedCels: CelMap = { ...nextCels }
+      const updatedCels: CelMap = { ...nextCels }
       let updatedBuffers: Record<string, CelBufferRuntime> = { ...nextCelBuffers }
 
       if (entry.celAllocation && direction === 'redo') {
@@ -610,13 +603,13 @@ export function applyHistoryEntry(
         return updatedLayer
       })
     }
-  } else if (entry.kind === 'palette') {
+  }
+
+  // Apply palette transition if recorded (supports pure `'palette'` entries AND combined `'pixel-diff' + palette` entries!)
+  if (entry.beforePalette !== undefined || entry.afterPalette !== undefined) {
     const pal = direction === 'undo' ? entry.beforePalette : entry.afterPalette
     if (pal) {
-      nextPalette = {
-        ...pal,
-        colors: [...pal.colors],
-      }
+      nextPalette = clonePaletteSnapshot(pal)!
     }
   }
 
@@ -662,9 +655,6 @@ export function applyHistoryEntry(
   }
 }
 
-/**
- * Stateful HistoryManager per project with configurable historyLimit ('unlimited' default or integer >= 1).
- */
 export class HistoryManager {
   private undoStack: HistoryEntry[] = []
   private redoStack: HistoryEntry[] = []
@@ -795,12 +785,8 @@ export class HistoryManager {
         e.afterWorldSelection === undefined
           ? undefined
           : cloneWorldSelectionMask(e.afterWorldSelection),
-      beforePalette: e.beforePalette
-        ? { ...e.beforePalette, colors: [...e.beforePalette.colors] }
-        : undefined,
-      afterPalette: e.afterPalette
-        ? { ...e.afterPalette, colors: [...e.afterPalette.colors] }
-        : undefined,
+      beforePalette: clonePaletteSnapshot(e.beforePalette),
+      afterPalette: clonePaletteSnapshot(e.afterPalette),
     })
 
     return {
@@ -855,12 +841,8 @@ export class HistoryManager {
         e.afterWorldSelection === undefined
           ? undefined
           : cloneWorldSelectionMask(e.afterWorldSelection),
-      beforePalette: e.beforePalette
-        ? { ...e.beforePalette, colors: [...e.beforePalette.colors] }
-        : undefined,
-      afterPalette: e.afterPalette
-        ? { ...e.afterPalette, colors: [...e.afterPalette.colors] }
-        : undefined,
+      beforePalette: clonePaletteSnapshot(e.beforePalette),
+      afterPalette: clonePaletteSnapshot(e.afterPalette),
     })
 
     this.undoStack = (data.undoStack ?? []).map(restoreEntry)

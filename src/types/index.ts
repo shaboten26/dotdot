@@ -87,10 +87,25 @@ export type BlendMode =
   | 'difference'
 
 /**
- * Special color slot index representing the dedicated Transparent drawing color (`RGBA(0,0,0,0)`).
- * Displayed at the leftmost position of the palette bar/sheet and NOT counted toward the 256-color limit.
+ * Special UI slot index representing the dedicated leftmost Transparent drawing slot.
+ * In 1-byte indexed pixel buffers, transparent pixels are stored as `TRANSPARENT_INDEX` (`255`),
+ * while opaque palette colors occupy fixed indices `0 .. 254` (max 255 opaque colors).
  */
 export const TRANSPARENT_COLOR_INDEX = -1
+export const TRANSPARENT_INDEX = 255
+export const MAX_OPAQUE_PALETTE_COLORS = 255
+
+export type LightThemeVariantId =
+  | 'lavender-cream'
+  | 'milk-lilac'
+  | 'sage-ivory'
+  | 'berry-paper'
+
+export type DarkThemeVariantId =
+  | 'dusk-plum'
+  | 'midnight-lavender'
+  | 'moss-grape'
+  | 'velvet-fig'
 
 /**
  * 9-directional anchor for Canvas Resize.
@@ -132,8 +147,12 @@ export interface LayerRuntime extends LayerMeta {
   dataWidth: number
   /** Height of `data` backing buffer in pixels */
   dataHeight: number
-  /** RGBA byte buffer of length `dataWidth * dataHeight * 4` */
-  data: Uint8ClampedArray
+  /**
+   * 1-byte per pixel Indexed Color buffer of length `dataWidth * dataHeight`!
+   * - `0 .. 254`: Fixed palette index in `project.palette.colorTable`
+   * - `255` (`TRANSPARENT_INDEX`): Transparent pixel
+   */
+  data: Uint8Array
 }
 
 /**
@@ -160,7 +179,8 @@ export interface CelBufferRuntime {
   offsetY: number
   dataWidth: number
   dataHeight: number
-  data: Uint8ClampedArray
+  /** 1-byte per pixel Indexed Color buffer (`0..254` fixed palette index, `255` transparent) */
+  data: Uint8Array
 }
 
 export interface CelBufferRecord {
@@ -171,7 +191,9 @@ export interface CelBufferRecord {
   offsetY: number
   dataWidth: number
   dataHeight: number
+  /** 1-byte per pixel Indexed Color buffer (`dataWidth * dataHeight` bytes) */
   data: Uint8Array
+  format?: 'indexed-v1'
 }
 
 export interface CanvasSizePreset {
@@ -198,12 +220,33 @@ export interface PaletteData {
 
 export interface ProjectPalette {
   name: string
-  colors: string[] // Independent copy for this project (max 256)
-  /** Snapshot of color order prior to automatic sorting so user can restore original order */
+  /** UI display-ordered opaque `#RRGGBB` colors (max 255 colors; transparent is fixed at left slot `-1` / pixel `255`) */
+  colors: string[]
+  /**
+   * Fixed index table (`0 .. 254` -> `'#RRGGBB' | null`).
+   * Pixel buffers reference these immutable indices so reordering `displayOrder` NEVER alters artwork colors!
+   */
+  colorTable?: Array<string | null>
+  /** Visual UI order of active fixed indices (`0 .. 254`), length `1 .. 255` */
+  displayOrder?: number[]
+  /** Snapshot of `displayOrder` prior to automatic sorting so "元の順番へ戻す" restores display order cleanly */
+  originalDisplayOrder?: number[]
+  /** Legacy snapshot field retained for backward compatibility */
   originalColors?: string[]
   sourcePaletteId?: string
   author?: string
   sourceUrl?: string
+}
+
+export interface ProjectMigrationReport {
+  migratedAt: number
+  originalOpaqueColorCount: number
+  finalOpaqueColorCount: number
+  wasQuantized: boolean
+  hadSemiTransparentPixels: boolean
+  semiTransparentPixelCount: number
+  beforePreviewPng?: Uint8Array
+  afterPreviewPng?: Uint8Array
 }
 
 export interface ProjectRecord {
@@ -211,6 +254,9 @@ export interface ProjectRecord {
   name: string
   width: number // 1..256
   height: number // 1..256
+  /** Storage pixel format: `'indexed-v1'` (1 byte/pixel `0..254` opaque + `255` transparent); undefined on pre-migration RGBA records */
+  pixelFormat?: 'indexed-v1'
+  migrationReport?: ProjectMigrationReport
   layers: LayerMeta[]
   activeLayerId: string
   /** Unified frame timeline: 1 frame = Still artwork, >=2 frames = Animation */
@@ -233,11 +279,34 @@ export interface LayerPixelRecord {
   key: string // `${projectId}:${layerId}`
   projectId: string
   layerId: string
-  data: Uint8Array // raw RGBA bytes (length = dataWidth * dataHeight * 4)
+  /** 1-byte per pixel Indexed Color bytes (`length = dataWidth * dataHeight`) in `indexed-v1` */
+  data: Uint8Array
+  format?: 'indexed-v1'
   offsetX?: number
   offsetY?: number
   dataWidth?: number
   dataHeight?: number
+}
+
+export type ProjectMigrationStage =
+  | 'pending'
+  | 'backing-up'
+  | 'converting'
+  | 'verifying'
+  | 'completed'
+  | 'failed'
+
+export interface MigrationStateRecord {
+  projectId: string
+  stage: ProjectMigrationStage
+  updatedAt: number
+  errorMessage?: string
+  report?: ProjectMigrationReport
+  /** Preserved raw pre-migration snapshot for safe rollback & resumable recovery until verified! */
+  backupProject?: ProjectRecord
+  backupLayerPixels?: LayerPixelRecord[]
+  backupCelBuffers?: CelBufferRecord[]
+  backupHistory?: ProjectHistoryRecord
 }
 
 export type ThemeMode = 'light' | 'dark' | 'system'
@@ -282,6 +351,10 @@ export interface BackupReminderMeta {
 export interface AppSettings {
   id: 'app-settings'
   theme: ThemeMode
+  /** Selected light-mode palette variant (hidden behind detailed theme toggle in `/settings`) */
+  lightThemeVariant?: LightThemeVariantId
+  /** Selected dark-mode palette variant (hidden behind detailed theme toggle in `/settings`) */
+  darkThemeVariant?: DarkThemeVariantId
   language: LanguageCode
   historyLimit: number | 'unlimited'
   /** True when user explicitly selected a history limit in Settings (distinguishes legacy default 100 from user choice) */
@@ -315,7 +388,8 @@ export interface AppSettings {
 }
 
 export interface FloatingShapeState {
-  sourceBuffer: Uint8ClampedArray
+  /** 1-byte per pixel Indexed Color buffer (`sourceWidth * sourceHeight`) */
+  sourceBuffer: Uint8Array
   sourceWidth: number
   sourceHeight: number
   offsetX: number
@@ -347,7 +421,7 @@ export interface ActiveMoveSession {
   initialMask: Uint8Array | null
   initialWorldSelection?: WorldSelectionMask | null
   clearedLayer: LayerRuntime | null
-  extractedBuffer: Uint8ClampedArray | null
+  extractedBuffer: Uint8Array | null
   extractedWidth: number
   extractedHeight: number
   extractedOriginX: number
@@ -361,7 +435,11 @@ export interface ClipboardBuffer {
   height: number
   offsetX: number
   offsetY: number
-  data: Uint8ClampedArray
+  /** 1-byte per pixel Indexed Color buffer (`width * height`; `255` = transparent) */
+  data: Uint8Array
+  /** Source project ID & fixed-index -> `#RRGGBB` map for seamless cross-project paste */
+  sourceProjectId?: string
+  sourceColorMap?: Record<number, string>
 }
 
 export interface ToolSettings {

@@ -1,15 +1,34 @@
 import { zlibSync, unzlibSync } from 'fflate'
-import type { BlendMode, LayerRuntime } from '../types'
-import { clampByte } from './color'
-import { createPixelBuffer, extractLayerCanvasView } from './pixelBuffer'
+import {
+  TRANSPARENT_INDEX,
+  type BlendMode,
+  type LayerRuntime,
+  type ProjectPalette,
+} from '../types'
+import { clampByte, rgbaToHex } from './color'
+import {
+  addColorToIndexedPalette,
+  BAYER_4X4,
+  buildPaletteRgbaLut,
+  findExactFixedIndex,
+  findNearestFixedIndex,
+  normalizeProjectPalette,
+} from './indexedPalette'
+import { extractLayerCanvasView } from './pixelBuffer'
 
 export const MAX_LAYERS = 100
 export const MAX_EXPORT_DIMENSION = 4000
 export const DEFAULT_TARGET_EXPORT_LONG_EDGE = 2000
 
-/**
- * Apply per-channel blend function for normalized [0..1] backdrop `b` and source `s`.
- */
+const FALLBACK_DEFAULT_PALETTE: ProjectPalette = normalizeProjectPalette({
+  name: 'Default',
+  colors: ['#000000', '#FFFFFF'],
+})
+
+export function createRgbaBuffer(width: number, height: number): Uint8ClampedArray {
+  return new Uint8ClampedArray(Math.max(0, Math.trunc(width) * Math.trunc(height) * 4))
+}
+
 export function blendChannel(mode: BlendMode, b: number, s: number): number {
   switch (mode) {
     case 'normal':
@@ -31,10 +50,6 @@ export function blendChannel(mode: BlendMode, b: number, s: number): number {
   }
 }
 
-/**
- * Porter-Duff source-over with W3C compositing blend mode for a single pixel.
- * Writes result into `out` at byte offset `idx`.
- */
 function compositePixel(
   out: Uint8ClampedArray,
   idx: number,
@@ -46,7 +61,7 @@ function compositePixel(
 ): void {
   if (saNorm <= 0) return
 
-  const daNorm = out[idx + 3] / 255
+  const daNorm = out[idx + 3]! / 255
   if (daNorm <= 0) {
     out[idx] = sr
     out[idx + 1] = sg
@@ -55,9 +70,9 @@ function compositePixel(
     return
   }
 
-  const br = out[idx] / 255
-  const bg = out[idx + 1] / 255
-  const bb = out[idx + 2] / 255
+  const br = out[idx]! / 255
+  const bg = out[idx + 1]! / 255
+  const bb = out[idx + 2]! / 255
 
   const srN = sr / 255
   const sgN = sg / 255
@@ -96,22 +111,33 @@ function compositePixel(
 }
 
 export interface CompositeOptions {
-  /** Optional canvas-space override pixel buffer (`width * height * 4`) for a specific layer */
+  /** Palette or prebuilt 1024-byte RGBA LUT used to resolve 1-byte pixel indices */
+  palette?: ProjectPalette | Uint8ClampedArray
+  /** Optional canvas-space 1-byte Indexed Color override buffer (`width * height`) for live stroke preview */
   previewLayerOverride?: {
     layerId: string
-    data: Uint8ClampedArray
+    data: Uint8Array
   } | null
 }
 
-/**
- * Sample `[0..width-1, 0..height-1]` canvas view for a layer (honoring `offsetX`, `offsetY`, `dataWidth`, `dataHeight`).
- */
-function resolveLayerCanvasBuffer(
+function resolveLut(
+  paletteOrLut?: ProjectPalette | Uint8ClampedArray
+): Uint8ClampedArray {
+  if (!paletteOrLut) {
+    return buildPaletteRgbaLut(FALLBACK_DEFAULT_PALETTE)
+  }
+  if (paletteOrLut instanceof Uint8ClampedArray) {
+    return paletteOrLut
+  }
+  return buildPaletteRgbaLut(paletteOrLut)
+}
+
+function resolveLayerIndexedCanvasBuffer(
   layer: LayerRuntime,
   width: number,
   height: number,
   override?: CompositeOptions['previewLayerOverride']
-): Uint8ClampedArray {
+): Uint8Array {
   if (override && override.layerId === layer.id) {
     return override.data
   }
@@ -119,8 +145,9 @@ function resolveLayerCanvasBuffer(
 }
 
 /**
- * Composite all layers from bottom (`index 0`) to top (`layers.length - 1`) onto `[0..width-1, 0..height-1]`.
- * Off-canvas pixels stored inside each layer's backing buffer remain safely preserved!
+ * Composite all 1-byte Indexed Color layers from bottom (`index 0`) to top (`layers.length - 1`)
+ * into a temporary `Uint8ClampedArray` RGBA buffer (`width * height * 4`) for viewport display or export.
+ * Preserves layer opacity (`0..100`), all 8 blend modes, and clipping masks (Section 7-5).
  */
 export function compositeLayers(
   layers: readonly LayerRuntime[],
@@ -128,16 +155,17 @@ export function compositeLayers(
   height: number,
   options?: CompositeOptions
 ): Uint8ClampedArray {
-  const result = createPixelBuffer(width, height)
+  const result = createRgbaBuffer(width, height)
   const totalPixels = width * height
   const override = options?.previewLayerOverride
+  const lut = resolveLut(options?.palette)
 
   let i = 0
   while (i < layers.length) {
-    const baseLayer = layers[i]
+    const baseLayer = layers[i]!
 
     let groupEnd = i + 1
-    while (groupEnd < layers.length && layers[groupEnd].clipping) {
+    while (groupEnd < layers.length && layers[groupEnd]!.clipping) {
       groupEnd++
     }
 
@@ -148,72 +176,85 @@ export function compositeLayers(
       continue
     }
 
-    const baseData = resolveLayerCanvasBuffer(baseLayer, width, height, override)
+    const baseIndices = resolveLayerIndexedCanvasBuffer(
+      baseLayer,
+      width,
+      height,
+      override
+    )
     const baseOpacityNorm = Math.max(0, Math.min(100, baseLayer.opacity)) / 100
 
     if (!hasClippedChildren) {
       for (let p = 0; p < totalPixels; p++) {
-        const idx = p * 4
-        const rawA = baseData[idx + 3]
-        if (rawA === 0) continue
-        const effA = (rawA / 255) * baseOpacityNorm
+        const pIdx = baseIndices[p]!
+        if (pIdx === TRANSPARENT_INDEX) continue
+        const lutOff = pIdx * 4
+        if (lut[lutOff + 3] === 0) continue
         compositePixel(
           result,
-          idx,
-          baseData[idx],
-          baseData[idx + 1],
-          baseData[idx + 2],
-          effA,
+          p * 4,
+          lut[lutOff]!,
+          lut[lutOff + 1]!,
+          lut[lutOff + 2]!,
+          baseOpacityNorm,
           baseLayer.blendMode
         )
       }
     } else {
-      const groupBuf = createPixelBuffer(width, height)
+      const groupBuf = createRgbaBuffer(width, height)
       for (let p = 0; p < totalPixels; p++) {
+        const pIdx = baseIndices[p]!
+        if (pIdx === TRANSPARENT_INDEX) continue
+        const lutOff = pIdx * 4
+        if (lut[lutOff + 3] === 0) continue
         const idx = p * 4
-        if (baseData[idx + 3] === 0) continue
-        groupBuf[idx] = baseData[idx]
-        groupBuf[idx + 1] = baseData[idx + 1]
-        groupBuf[idx + 2] = baseData[idx + 2]
+        groupBuf[idx] = lut[lutOff]!
+        groupBuf[idx + 1] = lut[lutOff + 1]!
+        groupBuf[idx + 2] = lut[lutOff + 2]!
         groupBuf[idx + 3] = 255
       }
 
       for (let c = i + 1; c < groupEnd; c++) {
-        const clipLayer = layers[c]
+        const clipLayer = layers[c]!
         if (!clipLayer.visible || clipLayer.opacity <= 0) continue
-        const clipData = resolveLayerCanvasBuffer(clipLayer, width, height, override)
+        const clipIndices = resolveLayerIndexedCanvasBuffer(
+          clipLayer,
+          width,
+          height,
+          override
+        )
         const clipOp = Math.max(0, Math.min(100, clipLayer.opacity)) / 100
 
         for (let p = 0; p < totalPixels; p++) {
-          const idx = p * 4
-          if (baseData[idx + 3] === 0) continue
-          const cRawA = clipData[idx + 3]
-          if (cRawA === 0) continue
-          const cEffA = (cRawA / 255) * clipOp
+          const bPIdx = baseIndices[p]!
+          if (bPIdx === TRANSPARENT_INDEX || lut[bPIdx * 4 + 3] === 0) continue
+          const cPIdx = clipIndices[p]!
+          if (cPIdx === TRANSPARENT_INDEX) continue
+          const cLutOff = cPIdx * 4
+          if (lut[cLutOff + 3] === 0) continue
           compositePixel(
             groupBuf,
-            idx,
-            clipData[idx],
-            clipData[idx + 1],
-            clipData[idx + 2],
-            cEffA,
+            p * 4,
+            lut[cLutOff]!,
+            lut[cLutOff + 1]!,
+            lut[cLutOff + 2]!,
+            clipOp,
             clipLayer.blendMode
           )
         }
       }
 
       for (let p = 0; p < totalPixels; p++) {
+        const bPIdx = baseIndices[p]!
+        if (bPIdx === TRANSPARENT_INDEX || lut[bPIdx * 4 + 3] === 0) continue
         const idx = p * 4
-        const rawA = baseData[idx + 3]
-        if (rawA === 0) continue
-        const effA = (rawA / 255) * baseOpacityNorm
         compositePixel(
           result,
           idx,
-          groupBuf[idx],
-          groupBuf[idx + 1],
-          groupBuf[idx + 2],
-          effA,
+          groupBuf[idx]!,
+          groupBuf[idx + 1]!,
+          groupBuf[idx + 2]!,
+          baseOpacityNorm,
           baseLayer.blendMode
         )
       }
@@ -226,20 +267,23 @@ export function compositeLayers(
 }
 
 /**
- * Merge `upper` layer down into `lower` layer across the UNION of both layers' world-space bounding boxes
- * so off-canvas pixels on either layer are preserved!
+ * Merge `upper` layer down into `lower` layer across the UNION of both layers' world-space bounding boxes,
+ * returning a 1-byte Indexed Color buffer and updated `ProjectPalette` (allocates blended colors up to 255 max,
+ * falling back to nearest perceptual palette color when palette is full).
  */
 export function mergeTwoLayers(
   lower: LayerRuntime,
   upper: LayerRuntime,
   width: number,
-  height: number
+  height: number,
+  palette: ProjectPalette = FALLBACK_DEFAULT_PALETTE
 ): {
   offsetX: number
   offsetY: number
   dataWidth: number
   dataHeight: number
-  data: Uint8ClampedArray
+  data: Uint8Array
+  nextPalette: ProjectPalette
 } {
   const lOx = lower.offsetX ?? 0
   const lOy = lower.offsetY ?? 0
@@ -259,7 +303,42 @@ export function mergeTwoLayers(
   const unionW = Math.max(1, maxX - minX)
   const unionH = Math.max(1, maxY - minY)
 
-  // Shift both layers into the union coordinate frame `[0..unionW, 0..unionH]`
+  // Fast pure-indexed path when both layers are 100% opaque normal blend!
+  let workingPalette = normalizeProjectPalette(palette)
+  if (
+    lower.opacity >= 100 &&
+    upper.opacity >= 100 &&
+    upper.blendMode === 'normal'
+  ) {
+    const out = new Uint8Array(unionW * unionH)
+    out.fill(TRANSPARENT_INDEX)
+    for (let ly = 0; ly < lH; ly++) {
+      const ny = lOy - minY + ly
+      const nx = lOx - minX
+      out.set(lower.data.subarray(ly * lW, (ly + 1) * lW), ny * unionW + nx)
+    }
+    for (let uy = 0; uy < uH; uy++) {
+      const ny = uOy - minY + uy
+      for (let ux = 0; ux < uW; ux++) {
+        const val = upper.data[uy * uW + ux]!
+        if (val === TRANSPARENT_INDEX) continue
+        const nx = uOx - minX + ux
+        if (nx < 0 || ny < 0 || nx >= unionW || ny >= unionH) continue
+        const dstIdx = ny * unionW + nx
+        if (upper.clipping && out[dstIdx] === TRANSPARENT_INDEX) continue
+        out[dstIdx] = val
+      }
+    }
+    return {
+      offsetX: minX,
+      offsetY: minY,
+      dataWidth: unionW,
+      dataHeight: unionH,
+      data: out,
+      nextPalette: workingPalette,
+    }
+  }
+
   const shiftedLower: LayerRuntime = {
     ...lower,
     offsetX: lOx - minX,
@@ -277,13 +356,57 @@ export function mergeTwoLayers(
     dataHeight: uH,
   }
 
-  const mergedData = compositeLayers([shiftedLower, shiftedUpper], unionW, unionH)
+  const mergedRgba = compositeLayers(
+    [shiftedLower, shiftedUpper],
+    unionW,
+    unionH,
+    { palette: workingPalette }
+  )
+
+  const outIndices = new Uint8Array(unionW * unionH)
+  outIndices.fill(TRANSPARENT_INDEX)
+  const hexCache = new Map<string, number>()
+
+  for (let p = 0; p < unionW * unionH; p++) {
+    const off = p * 4
+    const a = mergedRgba[off + 3]!
+    if (a === 0) continue
+    if (a < 255) {
+      const x = p % unionW
+      const y = (p - x) / unionW
+      const threshold = (BAYER_4X4[(y & 3) * 4 + (x & 3)]! + 0.5) * (255 / 16)
+      if (a < threshold) continue
+    }
+    const r = mergedRgba[off]!
+    const g = mergedRgba[off + 1]!
+    const b = mergedRgba[off + 2]!
+    const hex = rgbaToHex({ r, g, b }).toUpperCase()
+    let fixedIdx = hexCache.get(hex)
+    if (fixedIdx === undefined) {
+      const exact = findExactFixedIndex(workingPalette, hex)
+      if (exact >= 0) {
+        fixedIdx = exact
+      } else {
+        const added = addColorToIndexedPalette(workingPalette, hex)
+        if (added) {
+          workingPalette = added.palette
+          fixedIdx = added.fixedIndex
+        } else {
+          fixedIdx = findNearestFixedIndex(workingPalette, r, g, b)
+        }
+      }
+      hexCache.set(hex, fixedIdx)
+    }
+    outIndices[p] = fixedIdx
+  }
+
   return {
     offsetX: minX,
     offsetY: minY,
     dataWidth: unionW,
     dataHeight: unionH,
-    data: mergedData,
+    data: outIndices,
+    nextPalette: workingPalette,
   }
 }
 
@@ -294,10 +417,6 @@ export interface ExportScaleOption {
   label: string
 }
 
-/**
- * Compute all valid integer upscale multipliers where neither width nor height exceeds `maxDimension` (default 4000px).
- * `1x` is always included.
- */
 export function getExportScaleOptions(
   width: number,
   height: number,
@@ -321,19 +440,6 @@ export function getExportScaleOptions(
   return options
 }
 
-/**
- * Compute initial default integer export scale whose output long edge is <= 2000px
- * and as close as possible to 2000px (`Math.max(1, Math.floor(2000 / max(canvasWidth, canvasHeight)))`),
- * clamped to valid options `<= 4000px`.
- * Shared across both PNG and GIF exports.
- * Examples:
- * - `256 × 256` -> `7x` (`1792 × 1792px`)
- * - `128 × 128` -> `15x` (`1920 × 1920px`)
- * - `96 × 96`   -> `20x` (`1920 × 1920px`)
- * - `80 × 80`   -> `25x` (`2000 × 2000px`)
- * - `64 × 64`   -> `31x` (`1984 × 1984px`)
- * - `32 × 32`   -> `62x` (`1984 × 1984px`)
- */
 export function getDefaultExportScale(
   width: number,
   height: number,
@@ -349,10 +455,6 @@ export function getDefaultExportScale(
   return Math.min(maxAllowed, floorScale)
 }
 
-/**
- * Pure integer nearest-neighbor upscale of RGBA buffer.
- * Zero color interpolation or anti-aliasing.
- */
 export function upscaleNearestNeighbor(
   src: Uint8ClampedArray,
   width: number,
@@ -374,10 +476,10 @@ export function upscaleNearestNeighbor(
     const firstDestRowStart = y * s * rowByteLen
     for (let x = 0; x < width; x++) {
       const sIdx = (y * width + x) * 4
-      const r = src[sIdx]
-      const g = src[sIdx + 1]
-      const b = src[sIdx + 2]
-      const a = src[sIdx + 3]
+      const r = src[sIdx]!
+      const g = src[sIdx + 1]!
+      const b = src[sIdx + 2]!
+      const a = src[sIdx + 3]!
 
       let dIdx = firstDestRowStart + x * s * 4
       for (let sx = 0; sx < s; sx++) {
@@ -413,7 +515,7 @@ const CRC_TABLE = (() => {
 function crc32(bytes: Uint8Array): number {
   let c = 0xffffffff
   for (let i = 0; i < bytes.length; i++) {
-    c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8)
+    c = CRC_TABLE[(c ^ bytes[i]!) & 0xff]! ^ (c >>> 8)
   }
   return (c ^ 0xffffffff) >>> 0
 }
@@ -456,14 +558,11 @@ function makeTextChunk(keyword: string, text: string): Uint8Array {
   const valBytes = encoder.encode(text)
   const payload = new Uint8Array(keyBytes.length + 1 + valBytes.length)
   payload.set(keyBytes, 0)
-  payload[keyBytes.length] = 0 // null separator per PNG 1.2 spec
+  payload[keyBytes.length] = 0
   payload.set(valBytes, keyBytes.length + 1)
   return makePngChunk('tEXt', payload)
 }
 
-/**
- * Lossless pure-JS 8-bit RGBA PNG encoder with optional standard `tEXt` metadata chunks.
- */
 export function encodeRgbaToPng(
   rgba: Uint8ClampedArray | Uint8Array,
   width: number,
@@ -536,7 +635,11 @@ export function decodePngBasic(png: Uint8Array): {
   data: Uint8ClampedArray
 } {
   const readU32 = (off: number) =>
-    ((png[off] << 24) | (png[off + 1] << 16) | (png[off + 2] << 8) | png[off + 3]) >>> 0
+    ((png[off]! << 24) |
+      (png[off + 1]! << 16) |
+      (png[off + 2]! << 8) |
+      png[off + 3]!) >>>
+    0
 
   let pos = 8
   let width = 0
@@ -546,10 +649,10 @@ export function decodePngBasic(png: Uint8Array): {
   while (pos + 8 <= png.length) {
     const len = readU32(pos)
     const type = String.fromCharCode(
-      png[pos + 4],
-      png[pos + 5],
-      png[pos + 6],
-      png[pos + 7]
+      png[pos + 4]!,
+      png[pos + 5]!,
+      png[pos + 6]!,
+      png[pos + 7]!
     )
     const chunkData = png.subarray(pos + 8, pos + 8 + len)
     if (type === 'IHDR') {
@@ -583,7 +686,8 @@ export function decodePngBasic(png: Uint8Array): {
 }
 
 /**
- * Full pipeline: composite layers onto `[0..width-1, 0..height-1]` and export scaled nearest-neighbor PNG bytes.
+ * Full pipeline: composite 1-byte Indexed Color layers via `palette` into temporary RGBA
+ * and export scaled nearest-neighbor PNG bytes (Section 9-1).
  */
 export function exportCompositePngBytes(
   layers: readonly LayerRuntime[],
@@ -591,15 +695,18 @@ export function exportCompositePngBytes(
   height: number,
   scale: number,
   options?: {
+    palette?: ProjectPalette | Uint8ClampedArray
     embedMetadata?: boolean
   }
 ): { png: Uint8Array; outWidth: number; outHeight: number } {
-  const maxSide = Math.max(width, height)
+  const maxSide = Math.max(1, Math.max(width, height))
   const clampedScale = Math.max(
     1,
     Math.min(Math.floor(MAX_EXPORT_DIMENSION / maxSide), Math.trunc(scale))
   )
-  const flat = compositeLayers(layers, width, height)
+  const flat = compositeLayers(layers, width, height, {
+    palette: options?.palette,
+  })
   const scaled = upscaleNearestNeighbor(flat, width, height, clampedScale)
   const metaPayload: DotDotPngMetadata = {
     app: 'dotdot',

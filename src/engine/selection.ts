@@ -1,13 +1,20 @@
-import type {
-  ClipboardBuffer,
-  Connectivity,
-  LayerRuntime,
-  OutlineMode,
-  Point,
-  RGBA,
-  WorldSelectionMask,
+import {
+  TRANSPARENT_INDEX,
+  type ClipboardBuffer,
+  type Connectivity,
+  type LayerRuntime,
+  type OutlineMode,
+  type Point,
+  type ProjectPalette,
+  type RGBA,
+  type WorldSelectionMask,
 } from '../types'
+import { resolveDrawColorIndex } from './brush'
 import { computeConnectedRegion } from './floodFill'
+import {
+  extractUsedColorMap,
+  remapClipboardToTargetPalette,
+} from './indexedPalette'
 import {
   createPixelBuffer,
   isInBounds,
@@ -38,9 +45,6 @@ export function hasAnySelectedWorldPixel(
   return false
 }
 
-/**
- * Convert a canvas-space `Uint8Array(canvasW * canvasH)` mask into a trimmed `WorldSelectionMask`.
- */
 export function canvasMaskToWorldSelection(
   mask: Uint8Array | null,
   canvasWidth: number,
@@ -67,10 +71,6 @@ export function canvasMaskToWorldSelection(
   }
 }
 
-/**
- * Project a `WorldSelectionMask` onto the visible `[0..canvasW-1, 0..canvasH-1]` canvas mask.
- * Returns `null` if zero selected pixels currently overlap the canvas (note: `hasSelection` remains true via `WorldSelectionMask`!).
- */
 export function projectWorldSelectionToCanvasMask(
   ws: WorldSelectionMask | null | undefined,
   canvasWidth: number,
@@ -97,9 +97,6 @@ export function projectWorldSelectionToCanvasMask(
   return anyVisible ? out : null
 }
 
-/**
- * Shift a `WorldSelectionMask` by `(dx, dy)` in world coordinates WITHOUT clipping or losing off-canvas cells!
- */
 export function shiftWorldSelectionMask(
   ws: WorldSelectionMask,
   dx: number,
@@ -114,9 +111,6 @@ export function shiftWorldSelectionMask(
   }
 }
 
-/**
- * Union two `WorldSelectionMask`s in world space without clipping to canvas bounds!
- */
 export function mergeWorldSelectionMasks(
   existing: WorldSelectionMask | null | undefined,
   addition: WorldSelectionMask | null | undefined
@@ -163,9 +157,6 @@ export function mergeWorldSelectionMasks(
   }
 }
 
-/**
- * Create a rectangular `WorldSelectionMask` from arbitrary world points `start` & `end` (even outside canvas!).
- */
 export function selectWorldRectangleMask(
   start: Point,
   end: Point
@@ -184,9 +175,6 @@ export function selectWorldRectangleMask(
   }
 }
 
-/**
- * Create an elliptical `WorldSelectionMask` from arbitrary world points `start` & `end` (even outside canvas!).
- */
 export function selectWorldEllipseMask(
   start: Point,
   end: Point
@@ -204,38 +192,24 @@ export function selectWorldEllipseMask(
   }
 }
 
-/**
- * Read a pixel from `layer` at arbitrary world coordinate `(wx, wy)` (including off-canvas backing pixels!).
- */
-function getLayerWorldPixel(layer: LayerRuntime, wx: number, wy: number): RGBA {
+function getLayerWorldPixelIndex(layer: LayerRuntime, wx: number, wy: number): number {
   const lx = wx - layer.offsetX
   const ly = wy - layer.offsetY
   if (lx < 0 || ly < 0 || lx >= layer.dataWidth || ly >= layer.dataHeight) {
-    return { r: 0, g: 0, b: 0, a: 0 }
+    return TRANSPARENT_INDEX
   }
-  const idx = (ly * layer.dataWidth + lx) * 4
-  return {
-    r: layer.data[idx]!,
-    g: layer.data[idx + 1]!,
-    b: layer.data[idx + 2]!,
-    a: layer.data[idx + 3]!,
-  }
+  return layer.data[ly * layer.dataWidth + lx] ?? TRANSPARENT_INDEX
 }
 
-/**
- * Extract selected pixels from `layer` in world space (`ws`) and return:
- * - `extractedBuffer`: `RGBA` buffer of size `ws.width * ws.height`
- * - `clearedLayer`: `LayerRuntime` with those selected pixels cleared to `RGBA(0,0,0,0)` (preserving all other off-canvas pixels!)
- */
 export function extractWorldSelectionFromLayer(
   layer: LayerRuntime,
   ws: WorldSelectionMask
 ): {
-  extractedBuffer: Uint8ClampedArray
+  extractedBuffer: Uint8Array
   clearedLayer: LayerRuntime
 } {
   const extractedBuffer = createPixelBuffer(ws.width, ws.height)
-  const clearedData = new Uint8ClampedArray(layer.data)
+  const clearedData = new Uint8Array(layer.data)
 
   for (let sy = 0; sy < ws.height; sy++) {
     const wy = ws.originY + sy
@@ -245,17 +219,10 @@ export function extractWorldSelectionFromLayer(
       const wx = ws.originX + sx
       const lx = wx - layer.offsetX
       if (lx >= 0 && ly >= 0 && lx < layer.dataWidth && ly < layer.dataHeight) {
-        const sOff = (ly * layer.dataWidth + lx) * 4
-        const dOff = (sy * ws.width + sx) * 4
+        const sOff = ly * layer.dataWidth + lx
+        const dOff = sy * ws.width + sx
         extractedBuffer[dOff] = layer.data[sOff]!
-        extractedBuffer[dOff + 1] = layer.data[sOff + 1]!
-        extractedBuffer[dOff + 2] = layer.data[sOff + 2]!
-        extractedBuffer[dOff + 3] = layer.data[sOff + 3]!
-
-        clearedData[sOff] = 0
-        clearedData[sOff + 1] = 0
-        clearedData[sOff + 2] = 0
-        clearedData[sOff + 3] = 0
+        clearedData[sOff] = TRANSPARENT_INDEX
       }
     }
   }
@@ -269,10 +236,6 @@ export function extractWorldSelectionFromLayer(
   }
 }
 
-/**
- * Non-destructively move selected world pixels & world selection mask by `(dx, dy)` in world space!
- * Off-canvas pixels are preserved inside `nextLayer.data` with expanded geometry, and `nextWorldSelection` retains exact world coordinates.
- */
 export function moveWorldSelectionOnLayer(
   layer: LayerRuntime,
   ws: WorldSelectionMask,
@@ -297,12 +260,11 @@ export function moveWorldSelectionOnLayer(
   return { nextLayer, nextWorldSelection }
 }
 
-/**
- * Copy world-selected pixels from `layer` into a `ClipboardBuffer` (including pixels currently outside canvas!).
- */
 export function copyWorldSelectionFromLayer(
   layer: LayerRuntime,
-  ws: WorldSelectionMask
+  ws: WorldSelectionMask,
+  sourcePalette?: ProjectPalette,
+  sourceProjectId?: string
 ): ClipboardBuffer | null {
   if (!hasAnySelectedWorldPixel(ws)) return null
   const data = createPixelBuffer(ws.width, ws.height)
@@ -310,12 +272,7 @@ export function copyWorldSelectionFromLayer(
     const wy = ws.originY + sy
     for (let sx = 0; sx < ws.width; sx++) {
       if (ws.mask[sy * ws.width + sx] === 0) continue
-      const px = getLayerWorldPixel(layer, ws.originX + sx, wy)
-      const dOff = (sy * ws.width + sx) * 4
-      data[dOff] = px.r
-      data[dOff + 1] = px.g
-      data[dOff + 2] = px.b
-      data[dOff + 3] = px.a
+      data[sy * ws.width + sx] = getLayerWorldPixelIndex(layer, ws.originX + sx, wy)
     }
   }
   return {
@@ -324,24 +281,24 @@ export function copyWorldSelectionFromLayer(
     offsetX: ws.originX,
     offsetY: ws.originY,
     data,
+    ...(sourceProjectId ? { sourceProjectId } : {}),
+    ...(sourcePalette
+      ? { sourceColorMap: extractUsedColorMap(data, sourcePalette) }
+      : {}),
   }
 }
 
-/**
- * Cut world-selected pixels from `layer` (works seamlessly even if partially or completely off-canvas).
- */
 export function cutWorldSelectionFromLayer(
   layer: LayerRuntime,
-  ws: WorldSelectionMask
+  ws: WorldSelectionMask,
+  sourcePalette?: ProjectPalette,
+  sourceProjectId?: string
 ): { clipboard: ClipboardBuffer | null; nextLayer: LayerRuntime } {
-  const clipboard = copyWorldSelectionFromLayer(layer, ws)
+  const clipboard = copyWorldSelectionFromLayer(layer, ws, sourcePalette, sourceProjectId)
   const { clearedLayer } = extractWorldSelectionFromLayer(layer, ws)
   return { clipboard, nextLayer: clearedLayer }
 }
 
-/**
- * Flip world-selected pixels horizontally or vertically within `ws` bounds in world space!
- */
 export function flipWorldSelectionOnLayer(
   layer: LayerRuntime,
   ws: WorldSelectionMask,
@@ -359,10 +316,7 @@ export function flipWorldSelectionOnLayer(
       const dy = direction === 'vertical' ? ws.height - 1 - sy : sy
       const dIdx = dy * ws.width + dx
       flippedMask[dIdx] = 1
-      flippedBuf[dIdx * 4] = extractedBuffer[sIdx * 4]!
-      flippedBuf[dIdx * 4 + 1] = extractedBuffer[sIdx * 4 + 1]!
-      flippedBuf[dIdx * 4 + 2] = extractedBuffer[sIdx * 4 + 2]!
-      flippedBuf[dIdx * 4 + 3] = extractedBuffer[sIdx * 4 + 3]!
+      flippedBuf[dIdx] = extractedBuffer[sIdx]!
     }
   }
 
@@ -432,7 +386,7 @@ export function invertSelectionMask(
 }
 
 export function selectSameColor(
-  layerBuffer: Uint8ClampedArray,
+  layerBuffer: Uint8Array,
   width: number,
   height: number,
   seedX: number,
@@ -530,33 +484,23 @@ export function getSelectionBounds(
   }
 }
 
-/**
- * Move selected pixels and selection mask simultaneously by (dx, dy) (e.g. 1px step).
- * Source selected pixels become transparent before shifted selected pixels are written.
- */
 export function moveSelectionContent(
-  layerBuffer: Uint8ClampedArray,
+  layerBuffer: Uint8Array,
   mask: Uint8Array,
   width: number,
   height: number,
   dx: number,
   dy: number
-): { nextBuffer: Uint8ClampedArray; nextMask: Uint8Array } {
-  const nextBuffer = new Uint8ClampedArray(layerBuffer)
+): { nextBuffer: Uint8Array; nextMask: Uint8Array } {
+  const nextBuffer = new Uint8Array(layerBuffer)
   const nextMask = createSelectionMask(width, height)
 
-  // First clear all currently selected pixels on nextBuffer
   for (let i = 0; i < mask.length; i++) {
     if (mask[i] !== 0) {
-      const bIdx = i * 4
-      nextBuffer[bIdx] = 0
-      nextBuffer[bIdx + 1] = 0
-      nextBuffer[bIdx + 2] = 0
-      nextBuffer[bIdx + 3] = 0
+      nextBuffer[i] = TRANSPARENT_INDEX
     }
   }
 
-  // Copy selected pixels and mask to shifted coordinates
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const sIdx = y * width + x
@@ -568,47 +512,34 @@ export function moveSelectionContent(
 
       const dIdx = ny * width + nx
       nextMask[dIdx] = 1
-      const sb = sIdx * 4
-      const db = dIdx * 4
-      nextBuffer[db] = layerBuffer[sb]
-      nextBuffer[db + 1] = layerBuffer[sb + 1]
-      nextBuffer[db + 2] = layerBuffer[sb + 2]
-      nextBuffer[db + 3] = layerBuffer[sb + 3]
+      nextBuffer[dIdx] = layerBuffer[sIdx]!
     }
   }
 
   return { nextBuffer, nextMask }
 }
 
-/**
- * Flip selected pixels and selection mask horizontally or vertically within selection's bounding box.
- */
 export function flipSelectionContent(
-  layerBuffer: Uint8ClampedArray,
+  layerBuffer: Uint8Array,
   mask: Uint8Array,
   width: number,
   height: number,
   direction: 'horizontal' | 'vertical'
-): { nextBuffer: Uint8ClampedArray; nextMask: Uint8Array } {
+): { nextBuffer: Uint8Array; nextMask: Uint8Array } {
   const bounds = getSelectionBounds(mask, width, height)
   if (!bounds) {
     return {
-      nextBuffer: new Uint8ClampedArray(layerBuffer),
+      nextBuffer: new Uint8Array(layerBuffer),
       nextMask: new Uint8Array(mask),
     }
   }
 
-  const nextBuffer = new Uint8ClampedArray(layerBuffer)
+  const nextBuffer = new Uint8Array(layerBuffer)
   const nextMask = createSelectionMask(width, height)
 
-  // Clear original selected pixels first
   for (let i = 0; i < mask.length; i++) {
     if (mask[i] !== 0) {
-      const bIdx = i * 4
-      nextBuffer[bIdx] = 0
-      nextBuffer[bIdx + 1] = 0
-      nextBuffer[bIdx + 2] = 0
-      nextBuffer[bIdx + 3] = 0
+      nextBuffer[i] = TRANSPARENT_INDEX
     }
   }
 
@@ -624,26 +555,20 @@ export function flipSelectionContent(
 
       const dIdx = ty * width + tx
       nextMask[dIdx] = 1
-      const sb = sIdx * 4
-      const db = dIdx * 4
-      nextBuffer[db] = layerBuffer[sb]
-      nextBuffer[db + 1] = layerBuffer[sb + 1]
-      nextBuffer[db + 2] = layerBuffer[sb + 2]
-      nextBuffer[db + 3] = layerBuffer[sb + 3]
+      nextBuffer[dIdx] = layerBuffer[sIdx]!
     }
   }
 
   return { nextBuffer, nextMask }
 }
 
-/**
- * Copy selected pixels into internal clipboard buffer.
- */
 export function copySelection(
-  layerBuffer: Uint8ClampedArray,
+  layerBuffer: Uint8Array,
   mask: Uint8Array,
   width: number,
-  height: number
+  height: number,
+  sourcePalette?: ProjectPalette,
+  sourceProjectId?: string
 ): ClipboardBuffer | null {
   const bounds = getSelectionBounds(mask, width, height)
   if (!bounds) return null
@@ -653,13 +578,7 @@ export function copySelection(
     for (let x = bounds.minX; x <= bounds.maxX; x++) {
       const sIdx = y * width + x
       if (mask[sIdx] === 0) continue
-
-      const sb = sIdx * 4
-      const db = ((y - bounds.minY) * bounds.width + (x - bounds.minX)) * 4
-      data[db] = layerBuffer[sb]
-      data[db + 1] = layerBuffer[sb + 1]
-      data[db + 2] = layerBuffer[sb + 2]
-      data[db + 3] = layerBuffer[sb + 3]
+      data[(y - bounds.minY) * bounds.width + (x - bounds.minX)] = layerBuffer[sIdx]!
     }
   }
 
@@ -669,45 +588,66 @@ export function copySelection(
     offsetX: bounds.minX,
     offsetY: bounds.minY,
     data,
+    ...(sourceProjectId ? { sourceProjectId } : {}),
+    ...(sourcePalette
+      ? { sourceColorMap: extractUsedColorMap(data, sourcePalette) }
+      : {}),
   }
 }
 
-/**
- * Cut selected pixels: returns clipboard buffer + new layer buffer with selected pixels cleared.
- */
 export function cutSelection(
-  layerBuffer: Uint8ClampedArray,
+  layerBuffer: Uint8Array,
   mask: Uint8Array,
   width: number,
-  height: number
-): { clipboard: ClipboardBuffer | null; nextBuffer: Uint8ClampedArray } {
-  const clipboard = copySelection(layerBuffer, mask, width, height)
-  const nextBuffer = new Uint8ClampedArray(layerBuffer)
+  height: number,
+  sourcePalette?: ProjectPalette,
+  sourceProjectId?: string
+): { clipboard: ClipboardBuffer | null; nextBuffer: Uint8Array } {
+  const clipboard = copySelection(
+    layerBuffer,
+    mask,
+    width,
+    height,
+    sourcePalette,
+    sourceProjectId
+  )
+  const nextBuffer = new Uint8Array(layerBuffer)
   for (let i = 0; i < mask.length; i++) {
     if (mask[i] !== 0) {
-      const bIdx = i * 4
-      nextBuffer[bIdx] = 0
-      nextBuffer[bIdx + 1] = 0
-      nextBuffer[bIdx + 2] = 0
-      nextBuffer[bIdx + 3] = 0
+      nextBuffer[i] = TRANSPARENT_INDEX
     }
   }
   return { clipboard, nextBuffer }
 }
 
-/**
- * Paste clipboard onto layer buffer at (destX, destY) and return updated buffer + selection mask of pasted pixels.
- */
 export function pasteClipboard(
-  layerBuffer: Uint8ClampedArray,
+  layerBuffer: Uint8Array,
   clipboard: ClipboardBuffer,
   width: number,
   height: number,
   destX?: number,
-  destY?: number
-): { nextBuffer: Uint8ClampedArray; nextMask: Uint8Array } {
-  const nextBuffer = new Uint8ClampedArray(layerBuffer)
+  destY?: number,
+  targetPalette?: ProjectPalette,
+  targetProjectId?: string
+): { nextBuffer: Uint8Array; nextMask: Uint8Array; nextPalette?: ProjectPalette } {
+  const nextBuffer = new Uint8Array(layerBuffer)
   const nextMask = createSelectionMask(width, height)
+
+  let srcData = clipboard.data
+  let nextPalette: ProjectPalette | undefined
+  if (
+    targetPalette &&
+    clipboard.sourceColorMap &&
+    (!targetProjectId || clipboard.sourceProjectId !== targetProjectId)
+  ) {
+    const remapped = remapClipboardToTargetPalette(
+      clipboard.data,
+      clipboard.sourceColorMap,
+      targetPalette
+    )
+    srcData = remapped.remappedData
+    nextPalette = remapped.nextPalette
+  }
 
   const ox = destX ?? clipboard.offsetX
   const oy = destY ?? clipboard.offsetY
@@ -719,50 +659,22 @@ export function pasteClipboard(
       const cx = ox + lx
       if (cx < 0 || cx >= width) continue
 
-      const sb = (ly * clipboard.width + lx) * 4
-      const sa = clipboard.data[sb + 3]
-      if (sa === 0) continue
+      const val = srcData[ly * clipboard.width + lx]!
+      if (val === TRANSPARENT_INDEX) continue
 
       const pIdx = cy * width + cx
       nextMask[pIdx] = 1
-      const db = pIdx * 4
-      if (sa === 255 || nextBuffer[db + 3] === 0) {
-        nextBuffer[db] = clipboard.data[sb]
-        nextBuffer[db + 1] = clipboard.data[sb + 1]
-        nextBuffer[db + 2] = clipboard.data[sb + 2]
-        nextBuffer[db + 3] = sa
-      } else {
-        const srcA = sa / 255
-        const dstA = nextBuffer[db + 3] / 255
-        const outA = srcA + dstA * (1 - srcA)
-        nextBuffer[db] = Math.round(
-          (clipboard.data[sb] * srcA + nextBuffer[db] * dstA * (1 - srcA)) / outA
-        )
-        nextBuffer[db + 1] = Math.round(
-          (clipboard.data[sb + 1] * srcA + nextBuffer[db + 1] * dstA * (1 - srcA)) / outA
-        )
-        nextBuffer[db + 2] = Math.round(
-          (clipboard.data[sb + 2] * srcA + nextBuffer[db + 2] * dstA * (1 - srcA)) / outA
-        )
-        nextBuffer[db + 3] = Math.round(outA * 255)
-      }
+      nextBuffer[pIdx] = val
     }
   }
 
-  return { nextBuffer, nextMask }
+  return {
+    nextBuffer,
+    nextMask,
+    ...(nextPalette ? { nextPalette } : {}),
+  }
 }
 
-/**
- * Compute outline mask around selection contour using two distinct algorithms (Section 7-4):
- *
- * 1) `normal`: 8-neighborhood (Chebyshev) morphological dilation around selection contour,
- *    filling diagonal corners cleanly for a full blocky frame.
- * 2) `pixelPerfect`: 4-neighborhood (Manhattan) contour shell with L-corner pruning so diagonal
- *    contours stay crisp 1px pixel-art outlines without heavy corner blocks.
- *
- * If the selection covers the entire canvas (no unselected exterior pixels exist),
- * falls back to drawing along the inner border of the selection so outline always produces visible output.
- */
 export function computeSelectionOutlineMask(
   mask: Uint8Array,
   width: number,
@@ -780,7 +692,6 @@ export function computeSelectionOutlineMask(
   }
   if (selectedCount === 0) return outline
 
-  // Check if full-canvas selection (no exterior available)
   const useInnerBorder = selectedCount === total
 
   if (useInnerBorder) {
@@ -788,12 +699,7 @@ export function computeSelectionOutlineMask(
       for (let x = 0; x < width; x++) {
         const distEdge = Math.min(x, y, width - 1 - x, height - 1 - y)
         if (distEdge < thickness) {
-          if (mode === 'pixelPerfect' && thickness === 1) {
-            // Skip the 4 extreme corners on 1px inner pixel-perfect frame if desired, or keep clean border
-            outline[y * width + x] = 1
-          } else {
-            outline[y * width + x] = 1
-          }
+          outline[y * width + x] = 1
         }
       }
     }
@@ -801,7 +707,6 @@ export function computeSelectionOutlineMask(
   }
 
   if (mode === 'normal') {
-    // Algorithm A (Normal): 8-connected iterative dilation around selection exterior
     let current = new Uint8Array(mask)
     for (let step = 0; step < thickness; step++) {
       const next = new Uint8Array(current)
@@ -826,7 +731,6 @@ export function computeSelectionOutlineMask(
       current = next
     }
   } else {
-    // Algorithm B (Pixel-Perfect): 4-connected Manhattan dilation + corner cleanup pass
     let current = new Uint8Array(mask)
     const dirs4 = [
       [1, 0],
@@ -855,8 +759,6 @@ export function computeSelectionOutlineMask(
         }
       }
 
-      // Prune redundant L-corners on this 1px shell where two orthogonal neighbors in the SAME ring
-      // already bridge diagonally without exposing `current`
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
           const idx = y * width + x
@@ -867,8 +769,6 @@ export function computeSelectionOutlineMask(
           const hasUp = y > 0 && ring[(y - 1) * width + x] === 1
           const hasDown = y + 1 < height && ring[(y + 1) * width + x] === 1
 
-          // Only keep 4-connected contact with `current`; remove redundant outer staircase corners
-          // when an L-bend is NOT directly orthogonally hugging two sides of `current`
           let touchesCurrentCount = 0
           for (let d = 0; d < 4; d++) {
             const nx = x + dirs4[d][0]
@@ -899,28 +799,25 @@ export function computeSelectionOutlineMask(
   return outline
 }
 
-/**
- * Draw outline onto layerBuffer around `mask` using specified mode, thickness, and color.
- */
 export function applySelectionOutline(
-  layerBuffer: Uint8ClampedArray,
+  layerBuffer: Uint8Array,
   mask: Uint8Array,
   width: number,
   height: number,
   mode: OutlineMode,
   size: number,
-  color: RGBA
-): Uint8ClampedArray {
-  const nextBuffer = new Uint8ClampedArray(layerBuffer)
+  colorIndexOrRgba: number | RGBA
+): Uint8Array {
+  const nextBuffer = new Uint8Array(layerBuffer)
   const outlineMask = computeSelectionOutlineMask(mask, width, height, mode, size)
+  const targetIdx =
+    typeof colorIndexOrRgba === 'number'
+      ? resolveDrawColorIndex(colorIndexOrRgba, undefined, false)
+      : resolveDrawColorIndex(undefined, colorIndexOrRgba, false)
 
   for (let i = 0; i < outlineMask.length; i++) {
     if (outlineMask[i] === 0) continue
-    const bIdx = i * 4
-    nextBuffer[bIdx] = color.r
-    nextBuffer[bIdx + 1] = color.g
-    nextBuffer[bIdx + 2] = color.b
-    nextBuffer[bIdx + 3] = color.a
+    nextBuffer[i] = targetIdx
   }
 
   return nextBuffer

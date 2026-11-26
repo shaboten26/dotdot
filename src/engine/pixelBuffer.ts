@@ -1,14 +1,27 @@
-import type { LayerRuntime, ResizeAnchor, RGBA } from '../types'
+import {
+  TRANSPARENT_INDEX,
+  type LayerRuntime,
+  type ProjectPalette,
+  type ResizeAnchor,
+  type RGBA,
+} from '../types'
+import { buildPaletteRgbaLut } from './indexedPalette'
 
 export const MIN_CANVAS_SIZE = 1
 export const MAX_CANVAS_SIZE = 256
+export { TRANSPARENT_INDEX }
 
-export function createPixelBuffer(width: number, height: number): Uint8ClampedArray {
-  return new Uint8ClampedArray(width * height * 4)
+/**
+ * Allocate a 1-byte-per-pixel Indexed Color buffer (`width * height`) initialized to `TRANSPARENT_INDEX` (`255`).
+ */
+export function createPixelBuffer(width: number, height: number): Uint8Array {
+  const buf = new Uint8Array(Math.max(0, Math.trunc(width) * Math.trunc(height)))
+  buf.fill(TRANSPARENT_INDEX)
+  return buf
 }
 
-export function clonePixelBuffer(src: Uint8ClampedArray): Uint8ClampedArray {
-  return new Uint8ClampedArray(src)
+export function clonePixelBuffer(src: Uint8Array): Uint8Array {
+  return new Uint8Array(src)
 }
 
 export function isInBounds(x: number, y: number, width: number, height: number): boolean {
@@ -16,138 +29,165 @@ export function isInBounds(x: number, y: number, width: number, height: number):
 }
 
 export function getPixelOffset(x: number, y: number, width: number): number {
-  return (y * width + x) * 4
+  return y * width + x
 }
 
-export function getPixel(
-  buffer: Uint8ClampedArray,
+export function getPixelIndex(
+  buffer: Uint8Array,
   width: number,
   height: number,
   x: number,
   y: number
-): RGBA {
+): number {
   if (!isInBounds(x, y, width, height)) {
-    return { r: 0, g: 0, b: 0, a: 0 }
+    return TRANSPARENT_INDEX
   }
-  const idx = (y * width + x) * 4
-  return {
-    r: buffer[idx],
-    g: buffer[idx + 1],
-    b: buffer[idx + 2],
-    a: buffer[idx + 3],
-  }
+  return buffer[y * width + x] ?? TRANSPARENT_INDEX
 }
 
-export function setPixel(
-  buffer: Uint8ClampedArray,
+export function setPixelIndex(
+  buffer: Uint8Array,
   width: number,
   height: number,
   x: number,
   y: number,
-  color: RGBA
+  colorIndex: number
 ): void {
   if (!isInBounds(x, y, width, height)) return
-  const idx = (y * width + x) * 4
-  if (color.a === 0) {
-    buffer[idx] = 0
-    buffer[idx + 1] = 0
-    buffer[idx + 2] = 0
-    buffer[idx + 3] = 0
-  } else {
-    buffer[idx] = color.r
-    buffer[idx + 1] = color.g
-    buffer[idx + 2] = color.b
-    buffer[idx + 3] = color.a
-  }
-}
-
-export function pixelsMatchAt(
-  buffer: Uint8ClampedArray,
-  idxA: number,
-  idxB: number
-): boolean {
-  const aA = buffer[idxA + 3]
-  const aB = buffer[idxB + 3]
-  if (aA === 0 && aB === 0) return true
-  return (
-    aA === aB &&
-    buffer[idxA] === buffer[idxB] &&
-    buffer[idxA + 1] === buffer[idxB + 1] &&
-    buffer[idxA + 2] === buffer[idxB + 2]
-  )
-}
-
-export function clearBuffer(buffer: Uint8ClampedArray): void {
-  buffer.fill(0)
+  buffer[y * width + x] =
+    colorIndex < 0 || colorIndex >= TRANSPARENT_INDEX
+      ? TRANSPARENT_INDEX
+      : colorIndex & 0xff
 }
 
 /**
- * Resize pixel buffer keeping top-left (0, 0) anchored and expanding/cropping right/bottom.
+ * Read RGBA value at `(x, y)` either from a temporary `Uint8ClampedArray` RGBA buffer (4 bytes/px, e.g. composited output)
+ * or from a 1-byte `Uint8Array` Indexed Color buffer (using optional `paletteOrLut`).
  */
+export function getPixel(
+  buffer: Uint8Array | Uint8ClampedArray,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  paletteOrLut?: ProjectPalette | Uint8ClampedArray
+): RGBA {
+  if (!isInBounds(x, y, width, height)) {
+    return { r: 0, g: 0, b: 0, a: 0 }
+  }
+  if (buffer instanceof Uint8ClampedArray && buffer.length === width * height * 4) {
+    const idx = (y * width + x) * 4
+    return {
+      r: buffer[idx]!,
+      g: buffer[idx + 1]!,
+      b: buffer[idx + 2]!,
+      a: buffer[idx + 3]!,
+    }
+  }
+  const pIdx = buffer[y * width + x] ?? TRANSPARENT_INDEX
+  if (pIdx === TRANSPARENT_INDEX) {
+    return { r: 0, g: 0, b: 0, a: 0 }
+  }
+  if (paletteOrLut) {
+    const lut =
+      paletteOrLut instanceof Uint8ClampedArray
+        ? paletteOrLut
+        : buildPaletteRgbaLut(paletteOrLut)
+    const off = pIdx * 4
+    return {
+      r: lut[off]!,
+      g: lut[off + 1]!,
+      b: lut[off + 2]!,
+      a: lut[off + 3]!,
+    }
+  }
+  return { r: pIdx, g: pIdx, b: pIdx, a: 255 }
+}
+
+export function setPixel(
+  buffer: Uint8Array,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  colorIndexOrRgba: number | RGBA
+): void {
+  if (!isInBounds(x, y, width, height)) return
+  if (typeof colorIndexOrRgba === 'number') {
+    setPixelIndex(buffer, width, height, x, y, colorIndexOrRgba)
+    return
+  }
+  buffer[y * width + x] =
+    colorIndexOrRgba.a === 0 ? TRANSPARENT_INDEX : colorIndexOrRgba.r & 0xff
+}
+
+export function pixelsMatchAt(
+  buffer: Uint8Array,
+  idxA: number,
+  idxB: number
+): boolean {
+  return buffer[idxA] === buffer[idxB]
+}
+
+export function clearBuffer(buffer: Uint8Array): void {
+  buffer.fill(TRANSPARENT_INDEX)
+}
+
 export function resizePixelBuffer(
-  src: Uint8ClampedArray,
+  src: Uint8Array,
   oldWidth: number,
   oldHeight: number,
   newWidth: number,
   newHeight: number
-): Uint8ClampedArray {
+): Uint8Array {
   const dst = createPixelBuffer(newWidth, newHeight)
   const copyW = Math.min(oldWidth, newWidth)
   const copyH = Math.min(oldHeight, newHeight)
 
   for (let y = 0; y < copyH; y++) {
-    const srcRowStart = y * oldWidth * 4
-    const dstRowStart = y * newWidth * 4
-    dst.set(src.subarray(srcRowStart, srcRowStart + copyW * 4), dstRowStart)
+    const srcRowStart = y * oldWidth
+    const dstRowStart = y * newWidth
+    dst.set(src.subarray(srcRowStart, srcRowStart + copyW), dstRowStart)
   }
   return dst
 }
 
 export function flipBufferHorizontal(
-  src: Uint8ClampedArray,
+  src: Uint8Array,
   width: number,
   height: number
-): Uint8ClampedArray {
+): Uint8Array {
   const dst = createPixelBuffer(width, height)
   for (let y = 0; y < height; y++) {
+    const rowOff = y * width
     for (let x = 0; x < width; x++) {
-      const sIdx = (y * width + x) * 4
-      const dIdx = (y * width + (width - 1 - x)) * 4
-      dst[dIdx] = src[sIdx]
-      dst[dIdx + 1] = src[sIdx + 1]
-      dst[dIdx + 2] = src[sIdx + 2]
-      dst[dIdx + 3] = src[sIdx + 3]
+      dst[rowOff + (width - 1 - x)] = src[rowOff + x]!
     }
   }
   return dst
 }
 
 export function flipBufferVertical(
-  src: Uint8ClampedArray,
+  src: Uint8Array,
   width: number,
   height: number
-): Uint8ClampedArray {
+): Uint8Array {
   const dst = createPixelBuffer(width, height)
-  const rowBytes = width * 4
   for (let y = 0; y < height; y++) {
-    const sStart = y * rowBytes
-    const dStart = (height - 1 - y) * rowBytes
-    dst.set(src.subarray(sStart, sStart + rowBytes), dStart)
+    const sStart = y * width
+    const dStart = (height - 1 - y) * width
+    dst.set(src.subarray(sStart, sStart + width), dStart)
   }
   return dst
 }
 
-/**
- * Translate fixed-size buffer by (dx, dy), clipping pixels that leave [0..width-1, 0..height-1].
- * Note: For non-destructive whole-layer moves, update `layer.offsetX` / `layer.offsetY` instead!
- */
 export function translateBuffer(
-  src: Uint8ClampedArray,
+  src: Uint8Array,
   width: number,
   height: number,
   dx: number,
   dy: number
-): Uint8ClampedArray {
+): Uint8Array {
   const dst = createPixelBuffer(width, height)
   const shiftX = Math.trunc(dx)
   const shiftY = Math.trunc(dy)
@@ -158,27 +198,19 @@ export function translateBuffer(
     for (let x = 0; x < width; x++) {
       const nx = x + shiftX
       if (nx < 0 || nx >= width) continue
-      const sIdx = (y * width + x) * 4
-      const dIdx = (ny * width + nx) * 4
-      dst[dIdx] = src[sIdx]
-      dst[dIdx + 1] = src[sIdx + 1]
-      dst[dIdx + 2] = src[sIdx + 2]
-      dst[dIdx + 3] = src[sIdx + 3]
+      dst[ny * width + nx] = src[y * width + x]!
     }
   }
   return dst
 }
 
-/**
- * Normalize a LayerRuntime's offset/dimensions safely (used for legacy v1 records too).
- */
 export function normalizeLayerGeometry(
   layer: {
     offsetX?: number
     offsetY?: number
     dataWidth?: number
     dataHeight?: number
-    data: Uint8ClampedArray
+    data?: Uint8Array | Uint8ClampedArray
   },
   fallbackWidth: number,
   fallbackHeight: number
@@ -208,14 +240,14 @@ export function normalizeLayerGeometry(
 }
 
 /**
- * Extract the visible `[0..canvasW-1, 0..canvasH-1]` window of a layer in canvas space.
+ * Extract the visible `[0..canvasW-1, 0..canvasH-1]` window of an indexed layer (`1 byte/pixel`).
  * Pixels stored outside the canvas remain untouched in `layer.data`!
  */
 export function extractLayerCanvasView(
   layer: Pick<LayerRuntime, 'offsetX' | 'offsetY' | 'dataWidth' | 'dataHeight' | 'data'>,
   canvasWidth: number,
   canvasHeight: number
-): Uint8ClampedArray {
+): Uint8Array {
   const ox = layer.offsetX ?? 0
   const oy = layer.offsetY ?? 0
   const lw = layer.dataWidth ?? canvasWidth
@@ -226,9 +258,9 @@ export function extractLayerCanvasView(
     oy === 0 &&
     lw === canvasWidth &&
     lh === canvasHeight &&
-    layer.data.length === canvasWidth * canvasHeight * 4
+    layer.data.length === canvasWidth * canvasHeight
   ) {
-    return new Uint8ClampedArray(layer.data)
+    return new Uint8Array(layer.data)
   }
 
   const out = createPixelBuffer(canvasWidth, canvasHeight)
@@ -239,26 +271,25 @@ export function extractLayerCanvasView(
 
   if (startCx >= endCx || startCy >= endCy) return out
 
-  const spanBytes = (endCx - startCx) * 4
+  const span = endCx - startCx
   for (let cy = startCy; cy < endCy; cy++) {
     const ly = cy - oy
     const lx = startCx - ox
-    const srcOff = (ly * lw + lx) * 4
-    const dstOff = (cy * canvasWidth + startCx) * 4
-    out.set(layer.data.subarray(srcOff, srcOff + spanBytes), dstOff)
+    const srcOff = ly * lw + lx
+    const dstOff = cy * canvasWidth + startCx
+    out.set(layer.data.subarray(srcOff, srcOff + span), dstOff)
   }
 
   return out
 }
 
 /**
- * Write a modified `[0..canvasW-1, 0..canvasH-1]` canvas-space buffer back into `layer`
+ * Write a modified `[0..canvasW-1, 0..canvasH-1]` indexed canvas view back into `layer`
  * WITHOUT erasing any off-canvas pixels stored outside `[0..canvasW-1, 0..canvasH-1]`.
- * Automatically expands the layer's backing buffer if `layer` was previously shifted away from `[0..canvasW, 0..canvasH]`.
  */
 export function writeLayerCanvasView(
   layer: LayerRuntime,
-  editedCanvasView: Uint8ClampedArray,
+  editedCanvasView: Uint8Array,
   canvasWidth: number,
   canvasHeight: number
 ): LayerRuntime {
@@ -267,16 +298,14 @@ export function writeLayerCanvasView(
   const lw = layer.dataWidth ?? canvasWidth
   const lh = layer.dataHeight ?? canvasHeight
 
-  // Fast path when backing buffer already covers [0..canvasWidth, 0..canvasHeight]
   if (ox <= 0 && oy <= 0 && ox + lw >= canvasWidth && oy + lh >= canvasHeight) {
-    const nextData = new Uint8ClampedArray(layer.data)
-    const rowBytes = canvasWidth * 4
+    const nextData = new Uint8Array(layer.data)
     for (let cy = 0; cy < canvasHeight; cy++) {
       const ly = cy - oy
       const lx = 0 - ox
-      const dstOff = (ly * lw + lx) * 4
-      const srcOff = cy * rowBytes
-      nextData.set(editedCanvasView.subarray(srcOff, srcOff + rowBytes), dstOff)
+      const dstOff = ly * lw + lx
+      const srcOff = cy * canvasWidth
+      nextData.set(editedCanvasView.subarray(srcOff, srcOff + canvasWidth), dstOff)
     }
     return {
       ...layer,
@@ -288,7 +317,6 @@ export function writeLayerCanvasView(
     }
   }
 
-  // Expand backing rectangle to union of [ox..ox+lw, oy..oy+lh] and [0..canvasWidth, 0..canvasHeight]
   const newMinX = Math.min(ox, 0)
   const newMinY = Math.min(oy, 0)
   const newMaxX = Math.max(ox + lw, canvasWidth)
@@ -298,25 +326,20 @@ export function writeLayerCanvasView(
 
   const nextData = createPixelBuffer(newW, newH)
 
-  // 1. Copy all existing layer pixels (preserving off-canvas pixels!)
-  const oldRowBytes = lw * 4
   for (let ly = 0; ly < lh; ly++) {
-    const worldY = oy + ly
-    const ny = worldY - newMinY
+    const ny = oy + ly - newMinY
     const nx = ox - newMinX
-    const srcOff = ly * oldRowBytes
-    const dstOff = (ny * newW + nx) * 4
-    nextData.set(layer.data.subarray(srcOff, srcOff + oldRowBytes), dstOff)
+    const srcOff = ly * lw
+    const dstOff = ny * newW + nx
+    nextData.set(layer.data.subarray(srcOff, srcOff + lw), dstOff)
   }
 
-  // 2. Overwrite the [0..canvasWidth, 0..canvasHeight] canvas window with editedCanvasView
-  const canvasRowBytes = canvasWidth * 4
   for (let cy = 0; cy < canvasHeight; cy++) {
     const ny = cy - newMinY
     const nx = 0 - newMinX
-    const srcOff = cy * canvasRowBytes
-    const dstOff = (ny * newW + nx) * 4
-    nextData.set(editedCanvasView.subarray(srcOff, srcOff + canvasRowBytes), dstOff)
+    const srcOff = cy * canvasWidth
+    const dstOff = ny * newW + nx
+    nextData.set(editedCanvasView.subarray(srcOff, srcOff + canvasWidth), dstOff)
   }
 
   return {
@@ -330,13 +353,12 @@ export function writeLayerCanvasView(
 }
 
 /**
- * Write arbitrary world-space RGBA buffer `[srcX..srcX+srcW, srcY..srcY+srcH]` onto `layer`
- * WITHOUT clipping pixels outside `[0..canvasW, 0..canvasH]`!
- * Used when committing a Selection Move that may have been dragged partially outside the canvas.
+ * Write arbitrary world-space 1-byte Indexed Color buffer `[srcX..srcX+srcW, srcY..srcY+srcH]` onto `baseLayer`
+ * WITHOUT clipping pixels outside `[0..canvasW, 0..canvasH]`.
  */
 export function stampBufferIntoLayerWorld(
   baseLayer: LayerRuntime,
-  srcBuffer: Uint8ClampedArray,
+  srcBuffer: Uint8Array,
   srcWidth: number,
   srcHeight: number,
   worldOriginX: number,
@@ -347,14 +369,13 @@ export function stampBufferIntoLayerWorld(
   const lw = baseLayer.dataWidth
   const lh = baseLayer.dataHeight
 
-  // Find bounding box of non-transparent pixels in srcBuffer so we only expand if needed
   let minSx = srcWidth
   let minSy = srcHeight
   let maxSx = -1
   let maxSy = -1
   for (let sy = 0; sy < srcHeight; sy++) {
     for (let sx = 0; sx < srcWidth; sx++) {
-      if (srcBuffer[(sy * srcWidth + sx) * 4 + 3] > 0) {
+      if (srcBuffer[sy * srcWidth + sx] !== TRANSPARENT_INDEX) {
         if (sx < minSx) minSx = sx
         if (sx > maxSx) maxSx = sx
         if (sy < minSy) minSy = sy
@@ -363,7 +384,7 @@ export function stampBufferIntoLayerWorld(
     }
   }
   if (maxSx < minSx || maxSy < minSy) {
-    return { ...baseLayer, data: new Uint8ClampedArray(baseLayer.data) }
+    return { ...baseLayer, data: new Uint8Array(baseLayer.data) }
   }
 
   const stampMinWorldX = worldOriginX + minSx
@@ -379,45 +400,21 @@ export function stampBufferIntoLayerWorld(
   const newH = Math.max(1, newMaxY - newMinY)
 
   const nextData = createPixelBuffer(newW, newH)
-  const oldRowBytes = lw * 4
   for (let ly = 0; ly < lh; ly++) {
     const ny = oy + ly - newMinY
     const nx = ox - newMinX
-    const srcOff = ly * oldRowBytes
-    const dstOff = (ny * newW + nx) * 4
-    nextData.set(baseLayer.data.subarray(srcOff, srcOff + oldRowBytes), dstOff)
+    const srcOff = ly * lw
+    const dstOff = ny * newW + nx
+    nextData.set(baseLayer.data.subarray(srcOff, srcOff + lw), dstOff)
   }
 
   for (let sy = minSy; sy <= maxSy; sy++) {
-    const worldY = worldOriginY + sy
-    const ny = worldY - newMinY
+    const ny = worldOriginY + sy - newMinY
     for (let sx = minSx; sx <= maxSx; sx++) {
-      const sOff = (sy * srcWidth + sx) * 4
-      const sa = srcBuffer[sOff + 3]
-      if (sa === 0) continue
-      const worldX = worldOriginX + sx
-      const nx = worldX - newMinX
-      const dOff = (ny * newW + nx) * 4
-      if (sa === 255 || nextData[dOff + 3] === 0) {
-        nextData[dOff] = srcBuffer[sOff]
-        nextData[dOff + 1] = srcBuffer[sOff + 1]
-        nextData[dOff + 2] = srcBuffer[sOff + 2]
-        nextData[dOff + 3] = sa
-      } else {
-        const srcA = sa / 255
-        const dstA = nextData[dOff + 3] / 255
-        const outA = srcA + dstA * (1 - srcA)
-        nextData[dOff] = Math.round(
-          (srcBuffer[sOff] * srcA + nextData[dOff] * dstA * (1 - srcA)) / outA
-        )
-        nextData[dOff + 1] = Math.round(
-          (srcBuffer[sOff + 1] * srcA + nextData[dOff + 1] * dstA * (1 - srcA)) / outA
-        )
-        nextData[dOff + 2] = Math.round(
-          (srcBuffer[sOff + 2] * srcA + nextData[dOff + 2] * dstA * (1 - srcA)) / outA
-        )
-        nextData[dOff + 3] = Math.round(outA * 255)
-      }
+      const val = srcBuffer[sy * srcWidth + sx]!
+      if (val === TRANSPARENT_INDEX) continue
+      const nx = worldOriginX + sx - newMinX
+      nextData[ny * newW + nx] = val
     }
   }
 
@@ -431,10 +428,6 @@ export function stampBufferIntoLayerWorld(
   }
 }
 
-/**
- * Flip layer horizontally or vertically around the canvas center `[0..canvasWidth-1]` / `[0..canvasHeight-1]`
- * while preserving off-canvas pixels symmetrically!
- */
 export function flipLayerAroundCanvas(
   layer: LayerRuntime,
   canvasWidth: number,
@@ -446,9 +439,6 @@ export function flipLayerAroundCanvas(
       ? flipBufferHorizontal(layer.data, layer.dataWidth, layer.dataHeight)
       : flipBufferVertical(layer.data, layer.dataWidth, layer.dataHeight)
 
-  // World coordinate x maps to (canvasWidth - 1 - x).
-  // Old layer covered [offsetX .. offsetX + dataWidth - 1], so flipped covers:
-  // [canvasWidth - (offsetX + dataWidth) .. canvasWidth - 1 - offsetX].
   const nextOffsetX =
     direction === 'horizontal'
       ? canvasWidth - (layer.offsetX + layer.dataWidth)
@@ -466,16 +456,6 @@ export function flipLayerAroundCanvas(
   }
 }
 
-/**
- * Section 5: Compute deterministic `(shiftX, shiftY)` for 9-way anchor canvas resize.
- *
- * Explicit odd-delta rule:
- * - Left / Top (`top-left`, `middle-left`, `bottom-left` / `top-*`): shift = `0`
- * - Center (`*-center`, `middle-*`, `center`): shift = `Math.floor((newSize - oldSize) / 2)`
- *   (When `newSize - oldSize` is positive odd, e.g. +1, extra 1px padding goes on right/bottom;
- *    when negative odd, e.g. -1, `Math.floor(-1 / 2) = -1` shifts content -1px symmetrically)
- * - Right / Bottom (`*-right` / `bottom-*`): shift = `newSize - oldSize`
- */
 export function computeResizeAnchorOffset(
   oldWidth: number,
   oldHeight: number,
@@ -503,11 +483,6 @@ export function computeResizeAnchorOffset(
   return { shiftX, shiftY }
 }
 
-/**
- * Resize canvas across all layers using a 9-directional anchor:
- * - Shifts every layer by the exact same `(shiftX, shiftY)` so inter-layer relative positions NEVER drift.
- * - Expands backing buffers if needed to cover `[0..newWidth, 0..newHeight]` while keeping off-canvas pixel data non-destructively!
- */
 export function resizeLayersWithAnchor(
   layers: readonly LayerRuntime[],
   oldWidth: number,
@@ -544,18 +519,17 @@ export function resizeLayersWithAnchor(
         offsetY: shiftedOy,
         dataWidth: lw,
         dataHeight: lh,
-        data: new Uint8ClampedArray(l.data),
+        data: new Uint8Array(l.data),
       }
     }
 
     const nextData = createPixelBuffer(bw, bh)
-    const rowBytes = lw * 4
     for (let ly = 0; ly < lh; ly++) {
       const ny = shiftedOy + ly - newMinY
       const nx = shiftedOx - newMinX
-      const sOff = ly * rowBytes
-      const dOff = (ny * bw + nx) * 4
-      nextData.set(l.data.subarray(sOff, sOff + rowBytes), dOff)
+      const sOff = ly * lw
+      const dOff = ny * bw + nx
+      nextData.set(l.data.subarray(sOff, sOff + lw), dOff)
     }
 
     return {
@@ -571,11 +545,6 @@ export function resizeLayersWithAnchor(
   return { layers: nextLayers, shiftX, shiftY }
 }
 
-/**
- * Count non-transparent pixels currently visible in `[0..oldWidth-1, 0..oldHeight-1]` across all layers
- * that will fall outside the new `[0..newWidth-1, 0..newHeight-1]` canvas after applying `anchor`.
- * Used to display a clear warning before cropping/shrinking the canvas (Section 5-2).
- */
 export function countPixelsOutsideResizedCanvas(
   layers: readonly LayerRuntime[],
   oldWidth: number,
@@ -598,8 +567,7 @@ export function countPixelsOutsideResizedCanvas(
     for (let y = 0; y < oldHeight; y++) {
       const ny = y + shiftY
       for (let x = 0; x < oldWidth; x++) {
-        const a = view[(y * oldWidth + x) * 4 + 3]
-        if (a === 0) continue
+        if (view[y * oldWidth + x] === TRANSPARENT_INDEX) continue
         const nx = x + shiftX
         if (nx < 0 || nx >= newWidth || ny < 0 || ny >= newHeight) {
           clippedCount++

@@ -1,11 +1,12 @@
-import type {
-  CelBufferRuntime,
-  CelMap,
-  CelRef,
-  FrameMeta,
-  LayerMeta,
-  LayerRuntime,
-  PlaybackDirection,
+import {
+  TRANSPARENT_INDEX,
+  type CelBufferRuntime,
+  type CelMap,
+  type CelRef,
+  type FrameMeta,
+  type LayerMeta,
+  type LayerRuntime,
+  type PlaybackDirection,
 } from '../types'
 import { createPixelBuffer } from './pixelBuffer'
 import { generateId } from '../utils/id'
@@ -39,9 +40,6 @@ export function clampFrameDurationMs(ms: number): number {
   )
 }
 
-/**
- * Round duration (ms) to GIF 1/100s (10ms = 1 centisecond) unit, minimum 10ms (1cs).
- */
 export function roundDurationToGifMs(ms: number): {
   centiseconds: number
   roundedMs: number
@@ -56,9 +54,15 @@ export function roundDurationToGifMs(ms: number): {
   }
 }
 
-export function hasAnyOpaquePixel(data: Uint8ClampedArray): boolean {
-  for (let i = 3; i < data.length; i += 4) {
-    if (data[i] !== 0) return true
+export function hasAnyOpaquePixel(data: Uint8Array | Uint8ClampedArray): boolean {
+  if (data instanceof Uint8ClampedArray) {
+    for (let i = 3; i < data.length; i += 4) {
+      if (data[i] !== 0) return true
+    }
+    return false
+  }
+  for (let i = 0; i < data.length; i++) {
+    if (data[i] !== TRANSPARENT_INDEX) return true
   }
   return false
 }
@@ -71,10 +75,6 @@ export function hasAnySemiTransparentPixel(data: Uint8ClampedArray): boolean {
   return false
 }
 
-/**
- * Build a 1-frame initial `TimelineState` from legacy single-frame `LayerRuntime[]`.
- * Guarantees 100% lossless migration of existing artworks!
- */
 export function createSingleFrameTimelineFromLayers(
   layers: readonly LayerRuntime[],
   options?: {
@@ -99,7 +99,7 @@ export function createSingleFrameTimelineFromLayers(
       offsetY: layer.offsetY ?? 0,
       dataWidth: layer.dataWidth,
       dataHeight: layer.dataHeight,
-      data: new Uint8ClampedArray(layer.data),
+      data: new Uint8Array(layer.data),
     }
     cels[makeCellKey(layer.id, frameId)] = { kind: 'cel', celId }
   }
@@ -115,9 +115,6 @@ export function createSingleFrameTimelineFromLayers(
   }
 }
 
-/**
- * Count how many `(layerId, frameId)` cells currently reference each `celId`.
- */
 export function countCelReferences(cels: CelMap): Record<string, number> {
   const counts: Record<string, number> = {}
   for (const ref of Object.values(cels)) {
@@ -138,9 +135,6 @@ export function getCelReferenceCountMap(cels: CelMap): Map<string, number> {
   return map
 }
 
-/**
- * Determine whether a cell `(layerId, frameId)` is `'empty'`, `'independent'`, or `'linked'`.
- */
 export function getCellStateKind(
   cels: CelMap,
   celBuffers: Readonly<Record<string, CelBufferRuntime>>,
@@ -157,9 +151,6 @@ export function getCellStateKind(
   return count >= 2 ? 'linked' : 'independent'
 }
 
-/**
- * Return all `frameId`s in `frames` order that share the same linked `celId` on `layerId`.
- */
 export function getLinkedFrameIdsForCell(
   frames: readonly FrameMeta[],
   cels: CelMap,
@@ -179,10 +170,6 @@ export function getLinkedFrameIdsForCell(
   return linked
 }
 
-/**
- * Project the layer stack for a specific `frameId` as `LayerRuntime[]` so the existing compositor,
- * selection engine, and drawing tools work identically on 1-frame still images and N-frame animations!
- */
 export function projectFrameLayers(
   layerMetas: readonly LayerMeta[],
   cels: CelMap,
@@ -207,7 +194,6 @@ export function projectFrameLayers(
         }
       }
     }
-    // Empty cell -> transparent canvas-sized buffer
     return {
       ...meta,
       locked: Boolean(meta.locked),
@@ -220,9 +206,6 @@ export function projectFrameLayers(
   })
 }
 
-/**
- * Garbage-collect unreferenced `CelBufferRuntime` entries not referenced by `cels`.
- */
 export function pruneUnreferencedCelBuffers(
   cels: CelMap,
   celBuffers: Readonly<Record<string, CelBufferRuntime>>
@@ -242,13 +225,6 @@ export function pruneUnreferencedCelBuffers(
   return next
 }
 
-/**
- * Cell Operations (Phase 6):
- * 1. Create / clear to Empty cel
- * 2. Duplicate as Independent cel (copies pixel buffer)
- * 3. Duplicate as Linked cel (shares exact `celId` reference!)
- * 4. Unlink a Linked cel into an Independent cel (clones pixel buffer to a fresh `celId`)
- */
 export function setCellToEmpty(
   cels: CelMap,
   celBuffers: Readonly<Record<string, CelBufferRuntime>>,
@@ -291,7 +267,7 @@ export function unlinkCellToIndependent(
       offsetY: src.offsetY,
       dataWidth: src.dataWidth,
       dataHeight: src.dataHeight,
-      data: new Uint8ClampedArray(src.data),
+      data: new Uint8Array(src.data),
     },
   }
   const nextCels: CelMap = {
@@ -318,15 +294,6 @@ export function linkCellToSourceCell(
   )
 }
 
-/**
- * Retroactive Cel Linking (Section 4):
- * Links an existing target cell `(targetLayerId, targetFrameId)` to share the exact `celId`
- * of a non-empty source cell `(sourceLayerId, sourceFrameId)`.
- * - Prevents self-reference (`source === target`).
- * - Because `CelMap` maps cells flatly to `celBuffers[celId]` (never cell-to-cell pointers),
- *   circular references are structurally impossible!
- * - Preserves full Undo/Redo when executed via `HistoryManager` (`CanvasSnapshot` stores both `cels` and `celBuffers`).
- */
 export function linkCellToAnySourceCell(
   cels: CelMap,
   celBuffers: Readonly<Record<string, CelBufferRuntime>>,
@@ -370,17 +337,6 @@ export function linkCellToAnySourceCell(
   }
 }
 
-function hasAnyVisibleAlpha(data: Uint8ClampedArray): boolean {
-  for (let i = 3; i < data.length; i += 4) {
-    if (data[i] !== 0) return true
-  }
-  return false
-}
-
-/**
- * Returns `true` when `target` currently owns non-empty pixel data that differs from `source`,
- * requiring explicit user confirmation before replacing target's image data with a shared link to `source`.
- */
 export function willLinkingOverwriteDistinctPixels(
   cels: CelMap,
   celBuffers: Readonly<Record<string, CelBufferRuntime>>,
@@ -392,7 +348,7 @@ export function willLinkingOverwriteDistinctPixels(
   const dstRef = cels[makeCellKey(targetLayerId, targetFrameId)]
   if (!dstRef || dstRef.kind === 'empty') return false
   const dstBuf = celBuffers[dstRef.celId]
-  if (!dstBuf || !hasAnyVisibleAlpha(dstBuf.data)) return false
+  if (!dstBuf || !hasAnyOpaquePixel(dstBuf.data)) return false
 
   const srcRef = cels[makeCellKey(sourceLayerId, sourceFrameId)]
   if (!srcRef || srcRef.kind === 'empty') return true
@@ -469,7 +425,7 @@ export function copyCellAsIndependent(
       offsetY: src.offsetY,
       dataWidth: src.dataWidth,
       dataHeight: src.dataHeight,
-      data: new Uint8ClampedArray(src.data),
+      data: new Uint8Array(src.data),
     },
   }
   const nextCels: CelMap = {
@@ -483,12 +439,6 @@ export function copyCellAsIndependent(
   }
 }
 
-/**
- * Frame Operations (Phase 5, 6, 8):
- * - Add Empty Frame (uses `defaultFrameDurationMs`, all layers get `{ kind: 'empty' }`)
- * - Duplicate Frame as Independent (inherits source frame `durationMs`, clones non-empty cels)
- * - Duplicate Frame as Linked (inherits source frame `durationMs`, shares `celId` references!)
- */
 export function insertNewFrame(
   timeline: TimelineState,
   layerMetas: readonly LayerMeta[],
@@ -539,7 +489,7 @@ export function insertNewFrame(
         offsetY: srcBuf.offsetY,
         dataWidth: srcBuf.dataWidth,
         dataHeight: srcBuf.dataHeight,
-        data: new Uint8ClampedArray(srcBuf.data),
+        data: new Uint8Array(srcBuf.data),
       }
       nextCels[dstKey] = { kind: 'cel', celId: copyId }
     }
@@ -599,15 +549,6 @@ export function reorderTimelineFrames(
   return { ...timeline, frames: nextFrames }
 }
 
-/**
- * Playback Sequence Generator (Phase 7):
- * - `'forward'`: `[0, 1, ..., N-1]`
- * - `'reverse'`: `[N-1, ..., 1, 0]`
- * - `'pingpong'`:
- *   - `N === 1`: `[0]`
- *   - `N === 2`: `[0, 1]` (never holds endpoints twice!)
- *   - `N >= 3`: `[0, 1, ..., N-1, N-2, ..., 1]` (endpoints `0` and `N-1` are NEVER played twice in a row!)
- */
 export function computePlaybackFrameIndices(
   frameCount: number,
   direction: PlaybackDirection,
@@ -624,7 +565,6 @@ export function computePlaybackFrameIndices(
     return Array.from({ length: n }, (_, i) => n - 1 - i)
   }
 
-  // Ping-pong
   if (n === 2) {
     return forSingleShotCycle ? [0, 1, 0] : [0, 1]
   }
@@ -637,12 +577,6 @@ export function computePlaybackFrameIndices(
   return seq
 }
 
-/**
- * Resolve target frame IDs for Batch Frame Duration editing (Phase 8):
- * - `'selected'`: explicit checked/selected frame IDs
- * - `'range'`: inclusive 1-based frame index range `[startNumber..endNumber]`
- * - `'all'`: every frame in the project
- */
 export function resolveBatchDurationTargetFrameIds(
   frames: readonly FrameMeta[],
   scope:

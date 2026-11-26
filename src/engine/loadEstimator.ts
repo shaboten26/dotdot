@@ -13,7 +13,7 @@ export interface ProjectLoadEstimate {
   independentCellCount: number
   linkedCellCount: number
   uniqueCelBufferCount: number
-  /** Actual RGBA memory bytes stored across unique `celBuffers` (Empty = 0, Linked counted ONCE!) */
+  /** Actual 1-byte Indexed Color memory bytes stored across unique `celBuffers` (Empty = 0, Linked counted ONCE!) */
   actualCelMemoryBytes: number
   /** Estimated expanded frame RGBA bytes when rendering all frames for GIF export */
   expandedFramesBytes: number
