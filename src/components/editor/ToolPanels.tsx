@@ -6,6 +6,8 @@ import {
   type DitherPatternId,
   type FloatingShapeState,
   type GradientSteps,
+  type StampAsset,
+  type StampPlacementSession,
   type ToolId,
   type ToolSettings,
 } from '../../types'
@@ -546,6 +548,7 @@ export function FloatingTransformBar({
 interface SelectionReadyBarProps {
   onStartMove: () => void
   onClearSelection: () => void
+  onOpenStampRegister?: () => void
 }
 
 /**
@@ -555,6 +558,7 @@ interface SelectionReadyBarProps {
 export function SelectionReadyBar({
   onStartMove,
   onClearSelection,
+  onOpenStampRegister,
 }: SelectionReadyBarProps) {
   const { t } = useI18n()
   return (
@@ -577,6 +581,17 @@ export function SelectionReadyBar({
           <PixelIcon name="move" size={13} />
           <span>{t('startMoveBtn')}</span>
         </button>
+        {onOpenStampRegister && (
+          <button
+            type="button"
+            onClick={onOpenStampRegister}
+            className="pixel-btn min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1"
+            data-testid="quick-register-stamp-btn"
+          >
+            <PixelIcon name="stamp" size={13} />
+            <span>{t('stampRegisterBtn')}</span>
+          </button>
+        )}
         <button
           type="button"
           onClick={onClearSelection}
@@ -585,6 +600,126 @@ export function SelectionReadyBar({
         >
           <PixelIcon name="close" size={12} />
           <span>{t('clearSelection')}</span>
+        </button>
+      </div>
+    </div>
+  )
+}
+
+interface StampPlacementBarProps {
+  stampSession: StampPlacementSession
+  onMoveStep: (dx: number, dy: number) => void
+  onFlip: (axis: 'horizontal' | 'vertical') => void
+  onCommit: () => void
+  onCancel: () => void
+}
+
+/**
+ * Compact 1-line Stamp Placement Bar:
+ * 1x pixel-accurate stamp positioning, H/V flip, commit, and cancel.
+ */
+export function StampPlacementBar({
+  stampSession,
+  onMoveStep,
+  onFlip,
+  onCommit,
+  onCancel,
+}: StampPlacementBarProps) {
+  const { t } = useI18n()
+  return (
+    <div
+      className="px-2 py-1.5 bg-[var(--bg-panel)] border-t-2 border-[var(--border-pixel)] flex flex-wrap items-center justify-between gap-1.5 shrink-0"
+      data-testid="stamp-placement-bar"
+    >
+      <div className="flex items-center gap-1 text-xs font-bold text-[var(--accent-teal)] shrink-0">
+        <PixelIcon name="stamp" size={13} />
+        <span className="truncate max-w-[110px]">{stampSession.name}</span>
+        <span className="font-mono text-[11px] px-1.5 py-0.5 bg-[var(--bg-elevated)] border border-[var(--border-subtle)] text-[var(--text-primary)]">
+          {stampSession.x},{stampSession.y} ({stampSession.width}×{stampSession.height})
+        </span>
+      </div>
+
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onMoveStep(-1, 0)}
+          className="pixel-btn min-w-[34px] min-h-[34px] flex items-center justify-center"
+          aria-label="Stamp Left 1px"
+          data-testid="stamp-step-left"
+        >
+          <PixelIcon name="arrowLeft" size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onMoveStep(0, -1)}
+          className="pixel-btn min-w-[34px] min-h-[34px] flex items-center justify-center"
+          aria-label="Stamp Up 1px"
+          data-testid="stamp-step-up"
+        >
+          <PixelIcon name="arrowUp" size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onMoveStep(0, 1)}
+          className="pixel-btn min-w-[34px] min-h-[34px] flex items-center justify-center"
+          aria-label="Stamp Down 1px"
+          data-testid="stamp-step-down"
+        >
+          <PixelIcon name="arrowDown" size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onMoveStep(1, 0)}
+          className="pixel-btn min-w-[34px] min-h-[34px] flex items-center justify-center"
+          aria-label="Stamp Right 1px"
+          data-testid="stamp-step-right"
+        >
+          <PixelIcon name="arrowRight" size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onFlip('horizontal')}
+          className={`min-w-[34px] min-h-[34px] flex items-center justify-center ${
+            stampSession.flipX ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+          }`}
+          title={t('stampFlipH')}
+          aria-label={t('stampFlipH')}
+          data-testid="stamp-flip-h"
+        >
+          <PixelIcon name="flipH" size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onFlip('vertical')}
+          className={`min-w-[34px] min-h-[34px] flex items-center justify-center ${
+            stampSession.flipY ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+          }`}
+          title={t('stampFlipV')}
+          aria-label={t('stampFlipV')}
+          data-testid="stamp-flip-v"
+        >
+          <PixelIcon name="flipV" size={13} />
+        </button>
+      </div>
+
+      <div className="flex items-center gap-1 ml-auto">
+        <button
+          type="button"
+          onClick={onCommit}
+          className="pixel-btn pixel-btn-teal min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1"
+          data-testid="commit-stamp-btn"
+        >
+          <PixelIcon name="check" size={13} />
+          <span>{t('stampCommitBtn')}</span>
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="pixel-btn pixel-btn-danger min-h-[34px] px-2 text-xs font-bold flex items-center gap-1"
+          data-testid="cancel-stamp-btn"
+        >
+          <PixelIcon name="close" size={13} />
+          <span>{t('cancel')}</span>
         </button>
       </div>
     </div>
@@ -773,6 +908,8 @@ interface ToolDetailPopoverProps {
   onFlipSelection: (dir: 'horizontal' | 'vertical') => void
   onInvertSelection: () => void
   onClearSelection: () => void
+  stamps?: readonly StampAsset[]
+  onOpenStampSheet?: () => void
 }
 
 export function ToolDetailPopover({
@@ -795,6 +932,8 @@ export function ToolDetailPopover({
   onFlipSelection,
   onInvertSelection,
   onClearSelection,
+  stamps = [],
+  onOpenStampSheet,
 }: ToolDetailPopoverProps) {
   const { t } = useI18n()
   const { reducedMotion } = useApp()
@@ -938,6 +1077,45 @@ export function ToolDetailPopover({
 
               {renderDitherPicker(settings.penDither, (id) =>
                 onChange({ penDither: id })
+              )}
+
+              {onOpenStampSheet && (
+                <div className="pt-1 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onOpenStampSheet()
+                      onClose()
+                    }}
+                    className={`min-h-[34px] px-2.5 text-xs font-bold flex items-center gap-1.5 ${
+                      settings.patternStampId
+                        ? 'pixel-btn pixel-btn-active'
+                        : 'pixel-btn'
+                    }`}
+                    data-testid="pen-open-stamp-sheet-btn"
+                  >
+                    <PixelIcon name="stamp" size={13} />
+                    <span>
+                      {settings.patternStampId
+                        ? `${t('stampPatternActive')}: ${
+                            stamps.find((s) => s.id === settings.patternStampId)
+                              ?.name ?? ''
+                          }`
+                        : t('stampTitle')}
+                    </span>
+                  </button>
+
+                  {settings.patternStampId && (
+                    <button
+                      type="button"
+                      onClick={() => onChange({ patternStampId: null })}
+                      className="pixel-btn min-h-[32px] px-2 text-xs font-bold"
+                      data-testid="pen-clear-pattern-btn"
+                    >
+                      {t('stampPatternOff')}
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -1504,6 +1682,21 @@ export function ToolDetailPopover({
                 >
                   {t('invertSelection')}
                 </button>
+                {onOpenStampSheet && (
+                  <button
+                    type="button"
+                    disabled={!hasSelection}
+                    onClick={() => {
+                      onOpenStampSheet()
+                      onClose()
+                    }}
+                    className="pixel-btn pixel-btn-teal min-h-[36px] px-2 text-xs font-bold flex items-center gap-1"
+                    data-testid="select-register-stamp-btn"
+                  >
+                    <PixelIcon name="stamp" size={13} />
+                    <span>{t('stampRegisterBtn')}</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   disabled={!hasSelection}

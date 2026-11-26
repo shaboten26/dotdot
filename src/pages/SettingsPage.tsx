@@ -3,6 +3,8 @@ import { motion } from 'motion/react'
 import type {
   LanguageCode,
   PaletteData,
+  SeamlessWrapMode,
+  SymmetryMode,
   ThemeMode,
   UiSizePreset,
 } from '../types'
@@ -27,6 +29,7 @@ import { PixelIcon } from '../components/common/PixelIcon'
 import { PixelCheckbox } from '../components/common/PixelCheckbox'
 import { PixelSlider } from '../components/common/PixelSlider'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
+import { StampSheetModal } from '../components/editor/StampSheetModal'
 import { LospecImportModal } from '../components/common/LospecImportModal'
 import {
   LegalDocsModal,
@@ -48,6 +51,7 @@ export function SettingsPage() {
     settings,
     reducedMotion,
     palettes,
+    stamps,
     projects,
     originStorageStatus,
     updateSettings,
@@ -57,6 +61,9 @@ export function SettingsPage() {
     duplicateLibraryPalette,
     removeLibraryPalette,
     reorderLibraryPalettes,
+    addStamp,
+    renameStamp,
+    removeStamp,
     reloadWorkspaceState,
     markEnvPackExported,
     showToast,
@@ -95,6 +102,8 @@ export function SettingsPage() {
   const [pendingPack, setPendingPack] = useState<ValidatedEnvPack | null>(null)
   const [confirmResetOpen, setConfirmResetOpen] = useState(false)
   const [lospecLibOpen, setLospecLibOpen] = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [manageStampsOpen, setManageStampsOpen] = useState(false)
   const [legalTab, setLegalTab] = useState<LegalDocTab | null>(null)
 
   const refreshStorage = useCallback(async () => {
@@ -668,6 +677,143 @@ export function SettingsPage() {
             </div>
           </section>
 
+          {/* 3b. Collapsible Advanced Editing, Stamps & I/O Settings */}
+          <section
+            className="pixel-card p-4 space-y-3"
+            data-testid="settings-advanced-section"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <SectionTitle
+                icon="symmetry"
+                title={t('sectionAdvancedFeatures')}
+              />
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((v) => !v)}
+                aria-expanded={advancedOpen}
+                className={`min-h-[34px] px-3 text-xs font-bold flex items-center gap-1 ${
+                  advancedOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+                }`}
+                data-testid="settings-toggle-advanced-btn"
+              >
+                <PixelIcon
+                  name={advancedOpen ? 'arrowUp' : 'arrowDown'}
+                  size={12}
+                />
+                <span>
+                  {advancedOpen ? t('advancedCloseBtn') : t('advancedOpenBtn')}
+                </span>
+              </button>
+            </div>
+
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+              {t('sectionAdvancedDesc')}
+            </p>
+
+            {advancedOpen && (
+              <div className="space-y-3.5 pt-2 border-t border-[var(--border-subtle)]">
+                {/* Default Symmetry Mode */}
+                <div className="space-y-1.5">
+                  <span className="text-xs font-bold text-[var(--text-secondary)] block">
+                    {t('defaultSymmetryLabel')}
+                  </span>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                    {(
+                      [
+                        { id: 'none', label: t('symmetryOff') },
+                        { id: 'horizontal', label: t('symmetryHorizontal') },
+                        { id: 'vertical', label: t('symmetryVertical') },
+                        { id: 'quad', label: t('symmetryQuad') },
+                      ] as Array<{ id: SymmetryMode; label: string }>
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() =>
+                          void updateSettings({ defaultSymmetryMode: opt.id })
+                        }
+                        className={`min-h-[36px] px-2 text-xs font-bold ${
+                          settings.defaultSymmetryMode === opt.id
+                            ? 'pixel-btn pixel-btn-active'
+                            : 'pixel-btn'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Default Seamless Wrap Mode */}
+                <div className="space-y-1.5">
+                  <span className="text-xs font-bold text-[var(--text-secondary)] block">
+                    {t('defaultSeamlessLabel')}
+                  </span>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                    {(
+                      [
+                        { id: 'none', label: t('seamlessOff') },
+                        { id: 'horizontal', label: t('seamlessHorizontal') },
+                        { id: 'vertical', label: t('seamlessVertical') },
+                        { id: 'both', label: t('seamlessBoth') },
+                      ] as Array<{ id: SeamlessWrapMode; label: string }>
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() =>
+                          void updateSettings({
+                            defaultSeamlessWrapMode: opt.id,
+                          })
+                        }
+                        className={`min-h-[36px] px-2 text-xs font-bold ${
+                          (settings.defaultSeamlessWrapMode ?? 'none') === opt.id
+                            ? 'pixel-btn pixel-btn-active'
+                            : 'pixel-btn'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <PixelCheckbox
+                    checked={settings.showSymmetryGuide ?? true}
+                    onChange={(v) =>
+                      void updateSettings({ showSymmetryGuide: v })
+                    }
+                    label={t('symmetryAxisGuide')}
+                  />
+                  <PixelCheckbox
+                    checked={settings.embedPngMetadata ?? true}
+                    onChange={(v) =>
+                      void updateSettings({ embedPngMetadata: v })
+                    }
+                    label={t('exportEmbedMetaLabel')}
+                    testId="settings-embed-png-meta-checkbox"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <span className="text-xs font-bold text-[var(--text-secondary)]">
+                    {t('manageStampsTitle')} ({stamps.length})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setManageStampsOpen(true)}
+                    className="pixel-btn pixel-btn-teal min-h-[38px] px-3 text-xs font-bold flex items-center gap-1.5"
+                    data-testid="settings-open-stamps-btn"
+                  >
+                    <PixelIcon name="stamp" size={14} />
+                    <span>{t('stampTitle')}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+
           {/* 4. Palette Library Manager */}
           <section className="pixel-card p-4 space-y-3">
             <div className="flex items-center justify-between gap-2">
@@ -948,7 +1094,7 @@ export function SettingsPage() {
             <div className="text-xs space-y-1.5 text-[var(--text-secondary)]">
               <div className="flex justify-between">
                 <span>{t('appVersionLabel')}</span>
-                <span className="font-bold text-[var(--text-primary)]">2.2.0</span>
+                <span className="font-bold text-[var(--text-primary)]">2.5.0</span>
               </div>
               <div className="flex justify-between">
                 <span>{t('storageEngineLabel')}</span>
@@ -1054,6 +1200,20 @@ export function SettingsPage() {
           }}
         />
 
+        <StampSheetModal
+          open={manageStampsOpen}
+          onClose={() => setManageStampsOpen(false)}
+          stamps={stamps}
+          checkerDark={settings.checkerboardDark}
+          onCreateStamp={addStamp}
+          onRenameStamp={renameStamp}
+          onDeleteStamp={async (id) => {
+            const ok = await removeStamp(id)
+            if (ok) showToast(t('stampDeletedMsg'), 'info')
+            return ok
+          }}
+        />
+
         {legalTab !== null && (
           <LegalDocsModal
             open={true}
@@ -1096,6 +1256,10 @@ export function SettingsPage() {
                 <div className="flex justify-between">
                   <span>{t('importSummaryPalettes')}</span>
                   <strong>{pendingPack.manifest.counts.palettes}</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span>{t('importSummaryStamps')}</span>
+                  <strong>{pendingPack.manifest.counts.stamps ?? 0}</strong>
                 </div>
                 <div className="flex justify-between">
                   <span>{t('importSummaryHistory')}</span>

@@ -14,8 +14,10 @@ import { Modal } from '../common/Modal'
 import { PixelIcon } from '../common/PixelIcon'
 import { PixelSelect } from '../common/PixelSelect'
 import { PixelSlider } from '../common/PixelSlider'
+import { PixelCheckbox } from '../common/PixelCheckbox'
 import { getCheckerboardStyle } from '../common/PixelThumbnail'
 import { CanvasSizePresetsPicker } from '../common/CanvasSizePresetsPicker'
+import { useApp } from '../../state/AppContext'
 import { useI18n } from '../../i18n/I18nContext'
 import type { TranslationKey } from '../../i18n/translations'
 
@@ -300,6 +302,7 @@ export function ExportPngModal({
   onShared,
 }: ExportPngModalProps) {
   const { t } = useI18n()
+  const { settings } = useApp()
 
   const scaleOptions = useMemo(
     () => getExportScaleOptions(width, height),
@@ -311,14 +314,18 @@ export function ExportPngModal({
   )
 
   const [selectedScale, setSelectedScale] = useState<number>(defaultScale)
+  const [embedMeta, setEmbedMeta] = useState<boolean>(
+    settings.embedPngMetadata ?? true
+  )
   const [shareFallbackNotice, setShareFallbackNotice] = useState(false)
 
   useEffect(() => {
     if (open) {
       setSelectedScale(defaultScale)
+      setEmbedMeta(settings.embedPngMetadata ?? true)
       setShareFallbackNotice(false)
     }
-  }, [open, defaultScale])
+  }, [open, defaultScale, settings.embedPngMetadata])
 
   const selectedOption =
     scaleOptions.find((o) => o.scale === selectedScale) ?? scaleOptions[0]
@@ -359,7 +366,8 @@ export function ExportPngModal({
       layers,
       width,
       height,
-      selectedScale
+      selectedScale,
+      { embedMetadata: embedMeta }
     )
     const blob = new Blob([png.slice().buffer], { type: 'image/png' })
     return {
@@ -483,6 +491,18 @@ export function ExportPngModal({
             className="w-full"
             testId="export-scale-select"
           />
+        </div>
+
+        <div className="p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-1">
+          <PixelCheckbox
+            checked={embedMeta}
+            onChange={setEmbedMeta}
+            label={t('exportEmbedMetaLabel')}
+            testId="export-embed-meta-checkbox"
+          />
+          <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+            {t('exportEmbedMetaHint')}
+          </p>
         </div>
 
         <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">

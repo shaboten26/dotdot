@@ -1,7 +1,7 @@
 import { ViewTransition, useEffect, useState } from 'react'
 import { useParams } from 'react-router'
 import { AnimatePresence, motion } from 'motion/react'
-import type { ToolId } from '../types'
+import type { SymmetryMode, TilePreviewGrid, ToolId } from '../types'
 import { useApp } from '../state/AppContext'
 import { useI18n } from '../i18n/I18nContext'
 import { useEditorController } from '../state/useEditorController'
@@ -13,22 +13,31 @@ import {
   MultiRowToolGrid,
   PaletteBar,
   SelectionReadyBar,
+  StampPlacementBar,
   ToolDetailPopover,
 } from '../components/editor/ToolPanels'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
 import { LayerPanelContent, LayerSheet } from '../components/editor/LayerSheet'
 import { TimelinePanel } from '../components/editor/TimelinePanel'
 import { ExportGifModal } from '../components/editor/ExportGifModal'
+import { ExportSpriteSheetModal } from '../components/editor/ExportSpriteSheetModal'
+import { StampSheetModal } from '../components/editor/StampSheetModal'
 import { GlobalEditorSettingsModal } from '../components/editor/GlobalEditorSettingsModal'
 import {
   CanvasResizeModal,
   ExportPngModal,
 } from '../components/editor/EditorModals'
+import { ImportPngModal } from '../components/common/ImportPngModal'
+import {
+  ExportAsepriteModal,
+  ImportAsepriteModal,
+} from '../components/common/AsepriteModals'
 import {
   detectInitialInputModality,
   type InputModality,
 } from '../utils/inputDetect'
 import { PixelIcon, PixelLoadingIndicator } from '../components/common/PixelIcon'
+import { PixelThumbnail } from '../components/common/PixelThumbnail'
 import { PixelCheckbox } from '../components/common/PixelCheckbox'
 import {
   useViewTransitionNavigate,
@@ -39,14 +48,19 @@ export function EditorPage() {
   const { id: routeProjectId } = useParams<{ id?: string }>()
   const {
     ready,
+    projects,
     settings,
     reducedMotion,
     palettes,
+    stamps,
     sharedClipboard,
     setSharedClipboard,
     updateSettings,
     refreshProjects,
     addLibraryPalette,
+    addStamp,
+    renameStamp,
+    removeStamp,
     showToast,
   } = useApp()
   const { t } = useI18n()
@@ -61,6 +75,11 @@ export function EditorPage() {
   const [resizeOpen, setResizeOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [exportGifOpen, setExportGifOpen] = useState(false)
+  const [exportSpriteOpen, setExportSpriteOpen] = useState(false)
+  const [exportAseOpen, setExportAseOpen] = useState(false)
+  const [importPngOpen, setImportPngOpen] = useState(false)
+  const [importAseOpen, setImportAseOpen] = useState(false)
+  const [stampSheetOpen, setStampSheetOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   const [previewFlipX, setPreviewFlipX] = useState(false)
   const [previewFlipY, setPreviewFlipY] = useState(false)
@@ -82,6 +101,9 @@ export function EditorPage() {
     projectId: targetProjectId,
     historyLimit: settings.historyLimit,
     soundEnabled: settings.soundEnabled,
+    stamps,
+    defaultSymmetryMode: settings.defaultSymmetryMode,
+    defaultSeamlessWrapMode: settings.defaultSeamlessWrapMode,
     sharedClipboard,
     onUpdateSharedClipboard: setSharedClipboard,
     onSaved: () => {
@@ -154,6 +176,13 @@ export function EditorPage() {
           editor.commitFloatingShape()
           return
         }
+        if (editor.stampSession) {
+          e.preventDefault()
+          if (editor.commitStampSession()) {
+            showToast(t('stampPlacedMsg'), 'success')
+          }
+          return
+        }
       }
       if (e.key === 'Escape') {
         setOptionsOpen(false)
@@ -196,7 +225,48 @@ export function EditorPage() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [editor])
 
+  const summaryProject = targetProjectId
+    ? projects.find((p) => p.id === targetProjectId) ?? null
+    : null
+
   if (!ready || editor.loading) {
+    if (summaryProject) {
+      return (
+        <ViewTransition>
+          <div className="h-dvh w-full flex flex-col bg-[var(--bg-app)] overflow-hidden select-none pl-safe pr-safe">
+            <header className="relative flex items-center justify-between gap-2 px-2.5 py-1.5 pt-safe bg-[var(--bg-surface)] border-b-2 border-[var(--border-pixel)] shrink-0 z-30">
+              <VTButtonLink
+                to="/"
+                title={t('navGallery')}
+                className="pixel-btn min-h-[44px] min-w-[44px] px-2.5 flex items-center gap-1.5 text-xs font-bold shrink-0"
+              >
+                <PixelIcon name="back" size={16} />
+                <span>{t('back')}</span>
+              </VTButtonLink>
+              <div className="flex-1 min-w-0 flex items-center justify-center">
+                <span className="text-xs sm:text-sm font-bold truncate">
+                  {summaryProject.name}
+                </span>
+              </div>
+              <div className="min-w-[44px] min-h-[44px]" aria-hidden="true" />
+            </header>
+            <main className="flex-1 min-h-0 flex items-center justify-center bg-[var(--canvas-well)] p-6">
+              <ViewTransition name={`artwork-${summaryProject.id}`}>
+                <div className="w-64 h-64 max-w-[75vw] max-h-[55dvh] flex items-center justify-center">
+                  <PixelThumbnail
+                    pngBytes={summaryProject.thumbnailPng}
+                    alt={summaryProject.name}
+                    checkerDark={settings.checkerboardDark}
+                    className="w-full h-full"
+                  />
+                </div>
+              </ViewTransition>
+            </main>
+          </div>
+        </ViewTransition>
+      )
+    }
+
     return (
       <div className="h-dvh w-full flex items-center justify-center bg-[var(--bg-app)]">
         <PixelLoadingIndicator label={t('loading')} />
@@ -349,6 +419,32 @@ export function EditorPage() {
                     type="button"
                     onClick={() => {
                       setHeaderMenuOpen(false)
+                      setImportPngOpen(true)
+                    }}
+                    className="w-full min-h-[42px] px-3 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
+                    data-testid="editor-import-png-btn"
+                  >
+                    <PixelIcon name="upload" size={16} />
+                    <span>{t('importPngTitle')}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false)
+                      setImportAseOpen(true)
+                    }}
+                    className="w-full min-h-[42px] px-3 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
+                    data-testid="editor-import-aseprite-btn"
+                  >
+                    <PixelIcon name="aseprite" size={16} />
+                    <span>{t('importAsepriteTitle')}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false)
                       setExportOpen(true)
                     }}
                     className="w-full min-h-[42px] px-3 pixel-btn pixel-btn-teal flex items-center gap-2 text-xs font-bold text-left"
@@ -356,6 +452,32 @@ export function EditorPage() {
                   >
                     <PixelIcon name="download" size={16} />
                     <span>{t('exportPng')}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false)
+                      setExportSpriteOpen(true)
+                    }}
+                    className="w-full min-h-[42px] px-3 pixel-btn pixel-btn-teal flex items-center gap-2 text-xs font-bold text-left"
+                    data-testid="editor-export-spritesheet-btn"
+                  >
+                    <PixelIcon name="sheet" size={16} />
+                    <span>{t('exportSpriteSheet')}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false)
+                      setExportAseOpen(true)
+                    }}
+                    className="w-full min-h-[42px] px-3 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
+                    data-testid="editor-export-aseprite-btn"
+                  >
+                    <PixelIcon name="aseprite" size={16} />
+                    <span>{t('exportAseprite')}</span>
                   </button>
 
                   {editor.timeline.frames.length >= 2 && (
@@ -449,6 +571,11 @@ export function EditorPage() {
             stepPhase={editor.stepPhase}
             floatingShape={editor.floatingShape}
             moveSession={editor.moveSession}
+            stampSession={editor.stampSession}
+            symmetryMode={editor.symmetryMode}
+            showSymmetryGuide={settings.showSymmetryGuide}
+            tilePreviewGrid={editor.tilePreviewGrid}
+            seamlessWrapMode={editor.seamlessWrapMode}
             hasSelection={editor.hasSelection}
             selectionMask={editor.selectionMask}
             worldSelection={editor.worldSelection}
@@ -479,6 +606,7 @@ export function EditorPage() {
             }}
             onMoveFloatingShape={editor.moveFloatingShape}
             onUpdateMoveOffset={editor.updateActiveMoveOffset}
+            onMoveStampSession={editor.moveStampSession}
           />
         </main>
 
@@ -487,9 +615,12 @@ export function EditorPage() {
           {editor.moveSession ? (
             <motion.div
               key="active-move-bar"
-              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 4 }}
+              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: reducedMotion ? 0 : 0.1, ease: 'easeOut' }}
+              transition={{
+                duration: reducedMotion ? 0 : 0.18,
+                ease: [0.22, 1, 0.36, 1],
+              }}
             >
               <ActiveMoveBar
                 moveSession={editor.moveSession}
@@ -501,9 +632,12 @@ export function EditorPage() {
           ) : editor.floatingShape ? (
             <motion.div
               key="floating-transform-bar"
-              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 4 }}
+              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: reducedMotion ? 0 : 0.1, ease: 'easeOut' }}
+              transition={{
+                duration: reducedMotion ? 0 : 0.18,
+                ease: [0.22, 1, 0.36, 1],
+              }}
             >
               <FloatingTransformBar
                 floatingShape={editor.floatingShape}
@@ -513,57 +647,84 @@ export function EditorPage() {
                 onDiscard={editor.discardFloatingShape}
               />
             </motion.div>
-          ) : (
-            <>
-              {editor.hasSelection && !optionsOpen && (
-                <motion.div
-                  key="selection-ready-bar"
-                  initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: reducedMotion ? 0 : 0.1, ease: 'easeOut' }}
-                >
-                  <SelectionReadyBar
-                    onStartMove={() => {
-                      editor.startSelectionMove()
-                    }}
-                    onClearSelection={editor.clearCurrentSelection}
-                  />
-                </motion.div>
-              )}
-              <ToolDetailPopover
-                open={optionsOpen}
-                onClose={() => setOptionsOpen(false)}
-                tool={editor.tool}
-                settings={editor.toolSettings}
-                paletteColors={editor.palette.colors}
-                eyedropperDoubleTap={settings.eyedropperDoubleTap}
-                onToggleEyedropperDoubleTap={(next) =>
-                  void updateSettings({ eyedropperDoubleTap: next })
-                }
-                hasSelection={editor.hasSelection}
-                hasClipboard={editor.clipboard !== null}
-                onChange={(patch) =>
-                  editor.setToolSettings((prev) => ({ ...prev, ...patch }))
-                }
-                onStartSelectionMove={() => {
+          ) : editor.stampSession ? (
+            <motion.div
+              key="stamp-placement-bar"
+              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{
+                duration: reducedMotion ? 0 : 0.18,
+                ease: [0.22, 1, 0.36, 1],
+              }}
+            >
+              <StampPlacementBar
+                stampSession={editor.stampSession}
+                onMoveStep={editor.moveStampSession}
+                onFlip={editor.flipStampSession}
+                onCommit={() => {
+                  if (editor.commitStampSession()) {
+                    showToast(t('stampPlacedMsg'), 'success')
+                  }
+                }}
+                onCancel={editor.cancelStampSession}
+              />
+            </motion.div>
+          ) : editor.hasSelection && !optionsOpen ? (
+            <motion.div
+              key="selection-ready-bar"
+              initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{
+                duration: reducedMotion ? 0 : 0.18,
+                ease: [0.22, 1, 0.36, 1],
+              }}
+            >
+              <SelectionReadyBar
+                onStartMove={() => {
                   editor.startSelectionMove()
                 }}
-                onNudgeSelection={editor.nudgeSelection}
-                onApplyOutline={editor.outlineSelection}
-                onCut={() => {
-                  if (editor.cutSelectedPixels()) showToast(t('toastCut'))
-                }}
-                onCopy={() => {
-                  if (editor.copySelectedPixels()) showToast(t('toastCopied'))
-                }}
-                onPaste={() => {
-                  if (editor.pasteClipboardPixels()) showToast(t('toastPasted'))
-                }}
-                onFlipSelection={editor.flipSelectedPixels}
-                onInvertSelection={editor.invertCurrentSelection}
+                onOpenStampRegister={() => setStampSheetOpen(true)}
                 onClearSelection={editor.clearCurrentSelection}
               />
-            </>
+            </motion.div>
+          ) : null}
+
+          {!editor.moveSession && !editor.floatingShape && !editor.stampSession && (
+            <ToolDetailPopover
+              open={optionsOpen}
+              onClose={() => setOptionsOpen(false)}
+              tool={editor.tool}
+              settings={editor.toolSettings}
+              paletteColors={editor.palette.colors}
+              eyedropperDoubleTap={settings.eyedropperDoubleTap}
+              onToggleEyedropperDoubleTap={(next) =>
+                void updateSettings({ eyedropperDoubleTap: next })
+              }
+              hasSelection={editor.hasSelection}
+              hasClipboard={editor.clipboard !== null}
+              onChange={(patch) =>
+                editor.setToolSettings((prev) => ({ ...prev, ...patch }))
+              }
+              onStartSelectionMove={() => {
+                editor.startSelectionMove()
+              }}
+              onNudgeSelection={editor.nudgeSelection}
+              onApplyOutline={editor.outlineSelection}
+              onCut={() => {
+                if (editor.cutSelectedPixels()) showToast(t('toastCut'))
+              }}
+              onCopy={() => {
+                if (editor.copySelectedPixels()) showToast(t('toastCopied'))
+              }}
+              onPaste={() => {
+                if (editor.pasteClipboardPixels()) showToast(t('toastPasted'))
+              }}
+              onFlipSelection={editor.flipSelectedPixels}
+              onInvertSelection={editor.invertCurrentSelection}
+              onClearSelection={editor.clearCurrentSelection}
+              stamps={stamps}
+              onOpenStampSheet={() => setStampSheetOpen(true)}
+            />
           )}
 
           {/* Workspace Mode Switcher: `ツール` vs (`レイヤー` [1 frame] / `タイムライン` [>=2 frames]) + Always-Visible Arrow & Play Controls in the Same Zone */}
@@ -692,6 +853,93 @@ export function EditorPage() {
                 </button>
               </div>
             )}
+
+            {/* Compact Non-Intrusive Quick Toggles (Symmetry / Tile+Seamless / Stamps) */}
+            <div className="flex items-center gap-1 shrink-0 ml-auto">
+              <button
+                type="button"
+                onClick={() => {
+                  const order: SymmetryMode[] = [
+                    'none',
+                    'horizontal',
+                    'vertical',
+                    'quad',
+                  ]
+                  const next =
+                    order[(order.indexOf(editor.symmetryMode) + 1) % order.length]!
+                  editor.setSymmetryMode(next)
+                }}
+                title={`${t('symmetryLabel')}: ${editor.symmetryMode}`}
+                aria-pressed={editor.symmetryMode !== 'none'}
+                className={`min-w-[30px] min-h-[30px] px-1.5 text-[10px] font-bold flex items-center justify-center gap-0.5 ${
+                  editor.symmetryMode !== 'none'
+                    ? 'pixel-btn pixel-btn-teal'
+                    : 'pixel-btn'
+                }`}
+                data-testid="quick-symmetry-toggle-btn"
+              >
+                <PixelIcon name="symmetry" size={12} />
+                {editor.symmetryMode !== 'none' && (
+                  <span>
+                    {editor.symmetryMode === 'horizontal'
+                      ? 'H'
+                      : editor.symmetryMode === 'vertical'
+                        ? 'V'
+                        : '4'}
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const order: TilePreviewGrid[] = ['off', '3x3', '5x5']
+                  const next =
+                    order[
+                      (order.indexOf(editor.tilePreviewGrid) + 1) % order.length
+                    ]!
+                  editor.setTilePreviewGrid(next)
+                }}
+                title={`${t('tilePreviewLabel')}: ${editor.tilePreviewGrid}`}
+                aria-pressed={
+                  editor.tilePreviewGrid !== 'off' ||
+                  editor.seamlessWrapMode !== 'none'
+                }
+                className={`min-w-[30px] min-h-[30px] px-1.5 text-[10px] font-bold flex items-center justify-center gap-0.5 ${
+                  editor.tilePreviewGrid !== 'off' ||
+                  editor.seamlessWrapMode !== 'none'
+                    ? 'pixel-btn pixel-btn-teal'
+                    : 'pixel-btn'
+                }`}
+                data-testid="quick-tile-toggle-btn"
+              >
+                <PixelIcon name="tile" size={12} />
+                {editor.tilePreviewGrid !== 'off' && (
+                  <span>{editor.tilePreviewGrid}</span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setOptionsOpen(false)
+                  setStampSheetOpen(true)
+                }}
+                title={t('stampTitle')}
+                aria-pressed={
+                  Boolean(editor.toolSettings.patternStampId) ||
+                  editor.stampSession !== null
+                }
+                className={`min-w-[30px] min-h-[30px] px-1.5 flex items-center justify-center ${
+                  editor.toolSettings.patternStampId || editor.stampSession
+                    ? 'pixel-btn pixel-btn-active'
+                    : 'pixel-btn'
+                }`}
+                data-testid="quick-stamp-sheet-btn"
+              >
+                <PixelIcon name="stamp" size={12} />
+              </button>
+            </div>
           </div>
 
           {/* 2. Workspace Content (`ツール` Multi-Row Grid OR `レイヤー` [1 frame, reusing original LayerPanelContent] / `タイムライン` [>=2 frames]) */}
@@ -703,9 +951,12 @@ export function EditorPage() {
                   ? 'dock-layers'
                   : 'dock-timeline'
             }
-            initial={reducedMotion ? { opacity: 1 } : { opacity: 0.72, y: 3 }}
+            initial={reducedMotion ? { opacity: 1 } : { opacity: 0.78, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: reducedMotion ? 0 : 0.11, ease: 'easeOut' }}
+            transition={{
+              duration: reducedMotion ? 0 : 0.2,
+              ease: [0.22, 1, 0.36, 1],
+            }}
             className="flex flex-col shrink-0"
           >
           {workspaceTab === 'tools' ? (
@@ -714,7 +965,13 @@ export function EditorPage() {
               toolSettings={editor.toolSettings}
               optionsOpen={optionsOpen}
               globalSettingsOpen={globalSettingsOpen}
-              hasActivePreviewFlip={previewFlipX || previewFlipY}
+              hasActivePreviewFlip={
+                previewFlipX ||
+                previewFlipY ||
+                editor.symmetryMode !== 'none' ||
+                editor.tilePreviewGrid !== 'off' ||
+                editor.seamlessWrapMode !== 'none'
+              }
               canUndo={editor.canUndo}
               canRedo={editor.canRedo}
               hasSelection={editor.hasSelection}
@@ -880,6 +1137,7 @@ export function EditorPage() {
               stepPhase={editor.stepPhase}
               floatingShape={editor.floatingShape}
               moveSession={editor.moveSession}
+              stampSession={editor.stampSession}
               isContinuousDrawing={editor.isContinuousDrawing}
               activeHexColor={editor.activeHexColor}
               isTransparentColor={editor.isTransparentColorSelected}
@@ -889,6 +1147,11 @@ export function EditorPage() {
               onCancelStep={editor.cancelMultiStep}
               onCommitShape={editor.commitFloatingShape}
               onCommitMove={editor.commitActiveMove}
+              onCommitStamp={() => {
+                if (editor.commitStampSession()) {
+                  showToast(t('stampPlacedMsg'), 'success')
+                }
+              }}
             />
           )}
         </section>
@@ -907,6 +1170,11 @@ export function EditorPage() {
             await addLibraryPalette(name, colors, meta)
             showToast(t('toastSavedPalette'), 'success')
           }}
+          canvasWidth={editor.project.width}
+          canvasHeight={editor.project.height}
+          layers={editor.layers}
+          activeLayerId={editor.activeLayerId}
+          onReplaceColor={editor.replaceProjectColor}
         />
 
         <LayerSheet
@@ -1018,6 +1286,119 @@ export function EditorPage() {
             setPreviewFlipX(false)
             setPreviewFlipY(false)
           }}
+          symmetryMode={editor.symmetryMode}
+          onChangeSymmetryMode={editor.setSymmetryMode}
+          tilePreviewGrid={editor.tilePreviewGrid}
+          onChangeTilePreviewGrid={editor.setTilePreviewGrid}
+          seamlessWrapMode={editor.seamlessWrapMode}
+          onChangeSeamlessWrapMode={editor.setSeamlessWrapMode}
+        />
+
+        <StampSheetModal
+          open={stampSheetOpen}
+          onClose={() => setStampSheetOpen(false)}
+          stamps={stamps}
+          checkerDark={settings.checkerboardDark}
+          hasSelection={editor.hasSelection}
+          activePatternStampId={editor.toolSettings.patternStampId}
+          onExtractSelection={editor.extractActiveSelectionAsStamp}
+          onCreateStamp={async (name, width, height, data) => {
+            const created = await addStamp(name, width, height, data)
+            showToast(t('stampSavedMsg'), 'success')
+            return created
+          }}
+          onRenameStamp={renameStamp}
+          onDeleteStamp={async (id) => {
+            const ok = await removeStamp(id)
+            if (ok) {
+              if (editor.toolSettings.patternStampId === id) {
+                editor.setToolSettings((prev) => ({
+                  ...prev,
+                  patternStampId: null,
+                }))
+              }
+              showToast(t('stampDeletedMsg'), 'info')
+            }
+            return ok
+          }}
+          onPlaceStamp={(stamp) => {
+            editor.startStampPlacement(stamp)
+          }}
+          onTogglePatternStamp={(stampId) => {
+            editor.setToolSettings((prev) => ({
+              ...prev,
+              patternStampId: stampId,
+            }))
+            if (stampId) {
+              editor.selectTool('pen')
+            }
+          }}
+        />
+
+        <ExportSpriteSheetModal
+          open={exportSpriteOpen}
+          onClose={() => setExportSpriteOpen(false)}
+          projectName={editor.project.name}
+          width={editor.project.width}
+          height={editor.project.height}
+          layerMetas={editor.layers}
+          frames={editor.timeline.frames}
+          cels={editor.timeline.cels}
+          celBuffers={editor.timeline.celBuffers}
+          fallbackSingleFrameLayers={editor.layers}
+          defaultDirection={editor.timeline.playbackDirection}
+          checkerDark={settings.checkerboardDark}
+          onExportedPng={() => showToast(t('toastExportedSpriteSheet'), 'success')}
+          onExportedJson={() => showToast(t('toastExportedSpriteJson'), 'success')}
+        />
+
+        <ExportAsepriteModal
+          open={exportAseOpen}
+          onClose={() => setExportAseOpen(false)}
+          projectName={editor.project.name}
+          width={editor.project.width}
+          height={editor.project.height}
+          layerMetas={editor.layers}
+          frames={editor.timeline.frames}
+          cels={editor.timeline.cels}
+          celBuffers={editor.timeline.celBuffers}
+          fallbackSingleFrameLayers={editor.layers}
+          paletteColors={editor.palette.colors}
+          onExported={() => showToast(t('toastExportedAseprite'), 'success')}
+        />
+
+        <ImportPngModal
+          open={importPngOpen}
+          onClose={() => setImportPngOpen(false)}
+          checkerDark={settings.checkerboardDark}
+          allowImportAsLayer={true}
+          defaultTarget="new-layer"
+          onImportAsLayer={(params) => {
+            const ok = editor.importBufferAsNewLayer(params)
+            if (ok) {
+              showToast(t('importPngSuccessLayer'), 'success')
+            } else {
+              showToast(t('layerMaxReached'), 'warning')
+            }
+            return ok
+          }}
+          onCreatedProject={(proj) => {
+            void refreshProjects()
+            showToast(t('importPngSuccessProject'), 'success')
+            vtNavigate(`/editor/${proj.id}`)
+          }}
+          onError={(msg) => showToast(msg, 'error')}
+        />
+
+        <ImportAsepriteModal
+          open={importAseOpen}
+          onClose={() => setImportAseOpen(false)}
+          onImportedProject={(proj) => {
+            void refreshProjects()
+            showToast(t('toastImportedAseprite'), 'success')
+            vtNavigate(`/editor/${proj.id}`)
+          }}
+          onError={(msg) => showToast(msg, 'error')}
         />
       </div>
     </ViewTransition>

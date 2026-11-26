@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import {
   TRANSPARENT_COLOR_INDEX,
+  type LayerRuntime,
   type PaletteData,
   type ProjectPalette,
 } from '../../types'
@@ -19,6 +20,7 @@ import {
 } from '../../db/lospec'
 import { Modal } from '../common/Modal'
 import { LospecImportModal } from '../common/LospecImportModal'
+import { PaletteToolsModal } from './PaletteToolsModal'
 import { PixelIcon } from '../common/PixelIcon'
 import { PixelSlider } from '../common/PixelSlider'
 import { PixelSelect } from '../common/PixelSelect'
@@ -41,6 +43,17 @@ interface PaletteSheetProps {
     colors: string[],
     meta?: Partial<Pick<PaletteData, 'author' | 'sourceUrl' | 'lospecSlug' | 'licenseNote'>>
   ) => Promise<void>
+  canvasWidth?: number
+  canvasHeight?: number
+  layers?: readonly LayerRuntime[]
+  activeLayerId?: string
+  onReplaceColor?: (params: {
+    sourceHex: string
+    targetHexOrTransparent: string | 'transparent'
+    layerScope: 'all' | 'active-layer'
+    frameScope: 'all-frames' | 'active-frame'
+    updatePaletteSwatch: boolean
+  }) => number
 }
 
 export function PaletteSheet({
@@ -53,10 +66,16 @@ export function PaletteSheet({
   onSelectColor,
   onUpdatePalette,
   onSaveToLibrary,
+  canvasWidth,
+  canvasHeight,
+  layers,
+  activeLayerId,
+  onReplaceColor,
 }: PaletteSheetProps) {
   const { t } = useI18n()
-  const { reducedMotion } = useApp()
+  const { reducedMotion, showToast } = useApp()
   const [tab, setTab] = useState<'hsv' | 'rgb' | 'hex'>('hsv')
+  const [toolsModalOpen, setToolsModalOpen] = useState(false)
   const swatchGridRef = useRef<HTMLDivElement | null>(null)
 
   const colorIds = palette.colors.map((_, idx) => `ps-${idx}`)
@@ -335,7 +354,16 @@ export function PaletteSheet({
             <span className="text-[var(--text-secondary)]">
               {palette.colors.length} / 256 {t('colorsCount')}
             </span>
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setToolsModalOpen(true)}
+                className="pixel-btn min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1"
+                data-testid="palette-open-tools-btn"
+              >
+                <PixelIcon name="replace" size={13} />
+                <span>{t('paletteOrganizeBtn')}</span>
+              </button>
               <button
                 type="button"
                 disabled={isTransparentSelected || editableColorIndex <= 0}
@@ -649,6 +677,22 @@ export function PaletteSheet({
             })
           }
         }}
+      />
+
+      <PaletteToolsModal
+        open={toolsModalOpen}
+        onClose={() => setToolsModalOpen(false)}
+        palette={palette}
+        selectedIndex={selectedIndex}
+        checkerDark={checkerDark}
+        onUpdatePalette={onUpdatePalette}
+        onSelectColor={onSelectColor}
+        canvasWidth={canvasWidth}
+        canvasHeight={canvasHeight}
+        layers={layers}
+        activeLayerId={activeLayerId}
+        onReplaceColor={onReplaceColor}
+        onToast={(msg) => showToast(msg, 'success')}
       />
     </Modal>
   )

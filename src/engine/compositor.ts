@@ -437,13 +437,40 @@ function makePngChunk(typeAscii: string, data: Uint8Array): Uint8Array {
   return chunk
 }
 
+export const DOTDOT_PNG_META_KEYWORD = 'dotdot-meta'
+
+export interface DotDotPngMetadata {
+  app: 'dotdot'
+  version: 1
+  originalWidth: number
+  originalHeight: number
+  scale: number
+  exportedWidth: number
+  exportedHeight: number
+}
+
+function makeTextChunk(keyword: string, text: string): Uint8Array {
+  const safeKey = keyword.replace(/[^\x20-\x7E]/g, '').slice(0, 79) || 'Comment'
+  const encoder = new TextEncoder()
+  const keyBytes = encoder.encode(safeKey)
+  const valBytes = encoder.encode(text)
+  const payload = new Uint8Array(keyBytes.length + 1 + valBytes.length)
+  payload.set(keyBytes, 0)
+  payload[keyBytes.length] = 0 // null separator per PNG 1.2 spec
+  payload.set(valBytes, keyBytes.length + 1)
+  return makePngChunk('tEXt', payload)
+}
+
 /**
- * Lossless pure-JS 8-bit RGBA PNG encoder.
+ * Lossless pure-JS 8-bit RGBA PNG encoder with optional standard `tEXt` metadata chunks.
  */
 export function encodeRgbaToPng(
   rgba: Uint8ClampedArray | Uint8Array,
   width: number,
-  height: number
+  height: number,
+  options?: {
+    textChunks?: Record<string, string>
+  }
 ): Uint8Array {
   const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
 
@@ -456,6 +483,15 @@ export function encodeRgbaToPng(
   ihdrData[11] = 0
   ihdrData[12] = 0
   const ihdrChunk = makePngChunk('IHDR', ihdrData)
+
+  const extraTextChunks: Uint8Array[] = []
+  if (options?.textChunks) {
+    for (const [k, v] of Object.entries(options.textChunks)) {
+      if (typeof v === 'string' && v.length > 0) {
+        extraTextChunks.push(makeTextChunk(k, v))
+      }
+    }
+  }
 
   const stride = width * 4
   const rawScanlines = new Uint8Array(height * (1 + stride))
@@ -470,14 +506,23 @@ export function encodeRgbaToPng(
   const idatChunk = makePngChunk('IDAT', compressed)
   const iendChunk = makePngChunk('IEND', new Uint8Array(0))
 
+  const extraLen = extraTextChunks.reduce((acc, c) => acc + c.length, 0)
   const png = new Uint8Array(
-    signature.length + ihdrChunk.length + idatChunk.length + iendChunk.length
+    signature.length +
+      ihdrChunk.length +
+      extraLen +
+      idatChunk.length +
+      iendChunk.length
   )
   let offset = 0
   png.set(signature, offset)
   offset += signature.length
   png.set(ihdrChunk, offset)
   offset += ihdrChunk.length
+  for (const tc of extraTextChunks) {
+    png.set(tc, offset)
+    offset += tc.length
+  }
   png.set(idatChunk, offset)
   offset += idatChunk.length
   png.set(iendChunk, offset)
@@ -544,7 +589,10 @@ export function exportCompositePngBytes(
   layers: readonly LayerRuntime[],
   width: number,
   height: number,
-  scale: number
+  scale: number,
+  options?: {
+    embedMetadata?: boolean
+  }
 ): { png: Uint8Array; outWidth: number; outHeight: number } {
   const maxSide = Math.max(width, height)
   const clampedScale = Math.max(
@@ -553,7 +601,27 @@ export function exportCompositePngBytes(
   )
   const flat = compositeLayers(layers, width, height)
   const scaled = upscaleNearestNeighbor(flat, width, height, clampedScale)
-  const png = encodeRgbaToPng(scaled.data, scaled.width, scaled.height)
+  const metaPayload: DotDotPngMetadata = {
+    app: 'dotdot',
+    version: 1,
+    originalWidth: width,
+    originalHeight: height,
+    scale: clampedScale,
+    exportedWidth: scaled.width,
+    exportedHeight: scaled.height,
+  }
+  const png = encodeRgbaToPng(
+    scaled.data,
+    scaled.width,
+    scaled.height,
+    options?.embedMetadata
+      ? {
+          textChunks: {
+            [DOTDOT_PNG_META_KEYWORD]: JSON.stringify(metaPayload),
+          },
+        }
+      : undefined
+  )
   return {
     png,
     outWidth: scaled.width,

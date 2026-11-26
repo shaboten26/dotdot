@@ -1,5 +1,6 @@
-import type { FloatingShapeState } from '../types'
-import { createPixelBuffer, isInBounds } from './pixelBuffer'
+import type { FloatingShapeState, SeamlessWrapMode, SymmetryMode } from '../types'
+import { createPixelBuffer } from './pixelBuffer'
+import { applyStampToBuffer } from './stamp'
 
 export interface TransformedShapeBuffer {
   buffer: Uint8ClampedArray
@@ -162,49 +163,27 @@ export function compositeFloatingShapeOntoLayer(
   canvasWidth: number,
   canvasHeight: number,
   shapeState: FloatingShapeState,
-  selectionMask?: Uint8Array | null
+  selectionMask?: Uint8Array | null,
+  symmetry: SymmetryMode = 'none',
+  seamlessWrap: SeamlessWrapMode = 'none'
 ): Uint8ClampedArray {
   const out = new Uint8ClampedArray(targetLayer)
   const transformed = rasterizeTransformedShape(shapeState)
 
-  for (let ly = 0; ly < transformed.height; ly++) {
-    const cy = transformed.top + ly
-    if (cy < 0 || cy >= canvasHeight) continue
-    for (let lx = 0; lx < transformed.width; lx++) {
-      const cx = transformed.left + lx
-      if (!isInBounds(cx, cy, canvasWidth, canvasHeight)) continue
-
-      const pIdx = cy * canvasWidth + cx
-      if (selectionMask && selectionMask[pIdx] === 0) continue
-
-      const sIdx = (ly * transformed.width + lx) * 4
-      const sa = transformed.buffer[sIdx + 3]
-      if (sa === 0) continue
-
-      const dIdx = pIdx * 4
-      if (sa === 255 || out[dIdx + 3] === 0) {
-        out[dIdx] = transformed.buffer[sIdx]
-        out[dIdx + 1] = transformed.buffer[sIdx + 1]
-        out[dIdx + 2] = transformed.buffer[sIdx + 2]
-        out[dIdx + 3] = sa
-      } else {
-        // Alpha-over blend onto target layer
-        const srcA = sa / 255
-        const dstA = out[dIdx + 3] / 255
-        const outA = srcA + dstA * (1 - srcA)
-        out[dIdx] = Math.round(
-          (transformed.buffer[sIdx] * srcA + out[dIdx] * dstA * (1 - srcA)) / outA
-        )
-        out[dIdx + 1] = Math.round(
-          (transformed.buffer[sIdx + 1] * srcA + out[dIdx + 1] * dstA * (1 - srcA)) / outA
-        )
-        out[dIdx + 2] = Math.round(
-          (transformed.buffer[sIdx + 2] * srcA + out[dIdx + 2] * dstA * (1 - srcA)) / outA
-        )
-        out[dIdx + 3] = Math.round(outA * 255)
-      }
-    }
-  }
+  applyStampToBuffer(out, {
+    canvasWidth,
+    canvasHeight,
+    stampWidth: transformed.width,
+    stampHeight: transformed.height,
+    stampData: transformed.buffer,
+    topLeftX: transformed.left,
+    topLeftY: transformed.top,
+    flipX: false,
+    flipY: false,
+    symmetry,
+    seamlessWrap,
+    selectionMask,
+  })
 
   return out
 }

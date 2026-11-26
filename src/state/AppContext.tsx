@@ -13,13 +13,16 @@ import type {
   ClipboardBuffer,
   PaletteData,
   ProjectRecord,
+  StampAsset,
   UiSizeConfig,
 } from '../types'
 import {
+  addStampAsset,
   BACKUP_SNOOZE_INTERVAL_MS,
   DEFAULT_APP_SETTINGS,
   db,
   deleteLibraryPalette,
+  deleteStampAsset,
   evaluateOriginLowStorage,
   generateId,
   getStorageStatus,
@@ -27,6 +30,8 @@ import {
   initializeDatabase,
   LOW_STORAGE_SNOOZE_INTERVAL_MS,
   normalizeAppSettings,
+  renameStampAsset,
+  reorderStampAssets,
   shouldShowBackupReminder,
   type OriginLowStorageStatus,
 } from '../db/database'
@@ -46,6 +51,7 @@ export interface AppContextValue {
   isDark: boolean
   reducedMotion: boolean
   palettes: PaletteData[]
+  stamps: StampAsset[]
   projects: ProjectRecord[]
   sharedClipboard: ClipboardBuffer | null
   setSharedClipboard: (clip: ClipboardBuffer | null) => void
@@ -72,6 +78,16 @@ export interface AppContextValue {
   refreshOriginStorage: () => Promise<OriginLowStorageStatus>
   refreshProjects: () => Promise<void>
   refreshPalettes: () => Promise<void>
+  refreshStamps: () => Promise<void>
+  addStamp: (
+    name: string,
+    width: number,
+    height: number,
+    data: Uint8Array | Uint8ClampedArray
+  ) => Promise<StampAsset>
+  renameStamp: (id: string, nextName: string) => Promise<boolean>
+  removeStamp: (id: string) => Promise<boolean>
+  reorderStamps: (orderedIds: string[]) => Promise<void>
   addLibraryPalette: (
     name: string,
     colors: string[],
@@ -96,6 +112,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false)
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS)
   const [palettes, setPalettes] = useState<PaletteData[]>([])
+  const [stamps, setStamps] = useState<StampAsset[]>([])
   const [projects, setProjects] = useState<ProjectRecord[]>([])
   const [sharedClipboardState, setSharedClipboardState] =
     useState<ClipboardBuffer | null>(null)
@@ -210,6 +227,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setPalettes(list)
   }, [])
 
+  const refreshStamps = useCallback(async () => {
+    const list = await db.stamps.orderBy('order').toArray()
+    if (!mountedRef.current) return
+    setStamps(list)
+  }, [])
+
   const refreshProjects = useCallback(async () => {
     const list = await db.projects.orderBy('order').toArray()
     if (!mountedRef.current) return
@@ -229,6 +252,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!mountedRef.current) return
     setSettings(init.settings)
     setPalettes(init.palettes)
+    setStamps(init.stamps)
     const projs = await db.projects.orderBy('order').toArray()
     if (!mountedRef.current) return
     setProjects(projs)
@@ -544,6 +568,50 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [refreshProjects]
   )
 
+  const addStamp = useCallback(
+    async (
+      name: string,
+      width: number,
+      height: number,
+      data: Uint8Array | Uint8ClampedArray
+    ): Promise<StampAsset> => {
+      const created = await addStampAsset({ name, width, height, data }, db)
+      await refreshStamps()
+      return created
+    },
+    [refreshStamps]
+  )
+
+  const renameStamp = useCallback(
+    async (id: string, nextName: string): Promise<boolean> => {
+      const ok = await renameStampAsset(id, nextName, db)
+      if (ok) {
+        await refreshStamps()
+      }
+      return ok
+    },
+    [refreshStamps]
+  )
+
+  const removeStamp = useCallback(
+    async (id: string): Promise<boolean> => {
+      const ok = await deleteStampAsset(id, db)
+      if (ok) {
+        await refreshStamps()
+      }
+      return ok
+    },
+    [refreshStamps]
+  )
+
+  const reorderStamps = useCallback(
+    async (orderedIds: string[]): Promise<void> => {
+      await reorderStampAssets(orderedIds, db)
+      await refreshStamps()
+    },
+    [refreshStamps]
+  )
+
   const t = useCallback(
     (key: TranslationKey) => translate(settings.language, key),
     [settings.language]
@@ -561,6 +629,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       isDark,
       reducedMotion,
       palettes,
+      stamps,
       projects,
       sharedClipboard: sharedClipboardState,
       setSharedClipboard,
@@ -580,6 +649,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       refreshOriginStorage,
       refreshProjects,
       refreshPalettes,
+      refreshStamps,
+      addStamp,
+      renameStamp,
+      removeStamp,
+      reorderStamps,
       addLibraryPalette,
       updateLibraryPalette,
       duplicateLibraryPalette,
@@ -596,6 +670,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       isDark,
       reducedMotion,
       palettes,
+      stamps,
       projects,
       sharedClipboardState,
       setSharedClipboard,
@@ -615,6 +690,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       refreshOriginStorage,
       refreshProjects,
       refreshPalettes,
+      refreshStamps,
+      addStamp,
+      renameStamp,
+      removeStamp,
+      reorderStamps,
       addLibraryPalette,
       updateLibraryPalette,
       duplicateLibraryPalette,
