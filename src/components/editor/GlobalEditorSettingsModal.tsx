@@ -1,6 +1,11 @@
 import { useEffect, useMemo } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { CursorDisplaySize } from '../../types'
+import type {
+  CursorDisplaySize,
+  SeamlessWrapMode,
+  SymmetryMode,
+  TilePreviewGrid,
+} from '../../types'
 import { MAX_CURSOR_SPEED, MIN_CURSOR_SPEED } from '../../db/database'
 import { useApp } from '../../state/AppContext'
 import { useI18n } from '../../i18n/I18nContext'
@@ -15,6 +20,12 @@ interface GlobalEditorSettingsModalProps {
   onTogglePreviewFlipX?: () => void
   onTogglePreviewFlipY?: () => void
   onResetPreviewFlip?: () => void
+  symmetryMode?: SymmetryMode
+  onChangeSymmetryMode?: (mode: SymmetryMode) => void
+  tilePreviewGrid?: TilePreviewGrid
+  onChangeTilePreviewGrid?: (grid: TilePreviewGrid) => void
+  seamlessWrapMode?: SeamlessWrapMode
+  onChangeSeamlessWrapMode?: (mode: SeamlessWrapMode) => void
 }
 
 /**
@@ -34,6 +45,12 @@ export function GlobalEditorSettingsModal({
   onTogglePreviewFlipX,
   onTogglePreviewFlipY,
   onResetPreviewFlip,
+  symmetryMode = 'none',
+  onChangeSymmetryMode,
+  tilePreviewGrid = 'off',
+  onChangeTilePreviewGrid,
+  seamlessWrapMode = 'none',
+  onChangeSeamlessWrapMode,
 }: GlobalEditorSettingsModalProps) {
   const { settings, updateSettings, reducedMotion } = useApp()
   const { t } = useI18n()
@@ -128,7 +145,141 @@ export function GlobalEditorSettingsModal({
               }}
               data-testid="global-editor-settings-scroll"
             >
-              {/* 1. Non-Destructive View Flip Preview (Horizontal / Vertical) */}
+              {/* 1. Symmetry Editing + Axis Guide */}
+              {onChangeSymmetryMode && (
+                <section
+                  className="pixel-card p-3 space-y-2.5"
+                  data-testid="global-symmetry-section"
+                >
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-[var(--text-primary)]">
+                    <PixelIcon
+                      name="symmetry"
+                      size={13}
+                      className="text-[var(--accent-teal)]"
+                    />
+                    <span>{t('symmetryLabel')}</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                    {(
+                      [
+                        { id: 'none', label: t('symmetryOff') },
+                        { id: 'horizontal', label: t('symmetryHorizontal') },
+                        { id: 'vertical', label: t('symmetryVertical') },
+                        { id: 'quad', label: t('symmetryQuad') },
+                      ] as Array<{ id: SymmetryMode; label: string }>
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => onChangeSymmetryMode(opt.id)}
+                        aria-pressed={symmetryMode === opt.id}
+                        className={`min-h-[36px] px-2 text-xs font-bold ${
+                          symmetryMode === opt.id
+                            ? 'pixel-btn pixel-btn-teal'
+                            : 'pixel-btn'
+                        }`}
+                        data-testid={`global-symmetry-${opt.id}`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <PixelCheckbox
+                    checked={settings.showSymmetryGuide ?? true}
+                    onChange={(next) =>
+                      void updateSettings({ showSymmetryGuide: next })
+                    }
+                    label={t('symmetryAxisGuide')}
+                    testId="global-symmetry-guide-checkbox"
+                  />
+                </section>
+              )}
+
+              {/* 1b. Tile Repeat Preview & Seamless Edge Wrap */}
+              {(onChangeTilePreviewGrid || onChangeSeamlessWrapMode) && (
+                <section
+                  className="pixel-card p-3 space-y-2.5"
+                  data-testid="global-tile-seamless-section"
+                >
+                  {onChangeTilePreviewGrid && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-[var(--text-primary)]">
+                        <PixelIcon
+                          name="tile"
+                          size={13}
+                          className="text-[var(--accent-teal)]"
+                        />
+                        <span>{t('tilePreviewLabel')}</span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {(
+                          [
+                            { id: 'off', label: t('tilePreviewOff') },
+                            { id: '3x3', label: t('tilePreview3x3') },
+                            { id: '5x5', label: t('tilePreview5x5') },
+                          ] as Array<{ id: TilePreviewGrid; label: string }>
+                        ).map((opt) => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => onChangeTilePreviewGrid(opt.id)}
+                            aria-pressed={tilePreviewGrid === opt.id}
+                            className={`min-h-[34px] px-2 text-xs font-bold ${
+                              tilePreviewGrid === opt.id
+                                ? 'pixel-btn pixel-btn-teal'
+                                : 'pixel-btn'
+                            }`}
+                            data-testid={`global-tile-preview-${opt.id}`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {onChangeSeamlessWrapMode && (
+                    <div className="space-y-1.5 pt-1 border-t border-[var(--border-subtle)]">
+                      <div className="text-xs font-bold text-[var(--text-primary)]">
+                        {t('seamlessWrapLabel')}
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                        {(
+                          [
+                            { id: 'none', label: t('seamlessOff') },
+                            { id: 'horizontal', label: t('seamlessHorizontal') },
+                            { id: 'vertical', label: t('seamlessVertical') },
+                            { id: 'both', label: t('seamlessBoth') },
+                          ] as Array<{ id: SeamlessWrapMode; label: string }>
+                        ).map((opt) => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => onChangeSeamlessWrapMode(opt.id)}
+                            aria-pressed={seamlessWrapMode === opt.id}
+                            className={`min-h-[34px] px-2 text-xs font-bold ${
+                              seamlessWrapMode === opt.id
+                                ? 'pixel-btn pixel-btn-active'
+                                : 'pixel-btn'
+                            }`}
+                            data-testid={`global-seamless-${opt.id}`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">
+                    {t('tileSeamlessNote')}
+                  </p>
+                </section>
+              )}
+
+              {/* 1c. Non-Destructive View Flip Preview (Horizontal / Vertical) */}
               {(onTogglePreviewFlipX || onTogglePreviewFlipY) && (
                 <section
                   className="pixel-card p-3 space-y-2.5"

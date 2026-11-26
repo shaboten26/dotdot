@@ -3,6 +3,7 @@ import { motion } from 'motion/react'
 import type {
   ActiveMoveSession,
   FloatingShapeState,
+  StampPlacementSession,
   ToolId,
   ToolSettings,
 } from '../../types'
@@ -18,6 +19,7 @@ interface DrawButtonProps {
   stepPhase: MultiStepPhase
   floatingShape: FloatingShapeState | null
   moveSession: ActiveMoveSession | null
+  stampSession?: StampPlacementSession | null
   isContinuousDrawing: boolean
   activeHexColor: string
   isTransparentColor?: boolean
@@ -27,6 +29,7 @@ interface DrawButtonProps {
   onCancelStep: () => void
   onCommitShape: () => void
   onCommitMove: () => void
+  onCommitStamp?: () => void
 }
 
 /**
@@ -42,6 +45,7 @@ export function DrawButton({
   stepPhase,
   floatingShape,
   moveSession,
+  stampSession = null,
   isContinuousDrawing,
   activeHexColor,
   isTransparentColor = false,
@@ -51,6 +55,7 @@ export function DrawButton({
   onCancelStep,
   onCommitShape,
   onCommitMove,
+  onCommitStamp,
 }: DrawButtonProps) {
   const { t } = useI18n()
   const { reducedMotion } = useApp()
@@ -74,6 +79,10 @@ export function DrawButton({
       onCommitShape()
       return
     }
+    if (stampSession && onCommitStamp) {
+      onCommitStamp()
+      return
+    }
     onBeginDraw()
   }
 
@@ -91,6 +100,8 @@ export function DrawButton({
     primaryLabel = t('commitMoveBtn')
   } else if (floatingShape) {
     primaryLabel = t('commitTransform')
+  } else if (stampSession) {
+    primaryLabel = t('stampCommitBtn')
   } else if (tool === 'pen' || tool === 'eraser') {
     subHint = t('drawHold')
   } else if (tool === 'fill' && toolSettings.fillMode === 'gradient') {
@@ -114,9 +125,13 @@ export function DrawButton({
       stepPhase.kind === 'select-end' ? t('drawEndPoint') : t('drawStartPoint')
   }
 
-  const isConfirmState = floatingShape !== null || moveSession !== null
+  const isConfirmState =
+    floatingShape !== null || moveSession !== null || stampSession !== null
   const showAbort =
-    stepPhase.kind !== 'idle' || floatingShape !== null || moveSession !== null
+    stepPhase.kind !== 'idle' ||
+    floatingShape !== null ||
+    moveSession !== null ||
+    stampSession !== null
   const showTransparentSwatch = tool === 'eraser' || isTransparentColor
 
   return (

@@ -24,6 +24,8 @@ import {
   type ExportPngInitialIntent,
 } from '../components/editor/EditorModals'
 import { ExportGifModal } from '../components/editor/ExportGifModal'
+import { ExportSpriteSheetModal } from '../components/editor/ExportSpriteSheetModal'
+import { ExportAsepriteModal } from '../components/common/AsepriteModals'
 import type { TimelineState } from '../engine/animation'
 import { sortProjectsByGalleryMode } from '../utils/gallerySort'
 import {
@@ -66,6 +68,8 @@ export function ProjectDetailPage() {
   const [nameDraft, setNameDraft] = useState('')
   const [exportOpen, setExportOpen] = useState(false)
   const [exportGifOpen, setExportGifOpen] = useState(false)
+  const [exportSpriteOpen, setExportSpriteOpen] = useState(false)
+  const [exportAseOpen, setExportAseOpen] = useState(false)
   const [exportIntent, setExportIntent] =
     useState<ExportPngInitialIntent>('download')
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
@@ -185,6 +189,8 @@ export function ProjectDetailPage() {
       setEditingName(false)
       setExportOpen(false)
       setExportGifOpen(false)
+      setExportSpriteOpen(false)
+      setExportAseOpen(false)
       setConfirmDeleteOpen(false)
       vtNavigate(`/project/${target.id}`)
     },
@@ -195,7 +201,16 @@ export function ProjectDetailPage() {
   useEffect(() => {
     if (sortedProjects.length <= 1) return
     const onKeyDown = (e: KeyboardEvent) => {
-      if (editingName || exportOpen || exportGifOpen || confirmDeleteOpen) return
+      if (
+        editingName ||
+        exportOpen ||
+        exportGifOpen ||
+        exportSpriteOpen ||
+        exportAseOpen ||
+        confirmDeleteOpen
+      ) {
+        return
+      }
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
       if (e.key === 'ArrowLeft' && prevProject) {
@@ -213,6 +228,8 @@ export function ProjectDetailPage() {
     editingName,
     exportOpen,
     exportGifOpen,
+    exportSpriteOpen,
+    exportAseOpen,
     confirmDeleteOpen,
     prevProject,
     nextProject,
@@ -247,6 +264,8 @@ export function ProjectDetailPage() {
       editingName ||
       exportOpen ||
       exportGifOpen ||
+      exportSpriteOpen ||
+      exportAseOpen ||
       confirmDeleteOpen ||
       isViewportZoomed()
     ) {
@@ -657,6 +676,30 @@ export function ProjectDetailPage() {
                 <span>{t('duplicate')}</span>
               </button>
             </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                disabled={!timeline || layers.length === 0}
+                onClick={() => setExportSpriteOpen(true)}
+                className="min-h-[42px] px-2.5 pixel-btn text-xs font-bold flex items-center justify-center gap-1.5"
+                data-testid="detail-export-spritesheet-btn"
+              >
+                <PixelIcon name="sheet" size={14} />
+                <span>{t('exportSpriteSheet')}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!timeline || layers.length === 0}
+                onClick={() => setExportAseOpen(true)}
+                className="min-h-[42px] px-2.5 pixel-btn text-xs font-bold flex items-center justify-center gap-1.5"
+                data-testid="detail-export-aseprite-btn"
+              >
+                <PixelIcon name="aseprite" size={14} />
+                <span>{t('exportAseprite')}</span>
+              </button>
+            </div>
           </div>
 
           {/* Metadata Card */}
@@ -780,6 +823,42 @@ export function ProjectDetailPage() {
             onShared={() => showToast(t('toastSharedGif'), 'success')}
             onCancelled={() => showToast(t('toastGifCancelled'), 'info')}
           />
+        )}
+
+        {timeline && layers.length > 0 && (
+          <>
+            <ExportSpriteSheetModal
+              open={exportSpriteOpen}
+              onClose={() => setExportSpriteOpen(false)}
+              projectName={activeProject.name}
+              width={activeProject.width}
+              height={activeProject.height}
+              layerMetas={layers}
+              frames={timeline.frames}
+              cels={timeline.cels}
+              celBuffers={timeline.celBuffers}
+              fallbackSingleFrameLayers={layers}
+              defaultDirection={timeline.playbackDirection}
+              checkerDark={settings.checkerboardDark}
+              onExportedPng={() => showToast(t('toastExportedSpriteSheet'), 'success')}
+              onExportedJson={() => showToast(t('toastExportedSpriteJson'), 'success')}
+            />
+
+            <ExportAsepriteModal
+              open={exportAseOpen}
+              onClose={() => setExportAseOpen(false)}
+              projectName={activeProject.name}
+              width={activeProject.width}
+              height={activeProject.height}
+              layerMetas={layers}
+              frames={timeline.frames}
+              cels={timeline.cels}
+              celBuffers={timeline.celBuffers}
+              fallbackSingleFrameLayers={layers}
+              paletteColors={activeProject.palette.colors}
+              onExported={() => showToast(t('toastExportedAseprite'), 'success')}
+            />
+          </>
         )}
 
         <ConfirmDialog
