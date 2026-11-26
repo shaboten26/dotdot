@@ -5,6 +5,7 @@ import type {
   LayerMeta,
   LayerRuntime,
   PlaybackDirection,
+  ProjectPalette,
 } from '../types'
 import { computePlaybackFrameIndices, projectFrameLayers } from './animation'
 import {
@@ -25,6 +26,7 @@ export interface SpriteSheetExportOptions {
   cels: CelMap
   celBuffers: Readonly<Record<string, CelBufferRuntime>>
   fallbackSingleFrameLayers?: readonly LayerRuntime[]
+  palette?: ProjectPalette
   layout: SpriteSheetLayout
   /** Number of columns when `layout === 'grid'` (`>= 1`) */
   columns?: number
@@ -231,7 +233,9 @@ export function generateSpriteSheet(
       layersToComposite = projectedLayers.filter((l) => l.visible)
     }
 
-    const frameRgba = compositeLayers(layersToComposite, canvasWidth, canvasHeight)
+    const frameRgba = compositeLayers(layersToComposite, canvasWidth, canvasHeight, {
+      palette: options.palette,
+    })
 
     const col = outIdx % cols
     const row = Math.floor(outIdx / cols)

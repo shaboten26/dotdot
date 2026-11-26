@@ -4,6 +4,13 @@ import {
   type DotDotPngMetadata,
 } from './compositor'
 import { rgbaToHex } from './color'
+import {
+  buildPaletteRgbaLut,
+  convertRgbaBuffersToIndexed,
+  indexedBufferToRgba,
+  MAX_OPAQUE_PALETTE_COLORS,
+} from './indexedPalette'
+import type { ProjectPalette } from '../types'
 
 export interface DecodedPngImage {
   width: number
@@ -690,13 +697,13 @@ export function inspectPngForImport(
 }
 
 /**
- * Extract up to `maxColors` (default 256) unique `#RRGGBB` palette colors from an RGBA buffer,
- * ordered by frequency descending so dominant colors appear first.
+ * Extract up to `maxColors` (default 255 opaque colors; `255` reserved for transparent) unique `#RRGGBB` palette colors
+ * from an RGBA buffer, ordered by frequency descending.
  */
 export function extractPaletteColorsFromRgba(
   rgba: Uint8ClampedArray | Uint8Array,
   fallbackPalette: readonly string[] = ['#000000', '#FFFFFF'],
-  maxColors = 256
+  maxColors = MAX_OPAQUE_PALETTE_COLORS
 ): string[] {
   const counts = new Map<string, number>()
   for (let i = 0; i < rgba.length; i += 4) {
@@ -710,11 +717,61 @@ export function extractPaletteColorsFromRgba(
   }
 
   if (counts.size === 0) {
-    return fallbackPalette.length > 0 ? [...fallbackPalette] : ['#000000', '#FFFFFF']
+    return fallbackPalette.length > 0
+      ? fallbackPalette.slice(0, maxColors)
+      : ['#000000', '#FFFFFF']
   }
 
   return Array.from(counts.entries())
     .sort((a, b) => b[1] - a[1])
     .slice(0, maxColors)
     .map(([hex]) => hex)
+}
+
+export interface ImportedPngIndexedPreview {
+  width: number
+  height: number
+  /** 1-byte per pixel Indexed Color buffer (`width * height`) */
+  indexedData: Uint8Array
+  /** Resulting `ProjectPalette` (`<= 255` opaque colors) */
+  palette: ProjectPalette
+  /** Temporary RGBA preview of `indexedData` for before/after visual verification in UI */
+  previewRgba: Uint8ClampedArray
+  originalOpaqueColorCount: number
+  finalOpaqueColorCount: number
+  wasQuantized: boolean
+  hadSemiTransparentPixels: boolean
+  semiTransparentPixelCount: number
+}
+
+/**
+ * Convert a downscaled/1x imported PNG RGBA buffer into 1-byte Indexed Color (`0..254` + `255` transparent)
+ * with perceptual quantization (>255 colors) and 4x4 Bayer semi-transparent dithering (Section 9-2).
+ */
+export function prepareImportedPngAsIndexed(
+  rgba: Uint8ClampedArray | Uint8Array,
+  width: number,
+  height: number,
+  preferredPalette?: ProjectPalette | null
+): ImportedPngIndexedPreview {
+  const converted = convertRgbaBuffersToIndexed(
+    [{ id: 'png', width, height, rgba }],
+    preferredPalette
+  )
+  const indexedData = converted.buffers.get('png')!
+  const lut = buildPaletteRgbaLut(converted.palette)
+  const previewRgba = indexedBufferToRgba(indexedData, lut)
+
+  return {
+    width,
+    height,
+    indexedData,
+    palette: converted.palette,
+    previewRgba,
+    originalOpaqueColorCount: converted.originalOpaqueColorCount,
+    finalOpaqueColorCount: converted.finalOpaqueColorCount,
+    wasQuantized: converted.wasQuantized,
+    hadSemiTransparentPixels: converted.hadSemiTransparentPixels,
+    semiTransparentPixelCount: converted.semiTransparentPixelCount,
+  }
 }

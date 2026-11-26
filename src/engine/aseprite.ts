@@ -1,18 +1,23 @@
 import { unzlibSync, zlibSync } from 'fflate'
-import type {
-  BlendMode,
-  CelBufferRuntime,
-  CelMap,
-  FrameMeta,
-  LayerMeta,
-  LayerRuntime,
-  ProjectPalette,
+import {
+  MAX_OPAQUE_PALETTE_COLORS,
+  TRANSPARENT_INDEX,
+  type BlendMode,
+  type CelBufferRuntime,
+  type CelMap,
+  type FrameMeta,
+  type LayerMeta,
+  type LayerRuntime,
+  type ProjectPalette,
 } from '../types'
 import { hexToRgba, rgbaToHex } from './color'
 import { MAX_LAYERS } from './compositor'
+import {
+  convertRgbaBuffersToIndexed,
+  normalizeProjectPalette,
+} from './indexedPalette'
 import { createPixelBuffer, MAX_CANVAS_SIZE } from './pixelBuffer'
 import { clampFrameDurationMs, makeCellKey } from './animation'
-import { extractPaletteColorsFromRgba } from './pngImport'
 
 export const ASE_FILE_MAGIC = 0xa5e0
 export const ASE_FRAME_MAGIC = 0xf1fa
@@ -43,6 +48,7 @@ export interface AsepriteWarningItem {
     | 'layer-limit-truncated'
     | 'canvas-size-exceeded'
     | 'clipping-note'
+    | 'colors-quantized'
   detail: string
 }
 
@@ -61,6 +67,8 @@ export interface ParsedAsepriteDocument {
   palette: ProjectPalette
   tagNames: string[]
   warnings: AsepriteWarningItem[]
+  wasQuantized?: boolean
+  originalOpaqueColorCount?: number
 }
 
 const ASE_TO_DOTDOT_BLEND: Record<number, BlendMode> = {
@@ -154,7 +162,7 @@ class BinaryReader {
 }
 
 class BinaryWriter {
-  private buf: Uint8Array
+  public buf: Uint8Array
   private view: DataView
   public length = 0
 
@@ -227,7 +235,7 @@ class BinaryWriter {
 
 interface RawAseLayerEntry {
   aseIndex: number
-  layerType: number // 0 = normal image, 1 = group, 2 = tilemap
+  layerType: number
   name: string
   visible: boolean
   locked: boolean
@@ -237,8 +245,9 @@ interface RawAseLayerEntry {
 }
 
 /**
- * Parse and inspect an Aseprite `.ase` / `.aseprite` binary file completely offline in-browser.
- * Maps Linked Cels (`celType === 1`) directly to dotdot shared `celId` references!
+ * Parse an Aseprite `.ase` / `.aseprite` binary into 1-byte Indexed Color `layers`, `celBuffers`, and `ProjectPalette`.
+ * - Preserves 8bpp Indexed palette structure & maps Aseprite `transparentIndex` <-> dotdot `TRANSPARENT_INDEX (255)` (Section 9-3).
+ * - Preserves Linked Cels (`celType === 1`) via shared `celId` references.
  */
 export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument {
   if (!rawBytes || rawBytes.byteLength < 128) {
@@ -261,14 +270,14 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
   const colorDepthRaw = r.u16()
   const headerFlags = r.u32()
   const fallbackSpeedMs = r.u16()
-  r.skip(8) // two zero DWORDs
+  r.skip(8)
   const transparentIndex = r.u8()
   r.skip(3)
   const _numColors = r.u16()
   void _numColors
   const pixelW = r.u8()
   const pixelH = r.u8()
-  r.skip(92) // grid (8 bytes) + future reserved (84 bytes) -> total 128 bytes
+  r.skip(92)
 
   if (width <= 0 || height <= 0 || width > 4096 || height > 4096) {
     throw new Error(`UNSUPPORTED_ASEPRITE_DIMENSIONS: ${width}x${height}`)
@@ -294,8 +303,7 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
     })
   }
 
-  // Palette table RGBA (up to 256 entries for 8bpp indexed or general palette)
-  const paletteRgba: Array<{ r: number; g: number; b: number; a: number }> = []
+  const paletteRgba: Array<{ r: number; g: number; b: number; a: number } | undefined> = []
   let sawNewPaletteChunk = false
 
   const rawLayers: RawAseLayerEntry[] = []
@@ -308,7 +316,6 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
   let bakedCelOpacityCount = 0
   let sawIccProfile = false
 
-  // Store per `(aseLayerIndex, frameIndex)` cel entries before mapping to dotdot layers
   type TempCelEntry =
     | {
         kind: 'image'
@@ -316,7 +323,9 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
         y: number
         w: number
         h: number
-        rgba: Uint8ClampedArray
+        celOpacity: number
+        rawIndexed8?: Uint8Array
+        rgba?: Uint8ClampedArray
         celId: string
       }
     | {
@@ -377,8 +386,8 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
         const firstIdx = r.u32()
         const lastIdx = r.u32()
         r.skip(8)
-        while (paletteRgba.length < Math.min(256, newSize)) {
-          paletteRgba.push({ r: 0, g: 0, b: 0, a: 255 })
+        if (paletteRgba.length < Math.min(256, newSize)) {
+          paletteRgba.length = Math.min(256, newSize)
         }
         for (let ci = firstIdx; ci <= lastIdx && r.pos + 6 <= chunkEnd; ci++) {
           const entryFlags = r.u16()
@@ -387,7 +396,7 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
           const cb = r.u8()
           const ca = r.u8()
           if ((entryFlags & 1) !== 0) {
-            r.str() // color name
+            r.str()
           }
           if (ci < 256) {
             paletteRgba[ci] = { r: cr, g: cg, b: cb, a: ca }
@@ -428,7 +437,7 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
         const flags = r.u16()
         const layerType = r.u16()
         const childLevel = r.u16()
-        r.skip(4) // defaultW, defaultH
+        r.skip(4)
         const blendModeNum = r.u16()
         const opacity255 = r.u8()
         r.skip(3)
@@ -456,7 +465,7 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
         const celY = r.i16()
         const celOpacity = r.u8()
         const celType = r.u16()
-        r.skip(7) // zIndex (SHORT) + future (5 bytes)
+        r.skip(7)
 
         const key = `${layerIndex}:${fIdx}`
         if (celType === 1) {
@@ -485,62 +494,73 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
             throw new Error('CORRUPT_ASEPRITE: Cel pixel buffer shorter than dimensions')
           }
 
-          const rgba = new Uint8ClampedArray(cw * ch * 4)
-          if (colorDepth === 32) {
-            rgba.set(pixelBytes.subarray(0, cw * ch * 4))
-          } else if (colorDepth === 16) {
-            for (let p = 0; p < cw * ch; p++) {
-              const v = pixelBytes[p * 2]!
-              const a = pixelBytes[p * 2 + 1]!
-              const di = p * 4
-              rgba[di] = v
-              rgba[di + 1] = v
-              rgba[di + 2] = v
-              rgba[di + 3] = a
-            }
-          } else {
-            // 8bpp Indexed: `transparentIndex` maps to alpha 0 (except background layer if flagged, standard sprite behavior)
-            for (let p = 0; p < cw * ch; p++) {
-              const idx8 = pixelBytes[p]!
-              const di = p * 4
-              if (idx8 === transparentIndex) {
-                rgba[di] = 0
-                rgba[di + 1] = 0
-                rgba[di + 2] = 0
-                rgba[di + 3] = 0
-              } else {
-                const entry = paletteRgba[idx8] ?? {
-                  r: idx8,
-                  g: idx8,
-                  b: idx8,
-                  a: 255,
-                }
-                rgba[di] = entry.r
-                rgba[di + 1] = entry.g
-                rgba[di + 2] = entry.b
-                rgba[di + 3] = entry.a
-              }
-            }
-          }
-
           if (celOpacity < 255) {
             bakedCelOpacityCount++
-            const factor = celOpacity / 255
-            for (let i = 3; i < rgba.length; i += 4) {
-              rgba[i] = Math.round(rgba[i]! * factor)
-            }
           }
 
           if (cw > 0 && ch > 0) {
-            tempCelGrid.set(key, {
-              kind: 'image',
-              x: celX,
-              y: celY,
-              w: cw,
-              h: ch,
-              rgba,
-              celId: `ase-cel-${nextCelSeq++}`,
-            })
+            if (colorDepth === 8 && celOpacity === 255) {
+              tempCelGrid.set(key, {
+                kind: 'image',
+                x: celX,
+                y: celY,
+                w: cw,
+                h: ch,
+                celOpacity,
+                rawIndexed8: new Uint8Array(pixelBytes.subarray(0, cw * ch)),
+                celId: `ase-cel-${nextCelSeq++}`,
+              })
+            } else {
+              const rgba = new Uint8ClampedArray(cw * ch * 4)
+              if (colorDepth === 32) {
+                rgba.set(pixelBytes.subarray(0, cw * ch * 4))
+              } else if (colorDepth === 16) {
+                for (let p = 0; p < cw * ch; p++) {
+                  const v = pixelBytes[p * 2]!
+                  const a = pixelBytes[p * 2 + 1]!
+                  const di = p * 4
+                  rgba[di] = v
+                  rgba[di + 1] = v
+                  rgba[di + 2] = v
+                  rgba[di + 3] = a
+                }
+              } else {
+                for (let p = 0; p < cw * ch; p++) {
+                  const idx8 = pixelBytes[p]!
+                  const di = p * 4
+                  if (idx8 === transparentIndex) {
+                    rgba[di + 3] = 0
+                  } else {
+                    const entry = paletteRgba[idx8] ?? {
+                      r: idx8,
+                      g: idx8,
+                      b: idx8,
+                      a: 255,
+                    }
+                    rgba[di] = entry.r
+                    rgba[di + 1] = entry.g
+                    rgba[di + 2] = entry.b
+                    rgba[di + 3] = entry.a
+                  }
+                }
+              }
+              if (celOpacity < 255) {
+                const factor = celOpacity / 255
+                for (let i = 3; i < rgba.length; i += 4) {
+                  rgba[i] = Math.round(rgba[i]! * factor)
+                }
+              }
+              tempCelGrid.set(key, {
+                kind: 'image',
+                x: celX,
+                y: celY,
+                w: cw,
+                h: ch,
+                celOpacity,
+                rgba,
+                celId: `ase-cel-${nextCelSeq++}`,
+              })
+            }
           }
         } else if (celType === 3) {
           tilemapCount++
@@ -550,7 +570,7 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
         r.skip(8)
         for (let ti = 0; ti < numTags && r.pos < chunkEnd; ti++) {
           if (r.pos + 17 > chunkEnd) break
-          r.skip(17) // from(2) + to(2) + loopDir(1) + repeat(2) + zero(6) + rgb(3) + extra(1)
+          r.skip(17)
           if (r.pos + 2 <= chunkEnd) {
             tagNames.push(r.str())
           }
@@ -572,7 +592,6 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
     r.pos = frameEnd
   }
 
-  // Propagate effective group visibility to child layers when groups exist
   const groupVisibleStack: boolean[] = []
   const imageLayerEntries: Array<{
     aseIndex: number
@@ -636,54 +655,18 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
     imageLayerEntries.length = MAX_LAYERS
   }
 
-  if (groupCount > 0) {
-    warnings.push({
-      code: 'layer-groups-flattened',
-      detail: `${groupCount}`,
-    })
-  }
-  if (tilemapCount > 0) {
-    warnings.push({
-      code: 'tilemap-layers-skipped',
-      detail: `${tilemapCount}`,
-    })
-  }
+  if (groupCount > 0) warnings.push({ code: 'layer-groups-flattened', detail: `${groupCount}` })
+  if (tilemapCount > 0) warnings.push({ code: 'tilemap-layers-skipped', detail: `${tilemapCount}` })
   if (unsupportedBlendCount > 0) {
-    warnings.push({
-      code: 'unsupported-blend-mode',
-      detail: `${unsupportedBlendCount}`,
-    })
+    warnings.push({ code: 'unsupported-blend-mode', detail: `${unsupportedBlendCount}` })
   }
   if (bakedCelOpacityCount > 0) {
-    warnings.push({
-      code: 'cel-opacity-baked',
-      detail: `${bakedCelOpacityCount}`,
-    })
+    warnings.push({ code: 'cel-opacity-baked', detail: `${bakedCelOpacityCount}` })
   }
-  if (tagNames.length > 0) {
-    warnings.push({
-      code: 'tags-ignored',
-      detail: tagNames.join(', '),
-    })
-  }
-  if (sliceCount > 0) {
-    warnings.push({
-      code: 'slices-ignored',
-      detail: `${sliceCount}`,
-    })
-  }
-  if (sawIccProfile) {
-    warnings.push({
-      code: 'icc-profile-ignored',
-      detail: 'ICC → sRGB',
-    })
-  }
+  if (tagNames.length > 0) warnings.push({ code: 'tags-ignored', detail: tagNames.join(', ') })
+  if (sliceCount > 0) warnings.push({ code: 'slices-ignored', detail: `${sliceCount}` })
+  if (sawIccProfile) warnings.push({ code: 'icc-profile-ignored', detail: 'ICC → sRGB' })
 
-  const celBuffers: Record<string, CelBufferRuntime> = {}
-  const cels: CelMap = {}
-  let linkedCelCount = 0
-
-  // Resolve cel references (supporting chained Linked Cels safely without infinite loops)
   const resolveImageCel = (
     aseLayerIdx: number,
     fIdx: number,
@@ -696,6 +679,10 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
     if (entry.kind === 'image') return entry
     return resolveImageCel(aseLayerIdx, entry.linkedFrameIndex, visited)
   }
+
+  const cels: CelMap = {}
+  const uniqueResolvedCels = new Map<string, Extract<TempCelEntry, { kind: 'image' }>>()
+  let linkedCelCount = 0
 
   for (const item of imageLayerEntries) {
     for (let fIdx = 0; fIdx < frames.length; fIdx++) {
@@ -714,21 +701,223 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
         cels[cellKey] = { kind: 'empty' }
         continue
       }
-      if (!celBuffers[resolved.celId]) {
-        celBuffers[resolved.celId] = {
-          id: resolved.celId,
-          offsetX: resolved.x,
-          offsetY: resolved.y,
-          dataWidth: resolved.w,
-          dataHeight: resolved.h,
-          data: resolved.rgba,
-        }
-      }
+      uniqueResolvedCels.set(resolved.celId, resolved)
       cels[cellKey] = { kind: 'cel', celId: resolved.celId }
     }
   }
 
-  // Build Frame 1 LayerRuntime array
+  const celBuffers: Record<string, CelBufferRuntime> = {}
+  let finalPalette: ProjectPalette
+  let wasQuantized = false
+  let originalOpaqueColorCount = 0
+
+  const allRaw8bpp =
+    colorDepth === 8 &&
+    Array.from(uniqueResolvedCels.values()).every((c) => Boolean(c.rawIndexed8))
+
+  if (allRaw8bpp) {
+    // Native 8bpp Indexed fast-path: preserve exact Aseprite palette indices (remapping `transparentIndex` -> `255`)!
+    const usedAseIndices = new Set<number>()
+    for (const cel of uniqueResolvedCels.values()) {
+      const raw = cel.rawIndexed8!
+      for (let i = 0; i < raw.length; i++) {
+        const idx8 = raw[i]!
+        if (idx8 !== transparentIndex) {
+          const palE = paletteRgba[idx8]
+          if (!palE || palE.a > 0) {
+            usedAseIndices.add(idx8)
+          }
+        }
+      }
+    }
+
+    // Collect valid opaque palette entries (`i !== transparentIndex && a > 0`)
+    const validOpaqueAseIndices: number[] = []
+    for (let i = 0; i < Math.min(256, paletteRgba.length); i++) {
+      if (i === transparentIndex) continue
+      const entry = paletteRgba[i]
+      if (entry && entry.a > 0) {
+        validOpaqueAseIndices.push(i)
+      }
+    }
+    // Also ensure any used index in cel data is represented even if palette chunk was short
+    for (const uIdx of usedAseIndices) {
+      if (!validOpaqueAseIndices.includes(uIdx)) {
+        validOpaqueAseIndices.push(uIdx)
+      }
+    }
+
+    if (
+      transparentIndex === TRANSPARENT_INDEX &&
+      validOpaqueAseIndices.every((idx) => idx < MAX_OPAQUE_PALETTE_COLORS)
+    ) {
+      // Exact 1:1 fixed-index identity (including files exported by dotdot)!
+      const colorTable = new Array<string | null>(MAX_OPAQUE_PALETTE_COLORS).fill(null)
+      const displayOrder: number[] = []
+      for (const idx of validOpaqueAseIndices) {
+        const e = paletteRgba[idx] ?? { r: idx, g: idx, b: idx, a: 255 }
+        colorTable[idx] = rgbaToHex(e).toUpperCase()
+        displayOrder.push(idx)
+      }
+      if (displayOrder.length === 0) {
+        colorTable[0] = '#000000'
+        colorTable[1] = '#FFFFFF'
+        displayOrder.push(0, 1)
+      }
+      finalPalette = normalizeProjectPalette({
+        name: 'Aseprite Palette',
+        colors: displayOrder.map((i) => colorTable[i]!),
+        colorTable,
+        displayOrder,
+      })
+      originalOpaqueColorCount = displayOrder.length
+
+      for (const cel of uniqueResolvedCels.values()) {
+        const src = cel.rawIndexed8!
+        const dst = new Uint8Array(src.length)
+        for (let i = 0; i < src.length; i++) {
+          const v = src[i]!
+          if (v === transparentIndex || colorTable[v] === null) {
+            dst[i] = TRANSPARENT_INDEX
+          } else {
+            dst[i] = v
+          }
+        }
+        celBuffers[cel.celId] = {
+          id: cel.celId,
+          offsetX: cel.x,
+          offsetY: cel.y,
+          dataWidth: cel.w,
+          dataHeight: cel.h,
+          data: dst,
+        }
+      }
+    } else if (validOpaqueAseIndices.length <= MAX_OPAQUE_PALETTE_COLORS) {
+      // Lossless 1:1 remap from Aseprite index (`transparentIndex` -> `255`, others -> `0..N-1`)!
+      const aseToDot = new Int16Array(256).fill(TRANSPARENT_INDEX)
+      const colorTable = new Array<string | null>(MAX_OPAQUE_PALETTE_COLORS).fill(null)
+      const displayOrder: number[] = []
+      for (let slot = 0; slot < validOpaqueAseIndices.length; slot++) {
+        const aseIdx = validOpaqueAseIndices[slot]!
+        const e = paletteRgba[aseIdx] ?? { r: aseIdx, g: aseIdx, b: aseIdx, a: 255 }
+        colorTable[slot] = rgbaToHex(e).toUpperCase()
+        displayOrder.push(slot)
+        aseToDot[aseIdx] = slot
+      }
+      if (displayOrder.length === 0) {
+        colorTable[0] = '#000000'
+        colorTable[1] = '#FFFFFF'
+        displayOrder.push(0, 1)
+      }
+      finalPalette = normalizeProjectPalette({
+        name: 'Aseprite Palette',
+        colors: displayOrder.map((i) => colorTable[i]!),
+        colorTable,
+        displayOrder,
+      })
+      originalOpaqueColorCount = displayOrder.length
+
+      for (const cel of uniqueResolvedCels.values()) {
+        const src = cel.rawIndexed8!
+        const dst = new Uint8Array(src.length)
+        for (let i = 0; i < src.length; i++) {
+          const v = src[i]!
+          dst[i] = v === transparentIndex ? TRANSPARENT_INDEX : aseToDot[v]!
+        }
+        celBuffers[cel.celId] = {
+          id: cel.celId,
+          offsetX: cel.x,
+          offsetY: cel.y,
+          dataWidth: cel.w,
+          dataHeight: cel.h,
+          data: dst,
+        }
+      }
+    } else {
+      // Rare 256-opaque-color background sprite -> quantize to 255 opaque colors
+      const rgbaSources = Array.from(uniqueResolvedCels.values()).map((cel) => {
+        const src = cel.rawIndexed8!
+        const rgba = new Uint8ClampedArray(cel.w * cel.h * 4)
+        for (let i = 0; i < src.length; i++) {
+          const idx8 = src[i]!
+          if (idx8 === transparentIndex) continue
+          const e = paletteRgba[idx8] ?? { r: idx8, g: idx8, b: idx8, a: 255 }
+          const off = i * 4
+          rgba[off] = e.r
+          rgba[off + 1] = e.g
+          rgba[off + 2] = e.b
+          rgba[off + 3] = e.a
+        }
+        return { id: cel.celId, width: cel.w, height: cel.h, rgba }
+      })
+      const conv = convertRgbaBuffersToIndexed(rgbaSources, {
+        name: 'Aseprite Palette',
+        colors: validOpaqueAseIndices
+          .slice(0, MAX_OPAQUE_PALETTE_COLORS)
+          .map((idx) => rgbaToHex(paletteRgba[idx] ?? { r: idx, g: idx, b: idx }).toUpperCase()),
+      })
+      finalPalette = conv.palette
+      wasQuantized = conv.wasQuantized
+      originalOpaqueColorCount = conv.originalOpaqueColorCount
+      for (const cel of uniqueResolvedCels.values()) {
+        celBuffers[cel.celId] = {
+          id: cel.celId,
+          offsetX: cel.x,
+          offsetY: cel.y,
+          dataWidth: cel.w,
+          dataHeight: cel.h,
+          data: conv.buffers.get(cel.celId) ?? createPixelBuffer(cel.w, cel.h),
+        }
+      }
+    }
+  } else {
+    // 32bpp RGBA / 16bpp Grayscale (or 8bpp with baked cel opacity) -> convert all unique cels to Indexed Color
+    const prefColors: string[] = []
+    const seenHex = new Set<string>()
+    for (let i = 0; i < paletteRgba.length; i++) {
+      const entry = paletteRgba[i]
+      if (!entry || entry.a === 0) continue
+      const hex = rgbaToHex(entry).toUpperCase()
+      if (!seenHex.has(hex) && prefColors.length < MAX_OPAQUE_PALETTE_COLORS) {
+        seenHex.add(hex)
+        prefColors.push(hex)
+      }
+    }
+
+    const rgbaSources = Array.from(uniqueResolvedCels.values()).map((cel) => ({
+      id: cel.celId,
+      width: cel.w,
+      height: cel.h,
+      rgba: cel.rgba ?? new Uint8ClampedArray(cel.w * cel.h * 4),
+    }))
+
+    const conv = convertRgbaBuffersToIndexed(rgbaSources, {
+      name: 'Aseprite Palette',
+      colors: prefColors,
+    })
+    finalPalette = conv.palette
+    wasQuantized = conv.wasQuantized
+    originalOpaqueColorCount = conv.originalOpaqueColorCount
+
+    for (const cel of uniqueResolvedCels.values()) {
+      celBuffers[cel.celId] = {
+        id: cel.celId,
+        offsetX: cel.x,
+        offsetY: cel.y,
+        dataWidth: cel.w,
+        dataHeight: cel.h,
+        data: conv.buffers.get(cel.celId) ?? createPixelBuffer(cel.w, cel.h),
+      }
+    }
+  }
+
+  if (wasQuantized) {
+    warnings.push({
+      code: 'colors-quantized',
+      detail: `${originalOpaqueColorCount} → ${finalPalette.colors.length}`,
+    })
+  }
+
   const firstFrameId = frames[0]!.id
   const layers: LayerRuntime[] = imageLayerEntries.map(({ meta }) => {
     const ref = cels[makeCellKey(meta.id, firstFrameId)]
@@ -740,7 +929,7 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
         offsetY: cb.offsetY,
         dataWidth: cb.dataWidth,
         dataHeight: cb.dataHeight,
-        data: new Uint8ClampedArray(cb.data),
+        data: new Uint8Array(cb.data),
       }
     }
     return {
@@ -752,29 +941,6 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
       data: createPixelBuffer(width, height),
     }
   })
-
-  // Build ProjectPalette from Aseprite palette chunk (deduplicated opaque hexes, fallback to pixel extraction)
-  const paletteColors: string[] = []
-  const seenHex = new Set<string>()
-  for (let i = 0; i < paletteRgba.length; i++) {
-    const entry = paletteRgba[i]
-    if (!entry) continue
-    if (colorDepth === 8 && i === transparentIndex) continue
-    if (entry.a === 0) continue
-    const hex = rgbaToHex(entry).toUpperCase()
-    if (!seenHex.has(hex) && paletteColors.length < 256) {
-      seenHex.add(hex)
-      paletteColors.push(hex)
-    }
-  }
-
-  if (paletteColors.length === 0) {
-    const firstCel = Object.values(celBuffers)[0]
-    const extracted = firstCel
-      ? extractPaletteColorsFromRgba(firstCel.data)
-      : ['#000000', '#FFFFFF']
-    paletteColors.push(...extracted)
-  }
 
   return {
     width,
@@ -788,12 +954,11 @@ export function parseAsepriteBytes(rawBytes: Uint8Array): ParsedAsepriteDocument
     frames,
     cels,
     celBuffers,
-    palette: {
-      name: 'Aseprite Palette',
-      colors: paletteColors.slice(0, 256),
-    },
+    palette: finalPalette,
     tagNames,
     warnings,
+    wasQuantized,
+    originalOpaqueColorCount,
   }
 }
 
@@ -805,7 +970,8 @@ export interface ExportAsepriteOptions {
   cels: CelMap
   celBuffers: Readonly<Record<string, CelBufferRuntime>>
   fallbackSingleFrameLayers?: readonly LayerRuntime[]
-  paletteColors: readonly string[]
+  palette?: ProjectPalette
+  paletteColors?: readonly string[]
 }
 
 export interface ExportAsepriteResult {
@@ -816,8 +982,8 @@ export interface ExportAsepriteResult {
   hasClippingWarning: boolean
 }
 
-function trimOpaqueSubRect(
-  data: Uint8ClampedArray,
+function trimIndexedSubRect(
+  data: Uint8Array,
   dw: number,
   dh: number,
   baseOffsetX: number,
@@ -830,7 +996,7 @@ function trimOpaqueSubRect(
 
   for (let y = 0; y < dh; y++) {
     for (let x = 0; x < dw; x++) {
-      if (data[(y * dw + x) * 4 + 3]! > 0) {
+      if (data[y * dw + x] !== TRANSPARENT_INDEX) {
         if (x < minX) minX = x
         if (y < minY) minY = y
         if (x > maxX) maxX = x
@@ -843,10 +1009,10 @@ function trimOpaqueSubRect(
 
   const outW = maxX - minX + 1
   const outH = maxY - minY + 1
-  const sub = new Uint8Array(outW * outH * 4)
+  const sub = new Uint8Array(outW * outH)
   for (let y = 0; y < outH; y++) {
-    const srcStart = ((minY + y) * dw + minX) * 4
-    sub.set(data.subarray(srcStart, srcStart + outW * 4), y * outW * 4)
+    const srcStart = (minY + y) * dw + minX
+    sub.set(data.subarray(srcStart, srcStart + outW), y * outW)
   }
 
   return {
@@ -864,7 +1030,7 @@ function writeChunk(
   buildPayload: (cw: BinaryWriter) => void
 ): void {
   const start = out.length
-  out.u32(0) // placeholder chunk size
+  out.u32(0)
   out.u16(chunkType)
   buildPayload(out)
   const totalSize = out.length - start
@@ -872,12 +1038,10 @@ function writeChunk(
 }
 
 /**
- * Encode a dotdot project (still or multi-frame animation) into a spec-compliant 32bpp RGBA `.aseprite` binary:
- * - Preserves layer order (bottom-to-top), layer names, visibility, lock state, opacity (`0..100` -> `0..255`), and blend modes.
- * - Preserves frame count and per-frame durations (`durationMs`).
- * - Preserves Linked Cels (`Cel Type = 1`) whenever multiple frames in the same layer share the same non-empty `celId`!
- * - Compresses pixel cels via ZLIB (`Cel Type = 2`) and trims empty transparent bounds with exact `(x, y)` cel offsets.
- * - Writes sRGB Color Profile (`0x2007`), New Palette (`0x2019`), and Legacy Palette (`0x0004`) chunks for universal compatibility.
+ * Encode a dotdot project into a spec-compliant **8bpp Indexed Color** `.aseprite` binary (Section 9-3):
+ * - `colorDepth = 8`, `transparentIndex = 255` (`TRANSPARENT_INDEX`)
+ * - Fixed palette indices `0..254` map 1:1 to Aseprite palette entries `0..254`, and `255` is reserved transparent `[0,0,0,0]`
+ * - Preserves Linked Cels (`Cel Type = 1`), layer opacity (`0..100` -> `0..255`), blend modes, visibility, lock state, and frame durations!
  */
 export function encodeAsepriteBytes(
   options: ExportAsepriteOptions
@@ -890,121 +1054,140 @@ export function encodeAsepriteBytes(
     cels,
     celBuffers,
     fallbackSingleFrameLayers,
+    palette: rawPalette,
     paletteColors,
   } = options
 
   const frames: FrameMeta[] =
     rawFrames.length > 0 ? [...rawFrames] : [{ id: 'frame-1', durationMs: 100 }]
 
-  const colors =
-    paletteColors.length > 0
-      ? paletteColors.slice(0, 255)
-      : ['#000000', '#FFFFFF']
-  // Entry 0 reserved as transparent index `0` in palette (`[0,0,0,0]`), followed by project colors
-  const totalPaletteEntries = Math.min(256, colors.length + 1)
+  const normPalette = normalizeProjectPalette(
+    rawPalette ?? {
+      name: 'Palette',
+      colors:
+        paletteColors && paletteColors.length > 0
+          ? [...paletteColors]
+          : ['#000000', '#FFFFFF'],
+    }
+  )
+  const colorTable = normPalette.colorTable!
 
   const hasClippingWarning = layerMetas.some((l) => l.clipping)
   let linkedCelCount = 0
 
   const w = new BinaryWriter(8192)
 
-  // 128-byte Aseprite Header
+  // 128-byte Aseprite Header (8bpp Indexed Color, transparent index = 255)
   w.u32(0) // placeholder file size
   w.u16(ASE_FILE_MAGIC)
   w.u16(frames.length)
   w.u16(width)
   w.u16(height)
-  w.u16(32) // 32bpp RGBA
+  w.u16(8) // 8bpp Indexed Color!
   w.u32(1) // flags = 1 (layer opacity has valid value)
-  w.u16(frames[0]?.durationMs ?? 100) // deprecated speed
+  w.u16(frames[0]?.durationMs ?? 100)
   w.u32(0)
   w.u32(0)
-  w.u8(0) // transparent palette entry index = 0
+  w.u8(TRANSPARENT_INDEX) // transparent palette entry index = 255!
   w.zeros(3)
-  w.u16(totalPaletteEntries)
-  w.u8(1) // pixel width 1:1
-  w.u8(1) // pixel height 1:1
-  w.i16(0) // grid X
-  w.i16(0) // grid Y
-  w.u16(Math.min(16, width)) // grid W
-  w.u16(Math.min(16, height)) // grid H
+  w.u16(256) // 256-entry palette table (`0..254` fixed slots + `255` transparent)
+  w.u8(1)
+  w.u8(1)
+  w.i16(0)
+  w.i16(0)
+  w.u16(Math.min(16, width))
+  w.u16(Math.min(16, height))
   w.zeros(84)
 
-  // Track first non-empty written frame index per `(layerIdx, celId)` so subsequent shared cels emit Linked Cel (`celType = 1`)!
   const writtenCelFirstFrame = new Map<string, number>()
 
   for (let fIdx = 0; fIdx < frames.length; fIdx++) {
     const frame = frames[fIdx]!
     const frameStart = w.length
-    w.u32(0) // placeholder frame bytes
+    w.u32(0)
     w.u16(ASE_FRAME_MAGIC)
-    w.u16(0) // placeholder old chunk count
+    w.u16(0)
     w.u16(clampFrameDurationMs(frame.durationMs))
     w.zeros(2)
-    w.u32(0) // placeholder new chunk count
+    w.u32(0)
 
     let chunkCount = 0
 
     if (fIdx === 0) {
-      // 1. Color Profile Chunk (`0x2007`: sRGB)
+      // 1. sRGB Color Profile (`0x2007`)
       writeChunk(w, CHUNK_COLOR_PROFILE, (cw) => {
-        cw.u16(1) // 1 = sRGB
-        cw.u16(0) // flags
-        cw.u32(0) // fixed gamma unused
+        cw.u16(1)
+        cw.u16(0)
+        cw.u32(0)
         cw.zeros(8)
       })
       chunkCount++
 
-      // 2. New Palette Chunk (`0x2019`)
+      // 2. New Palette Chunk (`0x2019`): entries `0..254` (unassigned slots get alpha 0) + entry `255` transparent `[0,0,0,0]`
       writeChunk(w, CHUNK_PALETTE, (cw) => {
-        cw.u32(totalPaletteEntries)
+        cw.u32(256)
         cw.u32(0)
-        cw.u32(totalPaletteEntries - 1)
+        cw.u32(255)
         cw.zeros(8)
-        // Index 0: transparent slot
+        for (let ci = 0; ci < MAX_OPAQUE_PALETTE_COLORS; ci++) {
+          const hex = colorTable[ci]
+          cw.u16(0)
+          if (hex) {
+            const rgb = hexToRgba(hex)
+            cw.u8(rgb.r)
+            cw.u8(rgb.g)
+            cw.u8(rgb.b)
+            cw.u8(255)
+          } else {
+            cw.u8(0)
+            cw.u8(0)
+            cw.u8(0)
+            cw.u8(0)
+          }
+        }
+        // Entry 255: reserved transparent index
         cw.u16(0)
         cw.u8(0)
         cw.u8(0)
         cw.u8(0)
         cw.u8(0)
-        for (let ci = 0; ci < totalPaletteEntries - 1; ci++) {
-          const rgb = hexToRgba(colors[ci]!)
-          cw.u16(0)
-          cw.u8(rgb.r)
-          cw.u8(rgb.g)
-          cw.u8(rgb.b)
-          cw.u8(255)
-        }
       })
       chunkCount++
 
-      // 3. Old Palette Chunk (`0x0004`) as recommended by Aseprite spec for older readers
+      // 3. Old Palette Chunk (`0x0004`) for legacy readers
       writeChunk(w, CHUNK_OLD_PALETTE_256, (cw) => {
-        cw.u16(1) // 1 packet
-        cw.u8(0) // skip 0
-        cw.u8(totalPaletteEntries === 256 ? 0 : totalPaletteEntries)
+        cw.u16(1)
         cw.u8(0)
-        cw.u8(0)
-        cw.u8(0)
-        for (let ci = 0; ci < totalPaletteEntries - 1; ci++) {
-          const rgb = hexToRgba(colors[ci]!)
-          cw.u8(rgb.r)
-          cw.u8(rgb.g)
-          cw.u8(rgb.b)
+        cw.u8(0) // 0 means 256 colors in Old Palette Chunk
+        for (let ci = 0; ci < MAX_OPAQUE_PALETTE_COLORS; ci++) {
+          const hex = colorTable[ci]
+          if (hex) {
+            const rgb = hexToRgba(hex)
+            cw.u8(rgb.r)
+            cw.u8(rgb.g)
+            cw.u8(rgb.b)
+          } else {
+            cw.u8(0)
+            cw.u8(0)
+            cw.u8(0)
+          }
         }
+        cw.u8(0)
+        cw.u8(0)
+        cw.u8(0)
       })
       chunkCount++
 
-      // 4. Layer Chunks (`0x2004`) in bottom-to-top order
+      // 4. Layer Chunks (`0x2004`)
       for (let lIdx = 0; lIdx < layerMetas.length; lIdx++) {
         const layer = layerMetas[lIdx]!
         writeChunk(w, CHUNK_LAYER, (cw) => {
           let flags = 0
           if (layer.visible) flags |= 1
-          if (!layer.locked) flags |= 2 // editable
+          if (!layer.locked) flags |= 2
           cw.u16(flags)
-          cw.u16(0) // Normal image layer
-          cw.u16(0) // child level 0
+          cw.u16(0)
+          cw.u16(0)
           cw.u16(0)
           cw.u16(0)
           cw.u16(DOTDOT_TO_ASE_BLEND[layer.blendMode] ?? 0)
@@ -1016,7 +1199,7 @@ export function encodeAsepriteBytes(
       }
     }
 
-    // 5. Cel Chunks (`0x2005`) for this frame
+    // 5. Cel Chunks (`0x2005`)
     for (let lIdx = 0; lIdx < layerMetas.length; lIdx++) {
       const layer = layerMetas[lIdx]!
       const ref = cels[makeCellKey(layer.id, frame.id)]
@@ -1025,14 +1208,13 @@ export function encodeAsepriteBytes(
         const mapKey = `${lIdx}:${ref.celId}`
         const prevLinkedFrame = writtenCelFirstFrame.get(mapKey)
         if (prevLinkedFrame !== undefined) {
-          // Emit Linked Cel (`celType = 1`) pointing to `prevLinkedFrame`!
           linkedCelCount++
           writeChunk(w, CHUNK_CEL, (cw) => {
             cw.u16(lIdx)
             cw.i16(0)
             cw.i16(0)
             cw.u8(255)
-            cw.u16(1) // celType = 1 (Linked Cel)
+            cw.u16(1)
             cw.i16(0)
             cw.zeros(5)
             cw.u16(prevLinkedFrame)
@@ -1042,18 +1224,14 @@ export function encodeAsepriteBytes(
         }
 
         const cb = celBuffers[ref.celId]!
-        const trimmed = trimOpaqueSubRect(
+        const trimmed = trimIndexedSubRect(
           cb.data,
           cb.dataWidth,
           cb.dataHeight,
           cb.offsetX,
           cb.offsetY
         )
-        if (!trimmed) {
-          // Completely transparent cel -> omit chunk (= empty cel in Aseprite) unless linked later;
-          // if linked later, empty cel in both frames is already identical!
-          continue
-        }
+        if (!trimmed) continue
 
         writtenCelFirstFrame.set(mapKey, fIdx)
         const compressed = zlibSync(trimmed.subData, { level: 6 })
@@ -1062,7 +1240,7 @@ export function encodeAsepriteBytes(
           cw.i16(Math.max(-32768, Math.min(32767, trimmed.x)))
           cw.i16(Math.max(-32768, Math.min(32767, trimmed.y)))
           cw.u8(255)
-          cw.u16(2) // celType = 2 (Compressed Image)
+          cw.u16(2)
           cw.i16(0)
           cw.zeros(5)
           cw.u16(trimmed.w)
@@ -1077,7 +1255,7 @@ export function encodeAsepriteBytes(
       ) {
         const fb = fallbackSingleFrameLayers.find((fl) => fl.id === layer.id)
         if (!fb) continue
-        const trimmed = trimOpaqueSubRect(
+        const trimmed = trimIndexedSubRect(
           fb.data,
           fb.dataWidth,
           fb.dataHeight,
@@ -1104,12 +1282,7 @@ export function encodeAsepriteBytes(
 
     const frameTotalBytes = w.length - frameStart
     w.patchU32(frameStart, frameTotalBytes)
-    // Patch oldChunks (capped at 0xFFFF) and newChunks
-    const frameView = new DataView(
-      w['buf'].buffer,
-      w['buf'].byteOffset,
-      w.length
-    )
+    const frameView = new DataView(w.buf.buffer, w.buf.byteOffset, w.length)
     frameView.setUint16(frameStart + 6, Math.min(0xffff, chunkCount), true)
     frameView.setUint32(frameStart + 12, chunkCount, true)
   }

@@ -5,6 +5,7 @@ import type {
   LayerMeta,
   LayerRuntime,
   PlaybackDirection,
+  ProjectPalette,
 } from '../types'
 import { hexToRgba } from './color'
 import {
@@ -56,6 +57,7 @@ export interface GifTimelineExportOptions {
   cels: CelMap
   celBuffers: Readonly<Record<string, CelBufferRuntime>>
   fallbackSingleFrameLayers?: readonly LayerRuntime[]
+  palette?: ProjectPalette
   scale?: number
   alphaMode?: GifAlphaMode
   matteColor?: string
@@ -827,6 +829,7 @@ export async function exportTimelineAnimatedGif(
     cels,
     celBuffers,
     fallbackSingleFrameLayers,
+    palette,
     ...rest
   } = opts
 
@@ -842,13 +845,15 @@ export async function exportTimelineAnimatedGif(
             height
           )
           return {
-            rgba: compositeLayers(projected, width, height),
+            rgba: compositeLayers(projected, width, height, { palette }),
             durationMs: f.durationMs,
           }
         })
       : [
           {
-            rgba: compositeLayers(fallbackSingleFrameLayers ?? [], width, height),
+            rgba: compositeLayers(fallbackSingleFrameLayers ?? [], width, height, {
+              palette,
+            }),
             durationMs: frames[0]?.durationMs ?? 100,
           },
         ]
