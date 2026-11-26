@@ -1,30 +1,38 @@
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
-import type {
-  AppSettings,
-  CanvasSnapshot,
-  CelBufferRecord,
-  CelBufferRuntime,
-  CelMap,
-  FrameMeta,
-  LayerMeta,
-  LayerOffsetTransition,
-  LayerPixelRecord,
-  LayerRuntime,
-  PaletteData,
-  ProjectHistoryRecord,
-  ProjectRecord,
-  SerializedHistoryEntry,
-  SerializedPixelPatch,
-  StampAsset,
-  TimelineSnapshot,
+import {
+  MAX_OPAQUE_PALETTE_COLORS,
+  type AppSettings,
+  type CanvasSnapshot,
+  type CelBufferRecord,
+  type CelBufferRuntime,
+  type CelMap,
+  type FrameMeta,
+  type LayerMeta,
+  type LayerOffsetTransition,
+  type LayerPixelRecord,
+  type LayerRuntime,
+  type PaletteData,
+  type ProjectHistoryRecord,
+  type ProjectRecord,
+  type SerializedHistoryEntry,
+  type SerializedPixelPatch,
+  type StampAsset,
+  type TimelineSnapshot,
 } from '../types'
 import { DEFAULT_APP_SETTINGS, DotDotDatabase, db, normalizeAppSettings } from './database'
 import { exportCompositePngBytes, MAX_LAYERS } from '../engine/compositor'
-import { normalizeLayerGeometry } from '../engine/pixelBuffer'
+import { normalizeProjectPalette } from '../engine/indexedPalette'
+import { createPixelBuffer, normalizeLayerGeometry } from '../engine/pixelBuffer'
 import { projectFrameLayers } from '../engine/animation'
+import {
+  convertLegacyProjectDataToIndexed,
+  isProjectAlreadyIndexed,
+  migrateDatabaseToIndexedColor,
+} from './indexedMigration'
 
 export const ENV_PACK_FORMAT = 'dotdot-environment-pack'
-export const ENV_PACK_VERSION = 1
+export const ENV_PACK_VERSION = 2
+export const LEGACY_ENV_PACK_VERSION = 1
 
 export interface EnvPackManifest {
   format: typeof ENV_PACK_FORMAT
@@ -193,7 +201,8 @@ function encodeTimelineSnapshot(
 }
 
 function decodeTimelineSnapshot(
-  enc?: EncodedTimelineSnapshotJson
+  enc: EncodedTimelineSnapshotJson | undefined,
+  bytesPerPixel: 1 | 4
 ): TimelineSnapshot | undefined {
   if (!enc) return undefined
   return {
@@ -202,7 +211,7 @@ function decodeTimelineSnapshot(
     activeFrameId: enc.activeFrameId,
     celBuffers: enc.celBuffers.map((cb) => {
       const data = base64ToBytes(cb.dataB64)
-      if (data.byteLength !== cb.dataWidth * cb.dataHeight * 4) {
+      if (data.byteLength !== cb.dataWidth * cb.dataHeight * bytesPerPixel) {
         throw new Error('Corrupted timeline snapshot celBuffer dimensions in history')
       }
       return {
@@ -231,7 +240,10 @@ function encodeSnapshot(snap?: CanvasSnapshot): EncodedSnapshotJson | undefined 
   }
 }
 
-function decodeSnapshot(enc?: EncodedSnapshotJson): CanvasSnapshot | undefined {
+function decodeSnapshot(
+  enc: EncodedSnapshotJson | undefined,
+  bytesPerPixel: 1 | 4
+): CanvasSnapshot | undefined {
   if (!enc) return undefined
   return {
     width: enc.width,
@@ -247,7 +259,7 @@ function decodeSnapshot(enc?: EncodedSnapshotJson): CanvasSnapshot | undefined {
         typeof l.meta.dataHeight === 'number' && l.meta.dataHeight > 0
           ? l.meta.dataHeight
           : enc.height
-      if (data.byteLength !== expectedW * expectedH * 4) {
+      if (data.byteLength !== expectedW * expectedH * bytesPerPixel) {
         throw new Error('Corrupted snapshot layer dimensions in history')
       }
       return {
@@ -255,7 +267,7 @@ function decodeSnapshot(enc?: EncodedSnapshotJson): CanvasSnapshot | undefined {
         data,
       }
     }),
-    timeline: decodeTimelineSnapshot(enc.timeline),
+    timeline: decodeTimelineSnapshot(enc.timeline, bytesPerPixel),
   }
 }
 
@@ -322,7 +334,10 @@ function encodeHistoryStack(stack: SerializedHistoryEntry[]): Uint8Array {
   return strToU8(JSON.stringify(encoded))
 }
 
-function decodeHistoryStack(raw: Uint8Array): SerializedHistoryEntry[] {
+function decodeHistoryStack(
+  raw: Uint8Array,
+  bytesPerPixel: 1 | 4
+): SerializedHistoryEntry[] {
   const parsed = JSON.parse(strFromU8(raw)) as EncodedHistoryEntryJson[]
   if (!Array.isArray(parsed)) {
     throw new Error('History stack is not an array')
@@ -333,7 +348,10 @@ function decodeHistoryStack(raw: Uint8Array): SerializedHistoryEntry[] {
       const indices = bytesToUint32(base64ToBytes(p.indicesB64))
       const before = base64ToBytes(p.beforeB64)
       const after = base64ToBytes(p.afterB64)
-      if (before.length !== indices.length * 4 || after.length !== indices.length * 4) {
+      if (
+        before.length !== indices.length * bytesPerPixel ||
+        after.length !== indices.length * bytesPerPixel
+      ) {
         throw new Error('Corrupted pixel patch length in history')
       }
       return {
@@ -357,8 +375,8 @@ function decodeHistoryStack(raw: Uint8Array): SerializedHistoryEntry[] {
       pixelPatches,
       layerOffsetChange: e.layerOffsetChange,
       layerOffsetChanges: e.layerOffsetChanges,
-      beforeStructure: decodeSnapshot(e.beforeStructure),
-      afterStructure: decodeSnapshot(e.afterStructure),
+      beforeStructure: decodeSnapshot(e.beforeStructure, bytesPerPixel),
+      afterStructure: decodeSnapshot(e.afterStructure, bytesPerPixel),
       beforeSelection:
         e.beforeSelectionB64 === undefined
           ? undefined
@@ -402,12 +420,15 @@ function decodeHistoryStack(raw: Uint8Array): SerializedHistoryEntry[] {
 }
 
 /**
- * Export entire dotdot state (projects, layers including off-canvas pixels, timeline cels, palettes + Lospec attribution, settings + customCanvasPresets, order, metadata, undo/redo history)
- * into a structured ZIP archive (`environment-pack.zip`).
+ * Export entire dotdot state (projects, 1-byte indexed layers & timeline cels, palettes + fixed colorTable/displayOrder, settings, Undo/Redo history)
+ * into a structured ZIP archive (`environment-pack.zip`, Format Version 2).
  */
 export async function exportEnvironmentPackZip(
   targetDb: DotDotDatabase = db
 ): Promise<Uint8Array> {
+  // Ensure any unmigrated records in `targetDb` are converted to 1-byte Indexed Color before exporting v2
+  await migrateDatabaseToIndexedColor(targetDb)
+
   const settings = normalizeAppSettings(
     (await targetDb.settings.get('app-settings')) ?? DEFAULT_APP_SETTINGS
   )
@@ -443,10 +464,18 @@ export async function exportEnvironmentPackZip(
   palettes.forEach((pal, idx) => {
     const fileIdx = String(idx + 1).padStart(3, '0')
     zipEntries[`palettes/palette-${fileIdx}.json`] = strToU8(
-      JSON.stringify(pal, null, 2)
+      JSON.stringify(
+        {
+          ...pal,
+          colors: pal.colors.slice(0, MAX_OPAQUE_PALETTE_COLORS),
+        },
+        null,
+        2
+      )
     )
   })
 
+  // Preserve any existing user stamps in archive for backward data safety
   stamps.forEach((stamp, idx) => {
     const fileIdx = String(idx + 1).padStart(3, '0')
     const { data, ...stampMeta } = stamp
@@ -457,7 +486,33 @@ export async function exportEnvironmentPackZip(
   })
 
   for (let i = 0; i < projects.length; i++) {
-    const proj = projects[i]
+    let proj = projects[i]!
+    const projLayers = proj.layers
+      .map((l) => pixelByKey.get(`${proj.id}:${l.id}`))
+      .filter((x): x is LayerPixelRecord => Boolean(x))
+    let projCels = celsByProject.get(proj.id) ?? []
+    let hist = historyByProject.get(proj.id) ?? {
+      projectId: proj.id,
+      undoStack: [],
+      redoStack: [],
+      updatedAt: proj.updatedAt,
+    }
+
+    if (!isProjectAlreadyIndexed(proj, projLayers, projCels)) {
+      const converted = convertLegacyProjectDataToIndexed({
+        project: proj,
+        layerPixels: projLayers,
+        celBuffers: projCels,
+        history: hist,
+      })
+      proj = converted.project
+      for (const lp of converted.layerPixels) {
+        pixelByKey.set(lp.key, lp)
+      }
+      projCels = converted.celBuffers
+      hist = converted.history
+    }
+
     const dirName = `projects/${proj.id}`
     const normalizedLayersMeta = proj.layers.map((layerMeta) => {
       const row = pixelByKey.get(`${proj.id}:${layerMeta.id}`)
@@ -474,11 +529,13 @@ export async function exportEnvironmentPackZip(
       }
     })
 
-    const { thumbnailPng: _thumb, ...serializableProject } = proj
+    const { thumbnailPng: _thumb, migrationReport: _rep, ...serializableProject } = proj
     zipEntries[`${dirName}/project.json`] = strToU8(
       JSON.stringify(
         {
           ...serializableProject,
+          pixelFormat: 'indexed-v1',
+          palette: normalizeProjectPalette(proj.palette),
           layers: normalizedLayersMeta,
         },
         null,
@@ -489,15 +546,16 @@ export async function exportEnvironmentPackZip(
     for (const layerMeta of normalizedLayersMeta) {
       totalLayers++
       const row = pixelByKey.get(`${proj.id}:${layerMeta.id}`)
-      const expectedLen =
-        (layerMeta.dataWidth ?? proj.width) *
-        (layerMeta.dataHeight ?? proj.height) *
-        4
-      const raw = row?.data ?? new Uint8Array(expectedLen)
-      zipEntries[`${dirName}/layers/${layerMeta.id}.bin`] = raw
+      const w = layerMeta.dataWidth ?? proj.width
+      const h = layerMeta.dataHeight ?? proj.height
+      const expectedLen = w * h
+      const raw =
+        row?.data && row.data.byteLength === expectedLen
+          ? row.data
+          : createPixelBuffer(w, h)
+      zipEntries[`${dirName}/layers/${layerMeta.id}.bin`] = new Uint8Array(raw)
     }
 
-    const projCels = celsByProject.get(proj.id) ?? []
     if (projCels.length > 0) {
       const celManifest: EncodedCelGeometryMeta[] = []
       for (const celRow of projCels) {
@@ -509,19 +567,13 @@ export async function exportEnvironmentPackZip(
           dataWidth: celRow.dataWidth,
           dataHeight: celRow.dataHeight,
         })
-        zipEntries[`${dirName}/cels/${celRow.celId}.bin`] = celRow.data
+        zipEntries[`${dirName}/cels/${celRow.celId}.bin`] = new Uint8Array(celRow.data)
       }
       zipEntries[`${dirName}/cels/manifest.json`] = strToU8(
         JSON.stringify(celManifest, null, 2)
       )
     }
 
-    const hist = historyByProject.get(proj.id) ?? {
-      projectId: proj.id,
-      undoStack: [],
-      redoStack: [],
-      updatedAt: proj.updatedAt,
-    }
     totalHistoryEntries += hist.undoStack.length + hist.redoStack.length
     zipEntries[`${dirName}/history/undo.bin`] = encodeHistoryStack(hist.undoStack)
     zipEntries[`${dirName}/history/redo.bin`] = encodeHistoryStack(hist.redoStack)
@@ -530,7 +582,7 @@ export async function exportEnvironmentPackZip(
   const manifest: EnvPackManifest = {
     format: ENV_PACK_FORMAT,
     formatVersion: ENV_PACK_VERSION,
-    appVersion: '2.5.0',
+    appVersion: '3.0.0',
     exportedAt: Date.now(),
     projectOrder: projects.map((p) => p.id),
     paletteOrder: palettes.map((p) => p.id),
@@ -549,7 +601,7 @@ export async function exportEnvironmentPackZip(
   zipEntries['settings.json'] = strToU8(JSON.stringify(settings, null, 2))
   zipEntries['README.txt'] = strToU8(
     [
-      'dotdot Environment Pack Archive',
+      'dotdot Environment Pack Archive (Indexed Color Format v2)',
       `Format Version: ${ENV_PACK_VERSION}`,
       `Exported At: ${new Date(manifest.exportedAt).toISOString()}`,
       `Projects: ${manifest.counts.projects}`,
@@ -572,6 +624,8 @@ export interface ValidatedEnvPack {
   layerPixels: LayerPixelRecord[]
   celBuffers: CelBufferRecord[]
   histories: ProjectHistoryRecord[]
+  migratedFromLegacyV1: boolean
+  quantizedProjectIds: string[]
 }
 
 export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPack {
@@ -601,9 +655,15 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
   if (manifest.format !== ENV_PACK_FORMAT) {
     throw new Error('UNSUPPORTED_FORMAT: Not a dotdot environment pack')
   }
-  if (manifest.formatVersion !== ENV_PACK_VERSION) {
+  if (
+    manifest.formatVersion !== ENV_PACK_VERSION &&
+    manifest.formatVersion !== LEGACY_ENV_PACK_VERSION
+  ) {
     throw new Error(`UNSUPPORTED_VERSION: Unsupported version ${manifest.formatVersion}`)
   }
+
+  const isLegacyV1 = manifest.formatVersion === LEGACY_ENV_PACK_VERSION
+  const bytesPerPixel: 1 | 4 = isLegacyV1 ? 4 : 1
 
   const settingsRaw = files['settings.json']
   if (!settingsRaw) {
@@ -620,20 +680,23 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
     throw new Error('INVALID_PALETTES: Environment pack must contain at least 1 palette')
   }
 
+  const maxAllowedArchivePaletteLen = isLegacyV1 ? 256 : MAX_OPAQUE_PALETTE_COLORS
+
   const palettes: PaletteData[] = palettePaths.map((path, idx) => {
-    const pal = JSON.parse(strFromU8(files[path])) as PaletteData
+    const pal = JSON.parse(strFromU8(files[path]!)) as PaletteData
     if (
       !pal ||
       typeof pal.id !== 'string' ||
       typeof pal.name !== 'string' ||
       !Array.isArray(pal.colors) ||
       pal.colors.length === 0 ||
-      pal.colors.length > 256
+      pal.colors.length > maxAllowedArchivePaletteLen
     ) {
       throw new Error(`INVALID_PALETTE_DATA: Invalid palette in ${path}`)
     }
     return {
       ...pal,
+      colors: pal.colors.slice(0, MAX_OPAQUE_PALETTE_COLORS),
       order: typeof pal.order === 'number' ? pal.order : idx,
     }
   })
@@ -650,9 +713,10 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
   const layerPixels: LayerPixelRecord[] = []
   const celBuffers: CelBufferRecord[] = []
   const histories: ProjectHistoryRecord[] = []
+  const quantizedProjectIds: string[] = []
 
   for (const projPath of projectJsonPaths) {
-    const proj = JSON.parse(strFromU8(files[projPath])) as Omit<ProjectRecord, 'thumbnailPng'>
+    const proj = JSON.parse(strFromU8(files[projPath]!)) as Omit<ProjectRecord, 'thumbnailPng'>
     if (
       !proj ||
       typeof proj.id !== 'string' ||
@@ -670,6 +734,7 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
     }
 
     const baseDir = `projects/${proj.id}`
+    const parsedLayerRecords: LayerPixelRecord[] = []
     const runtimeLayersForThumb: LayerRuntime[] = []
     const normalizedMetaList: LayerMeta[] = []
 
@@ -686,12 +751,12 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
           offsetY: layerMeta.offsetY,
           dataWidth: layerMeta.dataWidth,
           dataHeight: layerMeta.dataHeight,
-          data: new Uint8ClampedArray(0),
+          data: new Uint8Array(0),
         },
         proj.width,
         proj.height
       )
-      const expectedBytes = geo.dataWidth * geo.dataHeight * 4
+      const expectedBytes = geo.dataWidth * geo.dataHeight * bytesPerPixel
       if (layerBin.byteLength !== expectedBytes) {
         throw new Error(
           `CORRUPT_LAYER_BIN: Expected ${expectedBytes} bytes, got ${layerBin.byteLength} in ${layerBinPath}`
@@ -699,11 +764,12 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
       }
 
       const copy = new Uint8Array(layerBin)
-      layerPixels.push({
+      parsedLayerRecords.push({
         key: `${proj.id}:${layerMeta.id}`,
         projectId: proj.id,
         layerId: layerMeta.id,
         data: copy,
+        ...(isLegacyV1 ? {} : { format: 'indexed-v1' as const }),
         offsetX: geo.offsetX,
         offsetY: geo.offsetY,
         dataWidth: geo.dataWidth,
@@ -719,20 +785,24 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
       }
       normalizedMetaList.push(normalizedMeta)
 
-      runtimeLayersForThumb.push({
-        ...normalizedMeta,
-        offsetX: geo.offsetX,
-        offsetY: geo.offsetY,
-        dataWidth: geo.dataWidth,
-        dataHeight: geo.dataHeight,
-        data: new Uint8ClampedArray(copy),
-      })
+      if (!isLegacyV1) {
+        runtimeLayersForThumb.push({
+          ...normalizedMeta,
+          offsetX: geo.offsetX,
+          offsetY: geo.offsetY,
+          dataWidth: geo.dataWidth,
+          dataHeight: geo.dataHeight,
+          data: new Uint8Array(copy),
+        })
+      }
     }
 
     // Optional timeline `cels/manifest.json` + `cels/<celId>.bin`
     const celManifestPath = `${baseDir}/cels/manifest.json`
     const celManifestRaw = files[celManifestPath]
+    const parsedCelRecords: CelBufferRecord[] = []
     const runtimeCelBuffers: Record<string, CelBufferRuntime> = {}
+
     if (celManifestRaw) {
       const celMetaList = JSON.parse(
         strFromU8(celManifestRaw)
@@ -752,19 +822,19 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
             offsetY: celMeta.offsetY,
             dataWidth: celMeta.dataWidth,
             dataHeight: celMeta.dataHeight,
-            data: new Uint8ClampedArray(0),
+            data: new Uint8Array(0),
           },
           proj.width,
           proj.height
         )
-        const expectedBytes = geo.dataWidth * geo.dataHeight * 4
+        const expectedBytes = geo.dataWidth * geo.dataHeight * bytesPerPixel
         if (celBin.byteLength !== expectedBytes) {
           throw new Error(
             `CORRUPT_CEL_BIN: Expected ${expectedBytes} bytes, got ${celBin.byteLength} in ${celBinPath}`
           )
         }
         const copy = new Uint8Array(celBin)
-        celBuffers.push({
+        parsedCelRecords.push({
           key: `${proj.id}:${celMeta.celId}`,
           projectId: proj.id,
           celId: celMeta.celId,
@@ -773,57 +843,90 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
           dataWidth: geo.dataWidth,
           dataHeight: geo.dataHeight,
           data: copy,
+          ...(isLegacyV1 ? {} : { format: 'indexed-v1' as const }),
         })
-        runtimeCelBuffers[celMeta.celId] = {
-          id: celMeta.celId,
-          offsetX: geo.offsetX,
-          offsetY: geo.offsetY,
-          dataWidth: geo.dataWidth,
-          dataHeight: geo.dataHeight,
-          data: new Uint8ClampedArray(copy),
+        if (!isLegacyV1) {
+          runtimeCelBuffers[celMeta.celId] = {
+            id: celMeta.celId,
+            offsetX: geo.offsetX,
+            offsetY: geo.offsetY,
+            dataWidth: geo.dataWidth,
+            dataHeight: geo.dataHeight,
+            data: new Uint8Array(copy),
+          }
         }
       }
     }
 
-    const thumbLayers =
-      Array.isArray(proj.frames) &&
-      proj.frames.length >= 1 &&
-      proj.cels &&
-      Object.keys(runtimeCelBuffers).length > 0
-        ? projectFrameLayers(
-            normalizedMetaList,
-            proj.cels,
-            runtimeCelBuffers,
-            proj.frames[0]!.id,
-            proj.width,
-            proj.height
-          )
-        : runtimeLayersForThumb
-
-    const { png: thumbnailPng } = exportCompositePngBytes(
-      thumbLayers,
-      proj.width,
-      proj.height,
-      1
-    )
-
-    projects.push({
-      ...proj,
-      layers: normalizedMetaList,
-      thumbnailPng,
-    })
-
     const undoBin = files[`${baseDir}/history/undo.bin`]
     const redoBin = files[`${baseDir}/history/redo.bin`]
-    const undoStack = undoBin ? decodeHistoryStack(undoBin) : []
-    const redoStack = redoBin ? decodeHistoryStack(redoBin) : []
+    const undoStack = undoBin ? decodeHistoryStack(undoBin, bytesPerPixel) : []
+    const redoStack = redoBin ? decodeHistoryStack(redoBin, bytesPerPixel) : []
 
-    histories.push({
-      projectId: proj.id,
-      undoStack,
-      redoStack,
-      updatedAt: proj.updatedAt,
-    })
+    if (isLegacyV1) {
+      // Section 8-7: Automatically convert legacy v1 RGBA ZIP project into verified 1-byte Indexed Color!
+      const converted = convertLegacyProjectDataToIndexed({
+        project: {
+          ...proj,
+          layers: normalizedMetaList,
+        },
+        layerPixels: parsedLayerRecords,
+        celBuffers: parsedCelRecords,
+        history: {
+          projectId: proj.id,
+          undoStack,
+          redoStack,
+          updatedAt: proj.updatedAt,
+        },
+      })
+      projects.push(converted.project)
+      layerPixels.push(...converted.layerPixels)
+      celBuffers.push(...converted.celBuffers)
+      histories.push(converted.history)
+      if (converted.report.wasQuantized) {
+        quantizedProjectIds.push(proj.id)
+      }
+    } else {
+      const normalizedPalette = normalizeProjectPalette(proj.palette)
+      const thumbLayers =
+        Array.isArray(proj.frames) &&
+        proj.frames.length >= 1 &&
+        proj.cels &&
+        Object.keys(runtimeCelBuffers).length > 0
+          ? projectFrameLayers(
+              normalizedMetaList,
+              proj.cels,
+              runtimeCelBuffers,
+              proj.frames[0]!.id,
+              proj.width,
+              proj.height
+            )
+          : runtimeLayersForThumb
+
+      const { png: thumbnailPng } = exportCompositePngBytes(
+        thumbLayers,
+        proj.width,
+        proj.height,
+        1,
+        { palette: normalizedPalette }
+      )
+
+      projects.push({
+        ...proj,
+        pixelFormat: 'indexed-v1',
+        palette: normalizedPalette,
+        layers: normalizedMetaList,
+        thumbnailPng,
+      })
+      layerPixels.push(...parsedLayerRecords)
+      celBuffers.push(...parsedCelRecords)
+      histories.push({
+        projectId: proj.id,
+        undoStack,
+        redoStack,
+        updatedAt: proj.updatedAt,
+      })
+    }
   }
 
   projects.sort((a, b) => a.order - b.order)
@@ -851,7 +954,8 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
       meta.height < 1 ||
       meta.height > 256 ||
       !bin ||
-      bin.byteLength !== meta.width * meta.height * 4
+      (bin.byteLength !== meta.width * meta.height * 4 &&
+        bin.byteLength !== meta.width * meta.height)
     ) {
       throw new Error(`INVALID_STAMP_DATA: Invalid stamp in ${jsonPath}`)
     }
@@ -873,6 +977,8 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
     layerPixels,
     celBuffers,
     histories,
+    migratedFromLegacyV1: isLegacyV1,
+    quantizedProjectIds,
   }
 }
 
@@ -890,6 +996,7 @@ export async function applyValidatedEnvPack(
       targetDb.layerPixels,
       targetDb.celBuffers,
       targetDb.histories,
+      targetDb.migrationStates,
     ],
     async () => {
       await targetDb.settings.clear()
@@ -901,6 +1008,7 @@ export async function applyValidatedEnvPack(
       await targetDb.layerPixels.clear()
       await targetDb.celBuffers.clear()
       await targetDb.histories.clear()
+      await targetDb.migrationStates.clear()
 
       await targetDb.settings.put(pack.settings)
       await targetDb.palettes.bulkPut(pack.palettes)
@@ -918,6 +1026,16 @@ export async function applyValidatedEnvPack(
       }
       if (pack.histories.length > 0) {
         await targetDb.histories.bulkPut(pack.histories)
+      }
+      if (pack.projects.length > 0) {
+        await targetDb.migrationStates.bulkPut(
+          pack.projects.map((p) => ({
+            projectId: p.id,
+            stage: 'completed' as const,
+            updatedAt: Date.now(),
+            ...(p.migrationReport ? { report: p.migrationReport } : {}),
+          }))
+        )
       }
     }
   )

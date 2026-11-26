@@ -1,31 +1,34 @@
 import Dexie, { type Table } from 'dexie'
-import type {
-  AppSettings,
-  BackupReminderMeta,
-  CanvasSizePreset,
-  CelBufferRecord,
-  CelBufferRuntime,
-  CelMap,
-  CursorDisplaySize,
-  CustomCursorData,
-  CustomCursorGridSize,
-  FrameMeta,
-  LayerPixelRecord,
-  LayerRuntime,
-  PaletteData,
-  ProjectHistoryRecord,
-  ProjectPalette,
-  ProjectRecord,
-  SeamlessWrapMode,
-  SerializedHistoryEntry,
-  StampAsset,
-  SymmetryMode,
-  TilePreviewGrid,
-  UiSizeConfig,
-  UiSizePreset,
+import {
+  MAX_OPAQUE_PALETTE_COLORS,
+  type AppSettings,
+  type BackupReminderMeta,
+  type CanvasSizePreset,
+  type CelBufferRecord,
+  type CelBufferRuntime,
+  type CelMap,
+  type CursorDisplaySize,
+  type CustomCursorData,
+  type CustomCursorGridSize,
+  type DarkThemeVariantId,
+  type FrameMeta,
+  type LayerPixelRecord,
+  type LayerRuntime,
+  type LightThemeVariantId,
+  type MigrationStateRecord,
+  type PaletteData,
+  type ProjectHistoryRecord,
+  type ProjectPalette,
+  type ProjectRecord,
+  type SeamlessWrapMode,
+  type SerializedHistoryEntry,
+  type StampAsset,
+  type SymmetryMode,
+  type TilePreviewGrid,
+  type UiSizeConfig,
+  type UiSizePreset,
 } from '../types'
 import { buildInitialPalettes } from './defaultPalettes'
-import { buildInitialStamps } from './defaultStamps'
 import {
   createPixelBuffer,
   MAX_CANVAS_SIZE,
@@ -33,6 +36,7 @@ import {
   normalizeLayerGeometry,
 } from '../engine/pixelBuffer'
 import { exportCompositePngBytes } from '../engine/compositor'
+import { normalizeProjectPalette } from '../engine/indexedPalette'
 import {
   clampFrameDurationMs,
   createSingleFrameTimelineFromLayers,
@@ -41,6 +45,13 @@ import {
   pruneUnreferencedCelBuffers,
   type TimelineState,
 } from '../engine/animation'
+import {
+  convertLegacyProjectDataToIndexed,
+  isProjectAlreadyIndexed,
+  migrateDatabaseToIndexedColor,
+  type DatabaseMigrationSummary,
+  type MigrationProgressInfo,
+} from './indexedMigration'
 
 export class DotDotDatabase extends Dexie {
   projects!: Table<ProjectRecord, string>
@@ -50,6 +61,7 @@ export class DotDotDatabase extends Dexie {
   stamps!: Table<StampAsset, string>
   histories!: Table<ProjectHistoryRecord, string>
   settings!: Table<AppSettings, string>
+  migrationStates!: Table<MigrationStateRecord, string>
 
   constructor(name = 'dotdot-studio-db') {
     super(name)
@@ -114,14 +126,13 @@ export class DotDotDatabase extends Dexie {
       .upgrade(async (tx) => {
         const settingsTable = tx.table<AppSettings, string>('settings')
         await settingsTable.toCollection().modify((s) => {
-          // Migrate untouched legacy default `100` to `'unlimited'` while preserving explicitly customized limits!
           if (!s.historyLimitCustomized && s.historyLimit === 100) {
             s.historyLimit = 'unlimited'
           }
         })
       })
 
-    // Version 4: Independent `stamps` store for Pixel Stamps & Pattern Brushes + Advanced Feature settings
+    // Version 4: Legacy `stamps` store retained for backward compatibility of existing user data
     this.version(4).stores({
       projects: 'id, order, createdAt, updatedAt, name',
       layerPixels: 'key, projectId, layerId',
@@ -130,6 +141,19 @@ export class DotDotDatabase extends Dexie {
       stamps: 'id, order, updatedAt',
       histories: 'projectId, updatedAt',
       settings: 'id',
+    })
+
+    // Version 5: Add `migrationStates` store for safe, resumable, non-blocking RGBA -> 1-byte Indexed Color migration.
+    // IMPORTANT (Section 8-5): NEVER run bulk pixel conversion inside Dexie `upgrade()`!
+    this.version(5).stores({
+      projects: 'id, order, createdAt, updatedAt, name',
+      layerPixels: 'key, projectId, layerId',
+      celBuffers: 'key, projectId, celId',
+      palettes: 'id, order, updatedAt',
+      stamps: 'id, order, updatedAt',
+      histories: 'projectId, updatedAt',
+      settings: 'id',
+      migrationStates: 'projectId, stage, updatedAt',
     })
   }
 }
@@ -199,13 +223,6 @@ export const BACKUP_REMINDER_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000
 export const BACKUP_SNOOZE_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000
 export const LOW_STORAGE_SNOOZE_INTERVAL_MS = 24 * 60 * 60 * 1000
 
-/**
- * Origin Storage Low-Space Warning Thresholds (Section 12 / 下書き1):
- * Evaluates ONLY the browser Origin's `navigator.storage.estimate()` quota/usage
- * (distinct from device physical disk or RAM!).
- * - Warning when `usage / quota >= 0.85` OR remaining Origin quota `< 25 MiB`
- * - Critical when `usage / quota >= 0.95` OR remaining Origin quota `< 8 MiB`
- */
 export const ORIGIN_LOW_STORAGE_WARN_RATIO = 0.85
 export const ORIGIN_LOW_STORAGE_CRITICAL_RATIO = 0.95
 export const ORIGIN_LOW_STORAGE_WARN_REMAINING_BYTES = 25 * 1024 * 1024
@@ -286,9 +303,6 @@ export function evaluateOriginLowStorage(
   }
 }
 
-/**
- * Section 11: Evaluate whether the Environment Pack backup reminder banner/modal should be shown now.
- */
 export function shouldShowBackupReminder(
   backupMeta: BackupReminderMeta | undefined | null,
   now = Date.now()
@@ -315,9 +329,25 @@ export const MIN_CURSOR_SPEED = 0.25
 export const MAX_CURSOR_SPEED = 3.0
 export const DEFAULT_CURSOR_SPEED = 1.0
 
+export const VALID_LIGHT_THEME_VARIANTS: ReadonlyArray<LightThemeVariantId> = [
+  'lavender-cream',
+  'milk-lilac',
+  'sage-ivory',
+  'berry-paper',
+]
+
+export const VALID_DARK_THEME_VARIANTS: ReadonlyArray<DarkThemeVariantId> = [
+  'dusk-plum',
+  'midnight-lavender',
+  'moss-grape',
+  'velvet-fig',
+]
+
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   id: 'app-settings',
   theme: 'system',
+  lightThemeVariant: 'lavender-cream',
+  darkThemeVariant: 'dusk-plum',
   language: 'ja',
   historyLimit: 'unlimited',
   historyLimitCustomized: false,
@@ -484,14 +514,24 @@ export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSett
   if (raw?.historyLimit === 'unlimited') {
     historyLimit = 'unlimited'
   } else if (typeof raw?.historyLimit === 'number' && Number.isFinite(raw.historyLimit)) {
-    // Migrate untouched legacy default `100` (without `historyLimitCustomized`) to `'unlimited'`,
-    // whereas any other number (e.g. 30, 50, 200) or explicitly customized `100` is respected!
     if (!customized && raw.historyLimit === 100) {
       historyLimit = 'unlimited'
     } else {
       historyLimit = Math.max(1, Math.trunc(raw.historyLimit))
     }
   }
+
+  const lightThemeVariant: LightThemeVariantId =
+    raw?.lightThemeVariant &&
+    VALID_LIGHT_THEME_VARIANTS.includes(raw.lightThemeVariant)
+      ? raw.lightThemeVariant
+      : 'lavender-cream'
+
+  const darkThemeVariant: DarkThemeVariantId =
+    raw?.darkThemeVariant &&
+    VALID_DARK_THEME_VARIANTS.includes(raw.darkThemeVariant)
+      ? raw.darkThemeVariant
+      : 'dusk-plum'
 
   const rawSpeed = Number(raw?.cursorSpeed)
   const cursorSpeed = Number.isFinite(rawSpeed)
@@ -551,6 +591,8 @@ export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSett
     ...DEFAULT_APP_SETTINGS,
     ...(raw ?? {}),
     id: 'app-settings',
+    lightThemeVariant,
+    darkThemeVariant,
     historyLimit,
     historyLimitCustomized:
       customized || (typeof historyLimit === 'number' && historyLimit !== 100),
@@ -599,10 +641,17 @@ export function isQuotaError(err: unknown): boolean {
   )
 }
 
-export async function initializeDatabase(targetDb: DotDotDatabase = db): Promise<{
+export async function initializeDatabase(
+  targetDb: DotDotDatabase = db,
+  options?: {
+    onMigrationProgress?: (info: MigrationProgressInfo) => void
+    yieldBetweenProjects?: boolean
+  }
+): Promise<{
   settings: AppSettings
   palettes: PaletteData[]
   stamps: StampAsset[]
+  migrationSummary: DatabaseMigrationSummary
 }> {
   const storedSettings = await targetDb.settings.get('app-settings')
   let settings = normalizeAppSettings(storedSettings)
@@ -611,16 +660,34 @@ export async function initializeDatabase(targetDb: DotDotDatabase = db): Promise
   if (palettes.length === 0) {
     palettes = buildInitialPalettes()
     await targetDb.palettes.bulkPut(palettes)
+  } else {
+    // Ensure library palettes adhere to the 255 opaque color cap
+    let mutatedLibrary = false
+    const clampedPalettes = palettes.map((pal) => {
+      if (pal.colors.length > MAX_OPAQUE_PALETTE_COLORS) {
+        mutatedLibrary = true
+        return {
+          ...pal,
+          colors: pal.colors.slice(0, MAX_OPAQUE_PALETTE_COLORS),
+        }
+      }
+      return pal
+    })
+    if (mutatedLibrary) {
+      palettes = clampedPalettes
+      await targetDb.palettes.bulkPut(palettes)
+    }
   }
 
-  let stamps = await targetDb.stamps.orderBy('order').toArray()
-  if (stamps.length === 0 && !settings.stampsInitialized) {
-    stamps = buildInitialStamps()
-    await targetDb.stamps.bulkPut(stamps)
-    settings = { ...settings, stampsInitialized: true }
-  } else if (!settings.stampsInitialized && stamps.length > 0) {
-    settings = { ...settings, stampsInitialized: true }
-  }
+  // Section 3: Custom brush / pixel stamp feature is withdrawn from new workflows,
+  // so we no longer seed built-in stamps on fresh installs, while preserving any existing user stamps in DB!
+  const stamps = await targetDb.stamps.orderBy('order').toArray()
+
+  // Section 8: Staged, resumable, quota-safe migration of any legacy RGBA artworks to 1-byte Indexed Color
+  const migrationSummary = await migrateDatabaseToIndexedColor(targetDb, {
+    onProgress: options?.onMigrationProgress,
+    yieldBetweenProjects: options?.yieldBetweenProjects,
+  })
 
   if (settings.activeProjectId) {
     const exists = await targetDb.projects.get(settings.activeProjectId)
@@ -646,7 +713,7 @@ export async function initializeDatabase(targetDb: DotDotDatabase = db): Promise
   }
 
   await targetDb.settings.put(settings)
-  return { settings, palettes, stamps }
+  return { settings, palettes, stamps, migrationSummary }
 }
 
 export interface CreateProjectParams {
@@ -694,7 +761,22 @@ export async function createNewProject(
     loopPlayback: true,
   })
 
-  const { png: thumbnailPng } = exportCompositePngBytes([layerRuntime], width, height, 1)
+  const normalizedPalette = normalizeProjectPalette({
+    name: params.palette.name || 'Palette',
+    colors:
+      params.palette.colors.length > 0
+        ? params.palette.colors.slice(0, MAX_OPAQUE_PALETTE_COLORS)
+        : ['#000000', '#FFFFFF'],
+    colorTable: params.palette.colorTable,
+    displayOrder: params.palette.displayOrder,
+    sourcePaletteId: params.palette.sourcePaletteId,
+    author: params.palette.author,
+    sourceUrl: params.palette.sourceUrl,
+  })
+
+  const { png: thumbnailPng } = exportCompositePngBytes([layerRuntime], width, height, 1, {
+    palette: normalizedPalette,
+  })
 
   const existingProjects = await targetDb.projects.toArray()
   const minOrder =
@@ -702,16 +784,12 @@ export async function createNewProject(
       ? Math.min(...existingProjects.map((p) => p.order)) - 1
       : 0
 
-  const safeColors =
-    params.palette.colors.length > 0
-      ? params.palette.colors.slice(0, 256)
-      : ['#000000', '#FFFFFF']
-
   const project: ProjectRecord = {
     id: projectId,
     name: params.name.trim() || 'Untitled',
     width,
     height,
+    pixelFormat: 'indexed-v1',
     layers: [
       {
         id: layerId,
@@ -734,13 +812,7 @@ export async function createNewProject(
     defaultFrameDurationMs: timeline.defaultFrameDurationMs,
     playbackDirection: timeline.playbackDirection,
     loopPlayback: timeline.loopPlayback,
-    palette: {
-      name: params.palette.name || 'Palette',
-      colors: [...safeColors],
-      sourcePaletteId: params.palette.sourcePaletteId,
-      author: params.palette.author,
-      sourceUrl: params.palette.sourceUrl,
-    },
+    palette: normalizedPalette,
     selectedColorIndex: 0,
     order: minOrder,
     thumbnailPng,
@@ -757,6 +829,7 @@ export async function createNewProject(
     dataWidth: cb.dataWidth,
     dataHeight: cb.dataHeight,
     data: new Uint8Array(cb.data),
+    format: 'indexed-v1',
   }))
 
   await targetDb.transaction(
@@ -775,6 +848,7 @@ export async function createNewProject(
         projectId,
         layerId,
         data: new Uint8Array(initialData),
+        format: 'indexed-v1',
         offsetX: 0,
         offsetY: 0,
         dataWidth: width,
@@ -816,10 +890,50 @@ export async function loadProjectFull(
   timeline: TimelineState
   history: ProjectHistoryRecord
 } | null> {
-  const project = await targetDb.projects.get(projectId)
+  let project = await targetDb.projects.get(projectId)
   if (!project) return null
 
-  const pixelRows = await targetDb.layerPixels.where('projectId').equals(projectId).toArray()
+  let pixelRows = await targetDb.layerPixels.where('projectId').equals(projectId).toArray()
+  let celRows = await targetDb.celBuffers.where('projectId').equals(projectId).toArray()
+  let historyRow = await targetDb.histories.get(projectId)
+
+  // Defensive lazy-migration fallback if `loadProjectFull` is invoked directly on an unmigrated DB (e.g. in tests)
+  if (!isProjectAlreadyIndexed(project, pixelRows, celRows)) {
+    const converted = convertLegacyProjectDataToIndexed({
+      project,
+      layerPixels: pixelRows,
+      celBuffers: celRows,
+      history: historyRow ?? null,
+    })
+    await targetDb.transaction(
+      'rw',
+      [
+        targetDb.projects,
+        targetDb.layerPixels,
+        targetDb.celBuffers,
+        targetDb.histories,
+      ],
+      async () => {
+        await targetDb.projects.put(converted.project)
+        await targetDb.layerPixels.where('projectId').equals(projectId).delete()
+        if (converted.layerPixels.length > 0) {
+          await targetDb.layerPixels.bulkPut(converted.layerPixels)
+        }
+        await targetDb.celBuffers.where('projectId').equals(projectId).delete()
+        if (converted.celBuffers.length > 0) {
+          await targetDb.celBuffers.bulkPut(converted.celBuffers)
+        }
+        await targetDb.histories.put(converted.history)
+      }
+    )
+    project = converted.project
+    pixelRows = converted.layerPixels
+    celRows = converted.celBuffers
+    historyRow = converted.history
+  }
+
+  const normalizedPalette = normalizeProjectPalette(project.palette)
+
   const pixelMap = new Map<string, LayerPixelRecord>()
   for (const row of pixelRows) {
     pixelMap.set(row.layerId, row)
@@ -834,16 +948,16 @@ export async function loadProjectFull(
         offsetY: meta.offsetY ?? row?.offsetY,
         dataWidth: meta.dataWidth ?? row?.dataWidth,
         dataHeight: meta.dataHeight ?? row?.dataHeight,
-        data: raw ? new Uint8ClampedArray(raw) : createPixelBuffer(project.width, project.height),
+        data: raw ? new Uint8Array(raw) : createPixelBuffer(project.width, project.height),
       },
       project.width,
       project.height
     )
 
-    const expectedByteLength = geo.dataWidth * geo.dataHeight * 4
-    let data: Uint8ClampedArray
+    const expectedByteLength = geo.dataWidth * geo.dataHeight
+    let data: Uint8Array
     if (raw && raw.byteLength === expectedByteLength) {
-      data = new Uint8ClampedArray(raw)
+      data = new Uint8Array(raw)
     } else {
       data = createPixelBuffer(geo.dataWidth, geo.dataHeight)
       if (raw) {
@@ -861,7 +975,6 @@ export async function loadProjectFull(
     }
   })
 
-  const celRows = await targetDb.celBuffers.where('projectId').equals(projectId).toArray()
   let timeline: TimelineState
 
   if (
@@ -872,7 +985,7 @@ export async function loadProjectFull(
   ) {
     const celBuffers: Record<string, CelBufferRuntime> = {}
     for (const row of celRows) {
-      const raw = new Uint8ClampedArray(row.data)
+      const raw = new Uint8Array(row.data)
       const geo = normalizeLayerGeometry(
         {
           offsetX: row.offsetX,
@@ -884,8 +997,8 @@ export async function loadProjectFull(
         project.width,
         project.height
       )
-      const expectedLen = geo.dataWidth * geo.dataHeight * 4
-      let data: Uint8ClampedArray
+      const expectedLen = geo.dataWidth * geo.dataHeight
+      let data: Uint8Array
       if (raw.byteLength === expectedLen) {
         data = raw
       } else {
@@ -922,7 +1035,6 @@ export async function loadProjectFull(
       loopPlayback: project.loopPlayback ?? true,
     }
   } else {
-    // Seamless 1-frame lossless upgrade from legacy layerPixels!
     timeline = createSingleFrameTimelineFromLayers(legacyLayers, {
       frameId: project.frames?.[0]?.id ?? 'frame-1',
       defaultFrameDurationMs: project.defaultFrameDurationMs ?? DEFAULT_FRAME_DURATION_MS,
@@ -942,6 +1054,8 @@ export async function loadProjectFull(
 
   const normalizedProject: ProjectRecord = {
     ...project,
+    pixelFormat: 'indexed-v1',
+    palette: normalizedPalette,
     frames: timeline.frames,
     cels: timeline.cels,
     activeFrameId: timeline.activeFrameId,
@@ -951,7 +1065,7 @@ export async function loadProjectFull(
   }
 
   const history =
-    (await targetDb.histories.get(projectId)) ?? {
+    historyRow ?? {
       projectId,
       undoStack: [],
       redoStack: [],
@@ -990,6 +1104,7 @@ export async function saveProjectFull(
 ): Promise<{ savedAt: number; quotaTrimmed: boolean }> {
   const now = Date.now()
   const { project, layers, timeline, history } = payload
+  const normalizedPalette = normalizeProjectPalette(project.palette)
 
   let resolvedFrames: FrameMeta[]
   let resolvedCels: CelMap
@@ -1052,11 +1167,14 @@ export async function saveProjectFull(
     thumbLayers,
     project.width,
     project.height,
-    1
+    1,
+    { palette: normalizedPalette }
   )
 
   const updatedProject: ProjectRecord = {
     ...project,
+    pixelFormat: 'indexed-v1',
+    palette: normalizedPalette,
     layers: layers.map((l) => ({
       id: l.id,
       name: l.name,
@@ -1085,6 +1203,7 @@ export async function saveProjectFull(
     projectId: project.id,
     layerId: l.id,
     data: new Uint8Array(l.data),
+    format: 'indexed-v1',
     offsetX: l.offsetX ?? 0,
     offsetY: l.offsetY ?? 0,
     dataWidth: l.dataWidth ?? project.width,
@@ -1100,6 +1219,7 @@ export async function saveProjectFull(
     dataWidth: cb.dataWidth,
     dataHeight: cb.dataHeight,
     data: new Uint8Array(cb.data),
+    format: 'indexed-v1',
   }))
 
   const activeLayerKeys = new Set(pixelRecords.map((r) => r.key))
@@ -1190,7 +1310,7 @@ export async function duplicateProjectById(
     return {
       ...l,
       id: nlId,
-      data: new Uint8ClampedArray(l.data),
+      data: new Uint8Array(l.data),
     }
   })
 
@@ -1209,7 +1329,7 @@ export async function duplicateProjectById(
     nextCelBuffers[newCelId] = {
       ...cb,
       id: newCelId,
-      data: new Uint8ClampedArray(cb.data),
+      data: new Uint8Array(cb.data),
     }
   }
 
@@ -1238,17 +1358,22 @@ export async function duplicateProjectById(
   const nextActiveFrameId =
     frameIdMap.get(loaded.timeline.activeFrameId) ?? nextFrames[0]?.id ?? ''
 
+  const clonedPalette = normalizeProjectPalette(loaded.project.palette)
+
   const { png: thumbnailPng } = exportCompositePngBytes(
     nextLayers,
     loaded.project.width,
     loaded.project.height,
-    1
+    1,
+    { palette: clonedPalette }
   )
 
   const newProject: ProjectRecord = {
     ...loaded.project,
     id: newProjId,
     name: `${loaded.project.name} ${copySuffix}`.trim(),
+    pixelFormat: 'indexed-v1',
+    migrationReport: undefined,
     layers: nextLayers.map((l) => ({
       id: l.id,
       name: l.name,
@@ -1266,13 +1391,7 @@ export async function duplicateProjectById(
     frames: nextFrames,
     cels: nextCels,
     activeFrameId: nextActiveFrameId,
-    palette: {
-      name: loaded.project.palette.name,
-      colors: [...loaded.project.palette.colors],
-      sourcePaletteId: loaded.project.palette.sourcePaletteId,
-      author: loaded.project.palette.author,
-      sourceUrl: loaded.project.palette.sourceUrl,
-    },
+    palette: clonedPalette,
     order: minOrder,
     thumbnailPng,
     createdAt: now,
@@ -1310,6 +1429,7 @@ export async function deleteProjectById(
       targetDb.layerPixels,
       targetDb.celBuffers,
       targetDb.histories,
+      targetDb.migrationStates,
       targetDb.settings,
     ],
     async () => {
@@ -1317,6 +1437,7 @@ export async function deleteProjectById(
       await targetDb.layerPixels.where('projectId').equals(projectId).delete()
       await targetDb.celBuffers.where('projectId').equals(projectId).delete()
       await targetDb.histories.delete(projectId)
+      await targetDb.migrationStates.delete(projectId)
 
       const settings = await targetDb.settings.get('app-settings')
       if (settings && settings.activeProjectId === projectId) {
@@ -1330,12 +1451,6 @@ export async function deleteProjectById(
   )
 }
 
-/**
- * Estimate the storage bytes used strictly by a SINGLE artwork (`projectId`) inside IndexedDB
- * (Section 12 / 下書き1: NEVER return total IndexedDB usage here!).
- * - Empty cels = 0 B
- * - Linked cels = counted ONCE per unique `celId`
- */
 export interface SingleProjectSizeEstimate {
   totalBytes: number
   pixelDataBytes: number
@@ -1378,8 +1493,14 @@ export async function estimateSingleProjectStorageBytes(
   const project = await targetDb.projects.get(projectId)
   if (!project) return null
 
-  const { thumbnailPng, ...restMeta } = project
+  const { thumbnailPng, migrationReport, ...restMeta } = project
   let metadataBytes = thumbnailPng ? thumbnailPng.byteLength : 0
+  if (migrationReport?.beforePreviewPng) {
+    metadataBytes += migrationReport.beforePreviewPng.byteLength
+  }
+  if (migrationReport?.afterPreviewPng) {
+    metadataBytes += migrationReport.afterPreviewPng.byteLength
+  }
   try {
     metadataBytes += new TextEncoder().encode(JSON.stringify(restMeta)).byteLength
   } catch {
@@ -1546,10 +1667,18 @@ export async function createImportedProject(
           },
         ]
 
-  const safeColors =
-    payload.palette.colors.length > 0
-      ? payload.palette.colors.slice(0, 256)
-      : ['#000000', '#FFFFFF']
+  const normalizedPalette = normalizeProjectPalette({
+    name: payload.palette.name || 'Imported Palette',
+    colors:
+      payload.palette.colors.length > 0
+        ? payload.palette.colors.slice(0, MAX_OPAQUE_PALETTE_COLORS)
+        : ['#000000', '#FFFFFF'],
+    colorTable: payload.palette.colorTable,
+    displayOrder: payload.palette.displayOrder,
+    sourcePaletteId: payload.palette.sourcePaletteId,
+    author: payload.palette.author,
+    sourceUrl: payload.palette.sourceUrl,
+  })
 
   const activeLayerId =
     payload.activeLayerId && safeLayers.some((l) => l.id === payload.activeLayerId)
@@ -1561,6 +1690,7 @@ export async function createImportedProject(
     name: payload.name.trim() || 'Imported',
     width,
     height,
+    pixelFormat: 'indexed-v1',
     layers: safeLayers.map((l) => ({
       id: l.id,
       name: l.name,
@@ -1575,13 +1705,7 @@ export async function createImportedProject(
       dataHeight: l.dataHeight,
     })),
     activeLayerId,
-    palette: {
-      name: payload.palette.name || 'Imported Palette',
-      colors: [...safeColors],
-      sourcePaletteId: payload.palette.sourcePaletteId,
-      author: payload.palette.author,
-      sourceUrl: payload.palette.sourceUrl,
-    },
+    palette: normalizedPalette,
     selectedColorIndex: 0,
     order: minOrder,
     createdAt: now,
@@ -1625,85 +1749,6 @@ export async function createImportedProject(
   return (await targetDb.projects.get(projectId)) ?? initialProject
 }
 
-export async function addStampAsset(
-  params: {
-    name: string
-    width: number
-    height: number
-    data: Uint8Array | Uint8ClampedArray
-  },
-  targetDb: DotDotDatabase = db
-): Promise<StampAsset> {
-  const width = Math.max(
-    MIN_CANVAS_SIZE,
-    Math.min(MAX_CANVAS_SIZE, Math.round(params.width))
-  )
-  const height = Math.max(
-    MIN_CANVAS_SIZE,
-    Math.min(MAX_CANVAS_SIZE, Math.round(params.height))
-  )
-  const expectedLen = width * height * 4
-  const cleanBytes = new Uint8Array(expectedLen)
-  cleanBytes.set(params.data.subarray(0, Math.min(expectedLen, params.data.length)))
-
-  const now = Date.now()
-  const existing = await targetDb.stamps.orderBy('order').toArray()
-  const nextOrder =
-    existing.length > 0 ? Math.max(...existing.map((s) => s.order)) + 1 : 0
-
-  const asset: StampAsset = {
-    id: generateId('stamp'),
-    name: params.name.trim().slice(0, 40) || `スタンプ ${existing.length + 1}`,
-    width,
-    height,
-    data: cleanBytes,
-    order: nextOrder,
-    createdAt: now,
-    updatedAt: now,
-    builtIn: false,
-  }
-  await targetDb.stamps.put(asset)
-  return asset
-}
-
-export async function renameStampAsset(
-  stampId: string,
-  nextName: string,
-  targetDb: DotDotDatabase = db
-): Promise<boolean> {
-  const existing = await targetDb.stamps.get(stampId)
-  if (!existing) return false
-  const trimmed = nextName.trim().slice(0, 40)
-  if (!trimmed) return false
-  await targetDb.stamps.put({
-    ...existing,
-    name: trimmed,
-    updatedAt: Date.now(),
-  })
-  return true
-}
-
-export async function deleteStampAsset(
-  stampId: string,
-  targetDb: DotDotDatabase = db
-): Promise<boolean> {
-  const existing = await targetDb.stamps.get(stampId)
-  if (!existing) return false
-  await targetDb.stamps.delete(stampId)
-  return true
-}
-
-export async function reorderStampAssets(
-  orderedIds: string[],
-  targetDb: DotDotDatabase = db
-): Promise<void> {
-  await targetDb.transaction('rw', targetDb.stamps, async () => {
-    for (let i = 0; i < orderedIds.length; i++) {
-      await targetDb.stamps.update(orderedIds[i]!, { order: i })
-    }
-  })
-}
-
 export async function resetAllAppData(targetDb: DotDotDatabase = db): Promise<void> {
   await targetDb.transaction(
     'rw',
@@ -1714,6 +1759,7 @@ export async function resetAllAppData(targetDb: DotDotDatabase = db): Promise<vo
       targetDb.palettes,
       targetDb.stamps,
       targetDb.histories,
+      targetDb.migrationStates,
       targetDb.settings,
     ],
     async () => {
@@ -1723,6 +1769,7 @@ export async function resetAllAppData(targetDb: DotDotDatabase = db): Promise<vo
       await targetDb.palettes.clear()
       await targetDb.stamps.clear()
       await targetDb.histories.clear()
+      await targetDb.migrationStates.clear()
       await targetDb.settings.clear()
     }
   )
