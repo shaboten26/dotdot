@@ -16,11 +16,16 @@ import type {
   ProjectHistoryRecord,
   ProjectPalette,
   ProjectRecord,
+  SeamlessWrapMode,
   SerializedHistoryEntry,
+  StampAsset,
+  SymmetryMode,
+  TilePreviewGrid,
   UiSizeConfig,
   UiSizePreset,
 } from '../types'
 import { buildInitialPalettes } from './defaultPalettes'
+import { buildInitialStamps } from './defaultStamps'
 import {
   createPixelBuffer,
   MAX_CANVAS_SIZE,
@@ -42,6 +47,7 @@ export class DotDotDatabase extends Dexie {
   layerPixels!: Table<LayerPixelRecord, string>
   celBuffers!: Table<CelBufferRecord, string>
   palettes!: Table<PaletteData, string>
+  stamps!: Table<StampAsset, string>
   histories!: Table<ProjectHistoryRecord, string>
   settings!: Table<AppSettings, string>
 
@@ -114,6 +120,17 @@ export class DotDotDatabase extends Dexie {
           }
         })
       })
+
+    // Version 4: Independent `stamps` store for Pixel Stamps & Pattern Brushes + Advanced Feature settings
+    this.version(4).stores({
+      projects: 'id, order, createdAt, updatedAt, name',
+      layerPixels: 'key, projectId, layerId',
+      celBuffers: 'key, projectId, celId',
+      palettes: 'id, order, updatedAt',
+      stamps: 'id, order, updatedAt',
+      histories: 'projectId, updatedAt',
+      settings: 'id',
+    })
   }
 }
 
@@ -319,6 +336,14 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   uiSize: { ...DEFAULT_UI_SIZE_CONFIG },
   customCanvasPresets: [],
   backupMeta: { ...DEFAULT_BACKUP_META },
+  stampsInitialized: false,
+  defaultSymmetryMode: 'none',
+  showSymmetryGuide: true,
+  defaultTilePreviewGrid: 'off',
+  defaultSeamlessWrapMode: 'none',
+  embedPngMetadata: true,
+  defaultSpriteSheetScale: 1,
+  defaultSpriteSheetPadding: 0,
 }
 
 export function normalizeCustomCursors(
@@ -493,6 +518,35 @@ export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSett
       ? requestedCursorId
       : 'standard'
 
+  const defaultSymmetryMode: SymmetryMode =
+    raw?.defaultSymmetryMode === 'horizontal' ||
+    raw?.defaultSymmetryMode === 'vertical' ||
+    raw?.defaultSymmetryMode === 'quad'
+      ? raw.defaultSymmetryMode
+      : 'none'
+
+  const defaultTilePreviewGrid: TilePreviewGrid =
+    raw?.defaultTilePreviewGrid === '3x3' || raw?.defaultTilePreviewGrid === '5x5'
+      ? raw.defaultTilePreviewGrid
+      : 'off'
+
+  const defaultSeamlessWrapMode: SeamlessWrapMode =
+    raw?.defaultSeamlessWrapMode === 'horizontal' ||
+    raw?.defaultSeamlessWrapMode === 'vertical' ||
+    raw?.defaultSeamlessWrapMode === 'both'
+      ? raw.defaultSeamlessWrapMode
+      : 'none'
+
+  const rawSheetScale = Number(raw?.defaultSpriteSheetScale)
+  const defaultSpriteSheetScale = Number.isFinite(rawSheetScale)
+    ? Math.max(1, Math.min(32, Math.round(rawSheetScale)))
+    : 1
+
+  const rawSheetPadding = Number(raw?.defaultSpriteSheetPadding)
+  const defaultSpriteSheetPadding = Number.isFinite(rawSheetPadding)
+    ? Math.max(0, Math.min(64, Math.round(rawSheetPadding)))
+    : 0
+
   return {
     ...DEFAULT_APP_SETTINGS,
     ...(raw ?? {}),
@@ -514,6 +568,16 @@ export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSett
     uiSize,
     customCanvasPresets: normalizeCustomPresets(raw?.customCanvasPresets),
     backupMeta: normalizeBackupMeta(raw?.backupMeta),
+    stampsInitialized: Boolean(raw?.stampsInitialized),
+    defaultSymmetryMode,
+    showSymmetryGuide:
+      typeof raw?.showSymmetryGuide === 'boolean' ? raw.showSymmetryGuide : true,
+    defaultTilePreviewGrid,
+    defaultSeamlessWrapMode,
+    embedPngMetadata:
+      typeof raw?.embedPngMetadata === 'boolean' ? raw.embedPngMetadata : true,
+    defaultSpriteSheetScale,
+    defaultSpriteSheetPadding,
   }
 }
 
@@ -538,6 +602,7 @@ export function isQuotaError(err: unknown): boolean {
 export async function initializeDatabase(targetDb: DotDotDatabase = db): Promise<{
   settings: AppSettings
   palettes: PaletteData[]
+  stamps: StampAsset[]
 }> {
   const storedSettings = await targetDb.settings.get('app-settings')
   let settings = normalizeAppSettings(storedSettings)
@@ -546,6 +611,15 @@ export async function initializeDatabase(targetDb: DotDotDatabase = db): Promise
   if (palettes.length === 0) {
     palettes = buildInitialPalettes()
     await targetDb.palettes.bulkPut(palettes)
+  }
+
+  let stamps = await targetDb.stamps.orderBy('order').toArray()
+  if (stamps.length === 0 && !settings.stampsInitialized) {
+    stamps = buildInitialStamps()
+    await targetDb.stamps.bulkPut(stamps)
+    settings = { ...settings, stampsInitialized: true }
+  } else if (!settings.stampsInitialized && stamps.length > 0) {
+    settings = { ...settings, stampsInitialized: true }
   }
 
   if (settings.activeProjectId) {
@@ -572,7 +646,7 @@ export async function initializeDatabase(targetDb: DotDotDatabase = db): Promise
   }
 
   await targetDb.settings.put(settings)
-  return { settings, palettes }
+  return { settings, palettes, stamps }
 }
 
 export interface CreateProjectParams {
@@ -1413,6 +1487,223 @@ export async function requestStoragePersistence(): Promise<{
   }
 }
 
+export interface ImportedProjectPayload {
+  name: string
+  width: number
+  height: number
+  layers: LayerRuntime[]
+  activeLayerId?: string
+  timeline?: {
+    frames: FrameMeta[]
+    cels: CelMap
+    celBuffers: Record<string, CelBufferRuntime>
+    activeFrameId?: string
+    defaultFrameDurationMs?: number
+    playbackDirection?: ProjectRecord['playbackDirection']
+    loopPlayback?: boolean
+  }
+  palette: ProjectPalette
+}
+
+export async function createImportedProject(
+  payload: ImportedProjectPayload,
+  targetDb: DotDotDatabase = db
+): Promise<ProjectRecord> {
+  const width = Math.max(
+    MIN_CANVAS_SIZE,
+    Math.min(MAX_CANVAS_SIZE, Math.round(payload.width))
+  )
+  const height = Math.max(
+    MIN_CANVAS_SIZE,
+    Math.min(MAX_CANVAS_SIZE, Math.round(payload.height))
+  )
+  const now = Date.now()
+  const projectId = generateId('proj')
+
+  const existingProjects = await targetDb.projects.toArray()
+  const minOrder =
+    existingProjects.length > 0
+      ? Math.min(...existingProjects.map((p) => p.order)) - 1
+      : 0
+
+  const safeLayers: LayerRuntime[] =
+    payload.layers.length > 0
+      ? payload.layers
+      : [
+          {
+            id: generateId('layer'),
+            name: 'Layer 1',
+            visible: true,
+            locked: false,
+            opacity: 100,
+            blendMode: 'normal',
+            clipping: false,
+            offsetX: 0,
+            offsetY: 0,
+            dataWidth: width,
+            dataHeight: height,
+            data: createPixelBuffer(width, height),
+          },
+        ]
+
+  const safeColors =
+    payload.palette.colors.length > 0
+      ? payload.palette.colors.slice(0, 256)
+      : ['#000000', '#FFFFFF']
+
+  const activeLayerId =
+    payload.activeLayerId && safeLayers.some((l) => l.id === payload.activeLayerId)
+      ? payload.activeLayerId
+      : safeLayers[safeLayers.length - 1]!.id
+
+  const initialProject: ProjectRecord = {
+    id: projectId,
+    name: payload.name.trim() || 'Imported',
+    width,
+    height,
+    layers: safeLayers.map((l) => ({
+      id: l.id,
+      name: l.name,
+      visible: l.visible,
+      locked: Boolean(l.locked),
+      opacity: l.opacity,
+      blendMode: l.blendMode,
+      clipping: l.clipping,
+      offsetX: l.offsetX,
+      offsetY: l.offsetY,
+      dataWidth: l.dataWidth,
+      dataHeight: l.dataHeight,
+    })),
+    activeLayerId,
+    palette: {
+      name: payload.palette.name || 'Imported Palette',
+      colors: [...safeColors],
+      sourcePaletteId: payload.palette.sourcePaletteId,
+      author: payload.palette.author,
+      sourceUrl: payload.palette.sourceUrl,
+    },
+    selectedColorIndex: 0,
+    order: minOrder,
+    createdAt: now,
+    updatedAt: now,
+  }
+
+  await saveProjectFull(
+    {
+      project: initialProject,
+      layers: safeLayers,
+      timeline: payload.timeline
+        ? {
+            frames: payload.timeline.frames,
+            cels: payload.timeline.cels,
+            celBuffers: payload.timeline.celBuffers,
+            activeFrameId:
+              payload.timeline.activeFrameId ?? payload.timeline.frames[0]?.id ?? 'frame-1',
+            defaultFrameDurationMs: payload.timeline.defaultFrameDurationMs,
+            playbackDirection: payload.timeline.playbackDirection,
+            loopPlayback: payload.timeline.loopPlayback,
+          }
+        : undefined,
+      history: { undoStack: [], redoStack: [] },
+    },
+    targetDb
+  )
+
+  const currentSettings = normalizeAppSettings(
+    await targetDb.settings.get('app-settings')
+  )
+  await targetDb.settings.put({
+    ...currentSettings,
+    activeProjectId: projectId,
+    backupMeta: {
+      ...currentSettings.backupMeta,
+      firstProjectCreatedAt:
+        currentSettings.backupMeta.firstProjectCreatedAt ?? now,
+    },
+  })
+
+  return (await targetDb.projects.get(projectId)) ?? initialProject
+}
+
+export async function addStampAsset(
+  params: {
+    name: string
+    width: number
+    height: number
+    data: Uint8Array | Uint8ClampedArray
+  },
+  targetDb: DotDotDatabase = db
+): Promise<StampAsset> {
+  const width = Math.max(
+    MIN_CANVAS_SIZE,
+    Math.min(MAX_CANVAS_SIZE, Math.round(params.width))
+  )
+  const height = Math.max(
+    MIN_CANVAS_SIZE,
+    Math.min(MAX_CANVAS_SIZE, Math.round(params.height))
+  )
+  const expectedLen = width * height * 4
+  const cleanBytes = new Uint8Array(expectedLen)
+  cleanBytes.set(params.data.subarray(0, Math.min(expectedLen, params.data.length)))
+
+  const now = Date.now()
+  const existing = await targetDb.stamps.orderBy('order').toArray()
+  const nextOrder =
+    existing.length > 0 ? Math.max(...existing.map((s) => s.order)) + 1 : 0
+
+  const asset: StampAsset = {
+    id: generateId('stamp'),
+    name: params.name.trim().slice(0, 40) || `スタンプ ${existing.length + 1}`,
+    width,
+    height,
+    data: cleanBytes,
+    order: nextOrder,
+    createdAt: now,
+    updatedAt: now,
+    builtIn: false,
+  }
+  await targetDb.stamps.put(asset)
+  return asset
+}
+
+export async function renameStampAsset(
+  stampId: string,
+  nextName: string,
+  targetDb: DotDotDatabase = db
+): Promise<boolean> {
+  const existing = await targetDb.stamps.get(stampId)
+  if (!existing) return false
+  const trimmed = nextName.trim().slice(0, 40)
+  if (!trimmed) return false
+  await targetDb.stamps.put({
+    ...existing,
+    name: trimmed,
+    updatedAt: Date.now(),
+  })
+  return true
+}
+
+export async function deleteStampAsset(
+  stampId: string,
+  targetDb: DotDotDatabase = db
+): Promise<boolean> {
+  const existing = await targetDb.stamps.get(stampId)
+  if (!existing) return false
+  await targetDb.stamps.delete(stampId)
+  return true
+}
+
+export async function reorderStampAssets(
+  orderedIds: string[],
+  targetDb: DotDotDatabase = db
+): Promise<void> {
+  await targetDb.transaction('rw', targetDb.stamps, async () => {
+    for (let i = 0; i < orderedIds.length; i++) {
+      await targetDb.stamps.update(orderedIds[i]!, { order: i })
+    }
+  })
+}
+
 export async function resetAllAppData(targetDb: DotDotDatabase = db): Promise<void> {
   await targetDb.transaction(
     'rw',
@@ -1421,6 +1712,7 @@ export async function resetAllAppData(targetDb: DotDotDatabase = db): Promise<vo
       targetDb.layerPixels,
       targetDb.celBuffers,
       targetDb.palettes,
+      targetDb.stamps,
       targetDb.histories,
       targetDb.settings,
     ],
@@ -1429,6 +1721,7 @@ export async function resetAllAppData(targetDb: DotDotDatabase = db): Promise<vo
       await targetDb.layerPixels.clear()
       await targetDb.celBuffers.clear()
       await targetDb.palettes.clear()
+      await targetDb.stamps.clear()
       await targetDb.histories.clear()
       await targetDb.settings.clear()
     }

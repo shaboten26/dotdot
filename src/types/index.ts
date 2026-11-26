@@ -36,6 +36,37 @@ export type SelectSubTool = 'wand' | 'rect' | 'ellipse'
 
 export type OutlineMode = 'normal' | 'pixelPerfect'
 
+export type SymmetryMode = 'none' | 'horizontal' | 'vertical' | 'quad'
+
+export type TilePreviewGrid = 'off' | '3x3' | '5x5'
+
+export type SeamlessWrapMode = 'none' | 'horizontal' | 'vertical' | 'both'
+
+export interface StampAsset {
+  id: string
+  name: string
+  width: number // 1..256
+  height: number // 1..256
+  /** Raw RGBA bytes of length `width * height * 4` */
+  data: Uint8Array
+  order: number
+  createdAt: number
+  updatedAt: number
+  builtIn?: boolean
+}
+
+export interface StampPlacementSession {
+  stampId: string
+  name: string
+  width: number
+  height: number
+  data: Uint8ClampedArray
+  x: number
+  y: number
+  flipX: boolean
+  flipY: boolean
+}
+
 export type ToolId =
   | 'pen'
   | 'eraser'
@@ -168,6 +199,8 @@ export interface PaletteData {
 export interface ProjectPalette {
   name: string
   colors: string[] // Independent copy for this project (max 256)
+  /** Snapshot of color order prior to automatic sorting so user can restore original order */
+  originalColors?: string[]
   sourcePaletteId?: string
   author?: string
   sourceUrl?: string
@@ -270,6 +303,15 @@ export interface AppSettings {
   uiSize: UiSizeConfig
   customCanvasPresets: CanvasSizePreset[]
   backupMeta: BackupReminderMeta
+  /** Advanced feature defaults & preferences */
+  stampsInitialized?: boolean
+  defaultSymmetryMode?: SymmetryMode
+  showSymmetryGuide?: boolean
+  defaultTilePreviewGrid?: TilePreviewGrid
+  defaultSeamlessWrapMode?: SeamlessWrapMode
+  embedPngMetadata?: boolean
+  defaultSpriteSheetScale?: number
+  defaultSpriteSheetPadding?: number
 }
 
 export interface FloatingShapeState {
@@ -327,6 +369,8 @@ export interface ToolSettings {
   penShape: BrushShape
   penDither: DitherPatternId
   pixelPerfect: boolean
+  /** Optional StampAsset ID tiled as a repeating Pattern Brush during pen strokes */
+  patternStampId?: string | null
 
   eraserSize: number
   eraserShape: BrushShape

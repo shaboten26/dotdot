@@ -15,6 +15,7 @@ import type {
   ProjectRecord,
   SerializedHistoryEntry,
   SerializedPixelPatch,
+  StampAsset,
   TimelineSnapshot,
 } from '../types'
 import { DEFAULT_APP_SETTINGS, DotDotDatabase, db, normalizeAppSettings } from './database'
@@ -32,9 +33,11 @@ export interface EnvPackManifest {
   exportedAt: number
   projectOrder: string[]
   paletteOrder: string[]
+  stampOrder?: string[]
   counts: {
     projects: number
     palettes: number
+    stamps?: number
     totalLayers: number
     totalCels?: number
     totalHistoryEntries: number
@@ -409,6 +412,7 @@ export async function exportEnvironmentPackZip(
     (await targetDb.settings.get('app-settings')) ?? DEFAULT_APP_SETTINGS
   )
   const palettes = await targetDb.palettes.orderBy('order').toArray()
+  const stamps = await targetDb.stamps.orderBy('order').toArray()
   const projects = await targetDb.projects.orderBy('order').toArray()
   const allPixels = await targetDb.layerPixels.toArray()
   const allCels = await targetDb.celBuffers.toArray()
@@ -441,6 +445,15 @@ export async function exportEnvironmentPackZip(
     zipEntries[`palettes/palette-${fileIdx}.json`] = strToU8(
       JSON.stringify(pal, null, 2)
     )
+  })
+
+  stamps.forEach((stamp, idx) => {
+    const fileIdx = String(idx + 1).padStart(3, '0')
+    const { data, ...stampMeta } = stamp
+    zipEntries[`stamps/stamp-${fileIdx}.json`] = strToU8(
+      JSON.stringify(stampMeta, null, 2)
+    )
+    zipEntries[`stamps/stamp-${fileIdx}.bin`] = new Uint8Array(data)
   })
 
   for (let i = 0; i < projects.length; i++) {
@@ -517,13 +530,15 @@ export async function exportEnvironmentPackZip(
   const manifest: EnvPackManifest = {
     format: ENV_PACK_FORMAT,
     formatVersion: ENV_PACK_VERSION,
-    appVersion: '2.2.0',
+    appVersion: '2.5.0',
     exportedAt: Date.now(),
     projectOrder: projects.map((p) => p.id),
     paletteOrder: palettes.map((p) => p.id),
+    stampOrder: stamps.map((s) => s.id),
     counts: {
       projects: projects.length,
       palettes: palettes.length,
+      stamps: stamps.length,
       totalLayers,
       totalCels,
       totalHistoryEntries,
@@ -551,6 +566,8 @@ export interface ValidatedEnvPack {
   manifest: EnvPackManifest
   settings: AppSettings
   palettes: PaletteData[]
+  stamps: StampAsset[]
+  hasStampsInArchive: boolean
   projects: ProjectRecord[]
   layerPixels: LayerPixelRecord[]
   celBuffers: CelBufferRecord[]
@@ -812,10 +829,46 @@ export function inspectAndValidateEnvPack(zipBytes: Uint8Array): ValidatedEnvPac
   projects.sort((a, b) => a.order - b.order)
   palettes.sort((a, b) => a.order - b.order)
 
+  const stampJsonPaths = Object.keys(files)
+    .filter((k) => k.startsWith('stamps/') && k.endsWith('.json'))
+    .sort()
+
+  const hasStampsInArchive =
+    stampJsonPaths.length > 0 || typeof manifest.counts.stamps === 'number'
+
+  const stamps: StampAsset[] = stampJsonPaths.map((jsonPath, idx) => {
+    const meta = JSON.parse(strFromU8(files[jsonPath]!)) as Omit<StampAsset, 'data'>
+    const binPath = jsonPath.replace(/\.json$/, '.bin')
+    const bin = files[binPath]
+    if (
+      !meta ||
+      typeof meta.id !== 'string' ||
+      typeof meta.name !== 'string' ||
+      typeof meta.width !== 'number' ||
+      typeof meta.height !== 'number' ||
+      meta.width < 1 ||
+      meta.width > 256 ||
+      meta.height < 1 ||
+      meta.height > 256 ||
+      !bin ||
+      bin.byteLength !== meta.width * meta.height * 4
+    ) {
+      throw new Error(`INVALID_STAMP_DATA: Invalid stamp in ${jsonPath}`)
+    }
+    return {
+      ...meta,
+      order: typeof meta.order === 'number' ? meta.order : idx,
+      data: new Uint8Array(bin),
+    }
+  })
+  stamps.sort((a, b) => a.order - b.order)
+
   return {
     manifest,
     settings,
     palettes,
+    stamps,
+    hasStampsInArchive,
     projects,
     layerPixels,
     celBuffers,
@@ -832,6 +885,7 @@ export async function applyValidatedEnvPack(
     [
       targetDb.settings,
       targetDb.palettes,
+      targetDb.stamps,
       targetDb.projects,
       targetDb.layerPixels,
       targetDb.celBuffers,
@@ -840,6 +894,9 @@ export async function applyValidatedEnvPack(
     async () => {
       await targetDb.settings.clear()
       await targetDb.palettes.clear()
+      if (pack.hasStampsInArchive) {
+        await targetDb.stamps.clear()
+      }
       await targetDb.projects.clear()
       await targetDb.layerPixels.clear()
       await targetDb.celBuffers.clear()
@@ -847,6 +904,9 @@ export async function applyValidatedEnvPack(
 
       await targetDb.settings.put(pack.settings)
       await targetDb.palettes.bulkPut(pack.palettes)
+      if (pack.hasStampsInArchive && pack.stamps.length > 0) {
+        await targetDb.stamps.bulkPut(pack.stamps)
+      }
       if (pack.projects.length > 0) {
         await targetDb.projects.bulkPut(pack.projects)
       }
