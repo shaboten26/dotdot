@@ -197,13 +197,22 @@ describe('Full React UI Workflow Integration Tests', () => {
       )
     })
 
-    fireEvent.click(screen.getByTestId('lang-btn-ko'))
+    fireEvent.click(screen.getByTestId('settings-language-select'))
+    fireEvent.click(await screen.findByTestId('settings-language-select-opt-ko'))
     await waitFor(() => {
       expect(document.documentElement.lang).toBe('ko')
       expect(screen.getByText('환경 설정')).toBeTruthy()
     })
 
-    fireEvent.click(screen.getByTestId('lang-btn-en'))
+    fireEvent.click(screen.getByTestId('settings-language-select'))
+    fireEvent.click(await screen.findByTestId('settings-language-select-opt-es'))
+    await waitFor(() => {
+      expect(document.documentElement.lang).toBe('es')
+      expect(screen.getByText('Ajustes')).toBeTruthy()
+    })
+
+    fireEvent.click(screen.getByTestId('settings-language-select'))
+    fireEvent.click(await screen.findByTestId('settings-language-select-opt-en'))
     await waitFor(() => {
       expect(document.documentElement.lang).toBe('en')
       expect(screen.getByText('Settings')).toBeTruthy()

@@ -1,4 +1,5 @@
 import type { LanguageCode } from '../types'
+import { EXTRA_LOCALE_TRANSLATIONS } from './extraLocales'
 
 export const TRANSLATIONS = {
   ja: {
@@ -2540,5 +2541,10 @@ export const TRANSLATIONS = {
 export type TranslationKey = keyof (typeof TRANSLATIONS)['ja']
 
 export function translate(lang: LanguageCode, key: TranslationKey): string {
-  return TRANSLATIONS[lang]?.[key] ?? TRANSLATIONS.en[key] ?? TRANSLATIONS.ja[key]
+  if (lang === 'ja' || lang === 'en' || lang === 'ko') {
+    return TRANSLATIONS[lang]?.[key] ?? TRANSLATIONS.en[key] ?? TRANSLATIONS.ja[key]
+  }
+  const extra = EXTRA_LOCALE_TRANSLATIONS[lang]?.[key]
+  if (extra !== undefined) return extra
+  return TRANSLATIONS.en[key] ?? TRANSLATIONS.ja[key]
 }

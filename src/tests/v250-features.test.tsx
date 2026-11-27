@@ -883,11 +883,19 @@ describe('v2.5.0+ UI Integration: Stamp Withdrawal, Indexed Palette Safe Deletio
     expect(cleaned.removedCount).toBe(5)
     expect(cleaned.palette.colors).toEqual(['#FF0055'])
 
-    // Verify browser locale auto-detection (Japanese -> 'ja', Korean -> 'ko', English -> 'en', unknown/other -> 'en')
+    // Verify browser locale auto-detection across all 10 pixel-art community languages + unknown -> 'en'
     expect(detectPreferredLanguage(['ja-JP'])).toBe('ja')
     expect(detectPreferredLanguage(['ko-KR', 'en-US'])).toBe('ko')
     expect(detectPreferredLanguage(['en-GB'])).toBe('en')
-    expect(detectPreferredLanguage(['fr-FR', 'de-DE'])).toBe('en')
+    expect(detectPreferredLanguage(['zh-CN'])).toBe('zh-CN')
+    expect(detectPreferredLanguage(['zh-TW'])).toBe('zh-TW')
+    expect(detectPreferredLanguage(['zh-HK'])).toBe('zh-TW')
+    expect(detectPreferredLanguage(['es-MX'])).toBe('es')
+    expect(detectPreferredLanguage(['pt-BR'])).toBe('pt')
+    expect(detectPreferredLanguage(['fr-FR'])).toBe('fr')
+    expect(detectPreferredLanguage(['de-DE'])).toBe('de')
+    expect(detectPreferredLanguage(['ru-RU'])).toBe('ru')
+    expect(detectPreferredLanguage(['it-IT', 'nl-NL'])).toBe('en')
     expect(detectPreferredLanguage([])).toBe('en')
     expect(detectPreferredLanguage(null)).toBe('ja') // falls back to test navigator ('ja-JP')
     expect(normalizeAppSettings({ language: 'unknown' as never }).language).toBe('ja')
@@ -952,9 +960,12 @@ describe('v2.5.0+ UI Integration: Stamp Withdrawal, Indexed Palette Safe Deletio
     fireEvent.click(screen.getByTestId('palette-sort-light-asc'))
     expect(await screen.findByTestId('palette-restore-original-btn')).toBeTruthy()
 
-    // Switch to `色生成・中間色` (`create`) tab -> close (`×`) button stays pinned & accessible
+    // Switch to `色生成・中間色` (`create`) tab -> verify Modal is portaled directly under document.body and close (`×`) button stays pinned!
     fireEvent.click(screen.getByTestId('palette-tools-tab-create'))
-    expect(await screen.findByTestId('palette-create-panel')).toBeTruthy()
+    const createPanel = await screen.findByTestId('palette-create-panel')
+    expect(createPanel).toBeTruthy()
+    const toolsDialog = createPanel.closest('[role="dialog"]')!
+    expect(toolsDialog.parentElement).toBe(document.body)
     expect(screen.getAllByTestId('modal-close-btn').length).toBeGreaterThanOrEqual(2)
     fireEvent.click(screen.getByTestId('palette-insert-ramp-btn'))
     fireEvent.click(screen.getByTestId('palette-add-tone-pair-btn'))

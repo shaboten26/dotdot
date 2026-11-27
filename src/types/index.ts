@@ -315,7 +315,17 @@ export interface MigrationStateRecord {
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
-export type LanguageCode = 'ja' | 'en' | 'ko'
+export type LanguageCode =
+  | 'ja'
+  | 'en'
+  | 'ko'
+  | 'zh-CN'
+  | 'zh-TW'
+  | 'es'
+  | 'pt'
+  | 'fr'
+  | 'de'
+  | 'ru'
 
 export type UiSizePreset = 'compact' | 'standard' | 'large' | 'custom'
 

@@ -348,6 +348,19 @@ export const VALID_DARK_THEME_VARIANTS: ReadonlyArray<DarkThemeVariantId> = [
   'amber-crt',
 ]
 
+export const SUPPORTED_LANGUAGE_CODES: ReadonlyArray<LanguageCode> = [
+  'ja',
+  'en',
+  'ko',
+  'zh-CN',
+  'zh-TW',
+  'es',
+  'pt',
+  'fr',
+  'de',
+  'ru',
+]
+
 export function detectPreferredLanguage(
   rawLocales?: readonly string[] | string | null
 ): LanguageCode {
@@ -374,10 +387,27 @@ export function detectPreferredLanguage(
   }
 
   for (const tag of candidates) {
-    const primary = tag.split(/[-_]/)[0]
+    const normalized = tag.replace(/_/g, '-')
+    if (normalized.startsWith('zh')) {
+      if (
+        normalized.includes('tw') ||
+        normalized.includes('hk') ||
+        normalized.includes('mo') ||
+        normalized.includes('hant')
+      ) {
+        return 'zh-TW'
+      }
+      return 'zh-CN'
+    }
+    const primary = normalized.split('-')[0]
     if (primary === 'ja') return 'ja'
     if (primary === 'ko') return 'ko'
     if (primary === 'en') return 'en'
+    if (primary === 'es') return 'es'
+    if (primary === 'pt') return 'pt'
+    if (primary === 'fr') return 'fr'
+    if (primary === 'de') return 'de'
+    if (primary === 'ru') return 'ru'
   }
   return 'en'
 }
@@ -640,8 +670,9 @@ export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSett
       : 'wand'
 
   const language: LanguageCode =
-    raw?.language === 'ja' || raw?.language === 'en' || raw?.language === 'ko'
-      ? raw.language
+    raw?.language &&
+    SUPPORTED_LANGUAGE_CODES.includes(raw.language as LanguageCode)
+      ? (raw.language as LanguageCode)
       : detectPreferredLanguage()
 
   return {

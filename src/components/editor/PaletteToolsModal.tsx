@@ -310,9 +310,9 @@ export function PaletteToolsModal({
       maxWidthClass="max-w-lg"
     >
       <div className="space-y-3" data-testid="palette-tools-modal">
-        {/* Top Mode Tabs: 4 tabs in Editor, 2 tabs (Sort + Color Gen) in standalone Palette Library */}
+        {/* Top Mode Tabs: Sticky inside scroll area so tabs NEVER scroll out of view */}
         <div
-          className={`grid gap-1.5 ${
+          className={`sticky top-0 z-20 -mt-1 pt-1 pb-1.5 bg-[var(--bg-panel)] grid gap-1.5 ${
             hasArtworkContext ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'
           }`}
         >
@@ -458,9 +458,9 @@ export function PaletteToolsModal({
 
         {/* TAB 2: CREATE INTERMEDIATE RAMP, TINT/SHADE & COLOR HARMONY */}
         {tab === 'create' && (
-          <div className="space-y-3" data-testid="palette-create-panel">
+          <div className="space-y-2.5" data-testid="palette-create-panel">
             {/* Section A: 2-Color Intermediate Ramp Generator */}
-            <div className="p-2.5 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-2.5">
+            <div className="p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-2">
               <div className="text-xs font-bold text-[var(--text-primary)] flex items-center justify-between gap-2">
                 <span>{t('paletteRampSectionTitle')}</span>
                 <span className="text-[11px] font-mono text-[var(--text-secondary)]">
@@ -468,63 +468,64 @@ export function PaletteToolsModal({
                 </span>
               </div>
 
-              {/* Start Color A */}
-              <div className="space-y-1">
-                <div className="text-[11px] font-bold text-[var(--text-secondary)] flex items-center justify-between">
-                  <span>{t('paletteRampStartLabel')}</span>
-                  <span className="font-mono text-[var(--text-primary)]">
-                    #{clampedStartIdx + 1} {rampStartHex}
-                  </span>
+              {/* Start Color A & End Color B side-by-side on sm+, compact scrollable rows */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="space-y-1 min-w-0">
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] flex items-center justify-between gap-1">
+                    <span className="truncate">{t('paletteRampStartLabel')}</span>
+                    <span className="font-mono text-[var(--text-primary)] shrink-0">
+                      #{clampedStartIdx + 1} {rampStartHex}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1 max-h-14 overflow-y-auto p-1 bg-[var(--bg-panel)] border border-[var(--border-subtle)]">
+                    {palette.colors.map((hex, idx) => {
+                      const active = idx === clampedStartIdx
+                      return (
+                        <button
+                          key={`ramp-a-${idx}-${hex}`}
+                          type="button"
+                          onClick={() => setRampStartIdx(idx)}
+                          style={{ backgroundColor: hex }}
+                          title={`A: #${idx + 1} ${hex}`}
+                          className={`w-6 h-6 cursor-pointer ${
+                            active
+                              ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)] z-10'
+                              : 'border border-[var(--border-pixel)]'
+                          }`}
+                          data-testid={`ramp-start-swatch-${idx}`}
+                        />
+                      )
+                    })}
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-1 max-h-14 overflow-y-auto p-1 bg-[var(--bg-panel)] border border-[var(--border-subtle)]">
-                  {palette.colors.map((hex, idx) => {
-                    const active = idx === clampedStartIdx
-                    return (
-                      <button
-                        key={`ramp-a-${idx}-${hex}`}
-                        type="button"
-                        onClick={() => setRampStartIdx(idx)}
-                        style={{ backgroundColor: hex }}
-                        title={`A: #${idx + 1} ${hex}`}
-                        className={`w-6 h-6 cursor-pointer ${
-                          active
-                            ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)] z-10'
-                            : 'border border-[var(--border-pixel)]'
-                        }`}
-                        data-testid={`ramp-start-swatch-${idx}`}
-                      />
-                    )
-                  })}
-                </div>
-              </div>
 
-              {/* End Color B */}
-              <div className="space-y-1">
-                <div className="text-[11px] font-bold text-[var(--text-secondary)] flex items-center justify-between">
-                  <span>{t('paletteRampEndLabel')}</span>
-                  <span className="font-mono text-[var(--text-primary)]">
-                    #{clampedEndIdx + 1} {rampEndHex}
-                  </span>
-                </div>
-                <div className="flex flex-wrap gap-1 max-h-14 overflow-y-auto p-1 bg-[var(--bg-panel)] border border-[var(--border-subtle)]">
-                  {palette.colors.map((hex, idx) => {
-                    const active = idx === clampedEndIdx
-                    return (
-                      <button
-                        key={`ramp-b-${idx}-${hex}`}
-                        type="button"
-                        onClick={() => setRampEndIdx(idx)}
-                        style={{ backgroundColor: hex }}
-                        title={`B: #${idx + 1} ${hex}`}
-                        className={`w-6 h-6 cursor-pointer ${
-                          active
-                            ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-teal)] z-10'
-                            : 'border border-[var(--border-pixel)]'
-                        }`}
-                        data-testid={`ramp-end-swatch-${idx}`}
-                      />
-                    )
-                  })}
+                <div className="space-y-1 min-w-0">
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)] flex items-center justify-between gap-1">
+                    <span className="truncate">{t('paletteRampEndLabel')}</span>
+                    <span className="font-mono text-[var(--text-primary)] shrink-0">
+                      #{clampedEndIdx + 1} {rampEndHex}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1 max-h-14 overflow-y-auto p-1 bg-[var(--bg-panel)] border border-[var(--border-subtle)]">
+                    {palette.colors.map((hex, idx) => {
+                      const active = idx === clampedEndIdx
+                      return (
+                        <button
+                          key={`ramp-b-${idx}-${hex}`}
+                          type="button"
+                          onClick={() => setRampEndIdx(idx)}
+                          style={{ backgroundColor: hex }}
+                          title={`B: #${idx + 1} ${hex}`}
+                          className={`w-6 h-6 cursor-pointer ${
+                            active
+                              ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-teal)] z-10'
+                              : 'border border-[var(--border-pixel)]'
+                          }`}
+                          data-testid={`ramp-end-swatch-${idx}`}
+                        />
+                      )
+                    })}
+                  </div>
                 </div>
               </div>
 

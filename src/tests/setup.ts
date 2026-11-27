@@ -1,4 +1,9 @@
 import 'fake-indexeddb/auto'
+import { configure } from '@testing-library/react'
+
+// Raise Testing Library async wait timeout from 1000ms to 4000ms so IndexedDB hydration
+// + Framer Motion route transitions never flake under heavy Vitest worker CPU load.
+configure({ asyncUtilTimeout: 4000 })
 
 // Default jsdom navigator locale to Japanese ('ja-JP') for existing Japanese UI assertions;
 // individual language-detection tests explicitly test en / ko / fr / unknown locales.

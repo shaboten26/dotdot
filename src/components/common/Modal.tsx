@@ -1,4 +1,5 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
 import { PixelIcon } from './PixelIcon'
 import { useApp } from '../../state/AppContext'
@@ -12,6 +13,14 @@ interface ModalProps {
   maxWidthClass?: string
 }
 
+/**
+ * Pixel-Art Modal Dialog:
+ * - Rendered via `createPortal(..., document.body)` so nested modals (e.g. `PaletteToolsModal`
+ *   opened inside `PaletteSheet`'s `motion.div` which creates a transform containing block!)
+ *   ALWAYS position against the true browser viewport and NEVER push their header/close button off-screen!
+ * - Uses an explicit CSS Grid (`grid-rows-[auto_minmax(0,1fr)]`) inside `max-h-[85dvh]` so the
+ *   title bar + `×` button stay strictly pinned at row 1 regardless of how tall `children` are.
+ */
 export function Modal({
   open,
   title,
@@ -21,9 +30,13 @@ export function Modal({
 }: ModalProps) {
   const { reducedMotion } = useApp()
   const { t } = useI18n()
+  const bodyScrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
+    if (bodyScrollRef.current) {
+      bodyScrollRef.current.scrollTop = 0
+    }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
@@ -31,11 +44,11 @@ export function Modal({
     return () => window.removeEventListener('keydown', onKey)
   }, [open, onClose])
 
-  return (
+  const modalNode = (
     <AnimatePresence>
       {open && (
         <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 pt-safe"
           role="dialog"
           aria-modal="true"
           aria-label={title}
@@ -73,10 +86,10 @@ export function Modal({
                     mass: 0.88,
                   }
             }
-            style={{ maxHeight: 'min(88dvh, 88vh)' }}
-            className={`relative z-10 w-full ${maxWidthClass} min-h-0 flex flex-col pixel-panel pb-safe overflow-hidden will-change-transform`}
+            style={{ maxHeight: 'min(85dvh, 85vh)' }}
+            className={`relative z-10 w-full ${maxWidthClass} min-h-0 grid grid-rows-[auto_minmax(0,1fr)] pixel-panel pb-safe overflow-hidden`}
           >
-            {/* Retro Pixel Title Bar with Decorative Corner Pixels (always pinned at top) */}
+            {/* Retro Pixel Title Bar with Decorative Corner Pixels (strictly pinned in Grid row 1) */}
             <div className="flex items-center justify-between px-3.5 py-2.5 bg-[var(--bg-elevated)] border-b-2 border-[var(--border-pixel)] shrink-0">
               <div className="flex items-center gap-2 min-w-0">
                 <span
@@ -97,7 +110,11 @@ export function Modal({
                 <PixelIcon name="close" size={16} />
               </button>
             </div>
-            <div className="p-4 flex-1 min-h-0 overflow-y-auto overscroll-contain">
+            <div
+              ref={bodyScrollRef}
+              className="p-4 min-h-0 overflow-y-auto overscroll-contain"
+              data-testid="modal-scroll-body"
+            >
               {children}
             </div>
           </motion.div>
@@ -105,6 +122,10 @@ export function Modal({
       )}
     </AnimatePresence>
   )
+
+  return typeof document !== 'undefined'
+    ? createPortal(modalNode, document.body)
+    : modalNode
 }
 
 interface ConfirmDialogProps {

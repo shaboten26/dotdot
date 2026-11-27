@@ -37,9 +37,11 @@ import { normalizeProjectPalette } from '../engine/indexedPalette'
 import { useApp } from '../state/AppContext'
 import { useI18n } from '../i18n/I18nContext'
 import type { TranslationKey } from '../i18n/translations'
+import { LANGUAGE_OPTIONS } from '../i18n/extraLocales'
 import { ConfirmDialog, Modal } from '../components/common/Modal'
 import { PixelIcon } from '../components/common/PixelIcon'
 import { PixelCheckbox } from '../components/common/PixelCheckbox'
+import { PixelSelect } from '../components/common/PixelSelect'
 import { PixelSlider } from '../components/common/PixelSlider'
 import { PixelThumbnail } from '../components/common/PixelThumbnail'
 import { PaletteSheet } from '../components/editor/PaletteSheet'
@@ -481,46 +483,18 @@ export function SettingsPage() {
               <label className="text-xs font-bold text-[var(--text-secondary)] block">
                 {t('languageLabel')}
               </label>
-              <div className="grid grid-cols-3 gap-2">
-                {(
-                  [
-                    { id: 'ja', label: t('langJa') },
-                    { id: 'en', label: t('langEn') },
-                    { id: 'ko', label: t('langKo') },
-                  ] as Array<{ id: LanguageCode; label: string }>
-                ).map((item) => {
-                  const active = settings.language === item.id
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => void updateSettings({ language: item.id })}
-                      aria-pressed={active}
-                      className={`relative min-h-[44px] px-2 text-xs font-bold flex items-center justify-center gap-1.5 overflow-hidden ${
-                        active ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-                      }`}
-                      data-testid={`lang-btn-${item.id}`}
-                    >
-                      {active && !reducedMotion && (
-                        <motion.span
-                          layoutId="settings-lang-pill"
-                          transition={{
-                            type: 'spring',
-                            stiffness: 520,
-                            damping: 36,
-                          }}
-                          className="absolute inset-0 bg-[var(--accent-primary)] pointer-events-none"
-                          aria-hidden="true"
-                        />
-                      )}
-                      <span className="relative z-10 flex items-center justify-center gap-1.5">
-                        {active && <PixelIcon name="check" size={12} />}
-                        <span>{item.label}</span>
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
+              <PixelSelect<LanguageCode>
+                value={settings.language}
+                options={LANGUAGE_OPTIONS.map((item) => ({
+                  value: item.code,
+                  label: item.label,
+                  subLabel: item.subLabel,
+                }))}
+                onChange={(picked) => void updateSettings({ language: picked })}
+                ariaLabel={t('languageLabel')}
+                className="w-full"
+                testId="settings-language-select"
+              />
             </div>
           </section>
 
