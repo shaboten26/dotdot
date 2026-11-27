@@ -15,18 +15,14 @@ import {
 
 type LoadedProjectFull = NonNullable<Awaited<ReturnType<typeof loadProjectFull>>>
 import { exportCompositePngBytes } from '../engine/compositor'
+import { computePlaybackFrameIndices, projectFrameLayers, type TimelineState } from '../engine/animation'
 import { useApp } from '../state/AppContext'
 import { useI18n } from '../i18n/I18nContext'
 import { ConfirmDialog } from '../components/common/Modal'
 import { PixelIcon, PixelLoadingIndicator } from '../components/common/PixelIcon'
-import {
-  ExportPngModal,
-  type ExportPngInitialIntent,
-} from '../components/editor/EditorModals'
-import { ExportGifModal } from '../components/editor/ExportGifModal'
+import { UnifiedExportModal } from '../components/editor/UnifiedExportModal'
 import { ExportSpriteSheetModal } from '../components/editor/ExportSpriteSheetModal'
 import { ExportAsepriteModal } from '../components/common/AsepriteModals'
-import type { TimelineState } from '../engine/animation'
 import { sortProjectsByGalleryMode } from '../utils/gallerySort'
 import {
   useViewTransitionNavigate,
@@ -67,11 +63,9 @@ export function ProjectDetailPage() {
   const [editingName, setEditingName] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
   const [exportOpen, setExportOpen] = useState(false)
-  const [exportGifOpen, setExportGifOpen] = useState(false)
   const [exportSpriteOpen, setExportSpriteOpen] = useState(false)
   const [exportAseOpen, setExportAseOpen] = useState(false)
-  const [exportIntent, setExportIntent] =
-    useState<ExportPngInitialIntent>('download')
+  const [animStepIdx, setAnimStepIdx] = useState(0)
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
   const [swipeDir, setSwipeDir] = useState<-1 | 0 | 1>(0)
   const [swipeDragX, setSwipeDragX] = useState(0)
@@ -188,7 +182,6 @@ export function ProjectDetailPage() {
       setSwipeDir(dir)
       setEditingName(false)
       setExportOpen(false)
-      setExportGifOpen(false)
       setExportSpriteOpen(false)
       setExportAseOpen(false)
       setConfirmDeleteOpen(false)
@@ -204,7 +197,6 @@ export function ProjectDetailPage() {
       if (
         editingName ||
         exportOpen ||
-        exportGifOpen ||
         exportSpriteOpen ||
         exportAseOpen ||
         confirmDeleteOpen
@@ -227,7 +219,6 @@ export function ProjectDetailPage() {
     sortedProjects.length,
     editingName,
     exportOpen,
-    exportGifOpen,
     exportSpriteOpen,
     exportAseOpen,
     confirmDeleteOpen,
@@ -263,7 +254,6 @@ export function ProjectDetailPage() {
       sortedProjects.length <= 1 ||
       editingName ||
       exportOpen ||
-      exportGifOpen ||
       exportSpriteOpen ||
       exportAseOpen ||
       confirmDeleteOpen ||
@@ -382,6 +372,80 @@ export function ProjectDetailPage() {
     setSwipeDragX(0)
   }
 
+  // Precompute crisp base64 PNG frames for multi-frame artworks so the viewing screen animates smoothly!
+  const animatedPreviewFrames = useMemo(() => {
+    if (!project || !timeline || timeline.frames.length < 2 || layers.length === 0) {
+      return null
+    }
+    const previewScale = Math.max(
+      1,
+      Math.min(16, Math.floor(1024 / Math.max(1, project.width, project.height)))
+    )
+    const indices = computePlaybackFrameIndices(
+      timeline.frames.length,
+      timeline.playbackDirection,
+      !timeline.loopPlayback
+    )
+    if (indices.length === 0) return null
+
+    const frameUrlByRawIdx = new Map<number, string>()
+    return indices.map((rawIdx) => {
+      const f = timeline.frames[rawIdx]!
+      let dataUrl = frameUrlByRawIdx.get(rawIdx)
+      if (!dataUrl) {
+        const projected = projectFrameLayers(
+          layers,
+          timeline.cels,
+          timeline.celBuffers,
+          f.id,
+          project.width,
+          project.height
+        )
+        const pngBytes = exportCompositePngBytes(
+          projected,
+          project.width,
+          project.height,
+          previewScale,
+          { palette: project.palette }
+        ).png
+        let binary = ''
+        const chunk = 0x8000
+        for (let i = 0; i < pngBytes.length; i += chunk) {
+          binary += String.fromCharCode(...pngBytes.subarray(i, i + chunk))
+        }
+        dataUrl = `data:image/png;base64,${btoa(binary)}`
+        frameUrlByRawIdx.set(rawIdx, dataUrl)
+      }
+      return {
+        url: dataUrl,
+        durationMs: Math.max(20, f.durationMs || 100),
+      }
+    })
+  }, [project, timeline, layers])
+
+  useEffect(() => {
+    setAnimStepIdx(0)
+  }, [id, animatedPreviewFrames])
+
+  useEffect(() => {
+    if (!animatedPreviewFrames || animatedPreviewFrames.length < 2) return
+    const loopEnabled = timeline?.loopPlayback ?? true
+    if (!loopEnabled && animStepIdx >= animatedPreviewFrames.length - 1) {
+      return
+    }
+    const currentFrame = animatedPreviewFrames[animStepIdx] ?? animatedPreviewFrames[0]!
+    const timer = window.setTimeout(() => {
+      setAnimStepIdx((prev) => {
+        const next = prev + 1
+        if (next >= animatedPreviewFrames.length) {
+          return loopEnabled ? 0 : animatedPreviewFrames.length - 1
+        }
+        return next
+      })
+    }, currentFrame.durationMs)
+    return () => window.clearTimeout(timer)
+  }, [animatedPreviewFrames, animStepIdx, timeline?.loopPlayback])
+
   // Generate crisp preview PNG URL (long-press friendly on iOS Safari / PWA),
   // using summaryProject.thumbnailPng immediately before full layers finish hydrating!
   const previewPngBytes = useMemo(() => {
@@ -404,6 +468,10 @@ export function ProjectDetailPage() {
 
   // Synchronous data/object URL fallback so the very first render inside startViewTransition has real pixels
   const previewUrl = useMemo(() => {
+    if (animatedPreviewFrames && animatedPreviewFrames.length >= 2) {
+      const safeIdx = Math.min(animStepIdx, animatedPreviewFrames.length - 1)
+      return animatedPreviewFrames[safeIdx]?.url ?? animatedPreviewFrames[0]!.url
+    }
     if (!previewPngBytes || previewPngBytes.length === 0) return null
     let binary = ''
     const chunk = 0x8000
@@ -411,7 +479,7 @@ export function ProjectDetailPage() {
       binary += String.fromCharCode(...previewPngBytes.subarray(i, i + chunk))
     }
     return `data:image/png;base64,${btoa(binary)}`
-  }, [previewPngBytes])
+  }, [animatedPreviewFrames, animStepIdx, previewPngBytes])
 
   const formatDateTime = (ms: number) => {
     try {
@@ -562,6 +630,8 @@ export function ProjectDetailPage() {
                   draggable={false}
                   className="max-w-full max-h-full object-contain pixelated"
                   data-testid="detail-preview-img"
+                  data-animated={isAnimationArtwork ? 'true' : 'false'}
+                  data-anim-step={isAnimationArtwork ? String(animStepIdx) : undefined}
                 />
               ) : (
                 <div className="w-full h-full" />
@@ -610,7 +680,7 @@ export function ProjectDetailPage() {
             </div>
           )}
 
-          {/* Primary Edit Button + Export Actions (GIF shown ONLY when frameCount >= 2) + Duplicate */}
+          {/* Primary Edit Button + Unified Export Button (`画像を出力` / `アニメーションを出力`) + Duplicate + Secondary Exports */}
           <div className="space-y-2.5">
             <button
               type="button"
@@ -622,50 +692,23 @@ export function ProjectDetailPage() {
               <span>{t('openInEditor')}</span>
             </button>
 
-            <div
-              className={`grid gap-2.5 ${
-                isAnimationArtwork
-                  ? 'grid-cols-2 sm:grid-cols-4'
-                  : 'grid-cols-3'
-              }`}
-            >
+            <div className="grid grid-cols-2 gap-2.5">
               <button
                 type="button"
-                onClick={() => {
-                  setExportIntent('download')
-                  setExportOpen(true)
-                }}
+                onClick={() => setExportOpen(true)}
                 className="min-h-[48px] px-2.5 pixel-btn pixel-btn-teal text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
-                data-testid="detail-download-png-btn"
+                data-testid="detail-export-btn"
               >
-                <PixelIcon name="download" size={16} />
-                <span>{t('downloadPngBtn')}</span>
+                <PixelIcon
+                  name={isAnimationArtwork ? 'film' : 'download'}
+                  size={16}
+                />
+                <span>
+                  {isAnimationArtwork
+                    ? t('exportAnimationBtn')
+                    : t('exportImageBtn')}
+                </span>
               </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setExportIntent('share')
-                  setExportOpen(true)
-                }}
-                className="min-h-[48px] px-2.5 pixel-btn pixel-btn-teal text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
-                data-testid="detail-share-png-btn"
-              >
-                <PixelIcon name="share" size={16} />
-                <span>{t('sharePngBtn')}</span>
-              </button>
-
-              {isAnimationArtwork && (
-                <button
-                  type="button"
-                  onClick={() => setExportGifOpen(true)}
-                  className="min-h-[48px] px-2.5 pixel-btn pixel-btn-active text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
-                  data-testid="detail-export-gif-btn"
-                >
-                  <PixelIcon name="film" size={16} />
-                  <span>{t('exportGif')}</span>
-                </button>
-              )}
 
               <button
                 type="button"
@@ -678,17 +721,23 @@ export function ProjectDetailPage() {
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                disabled={!timeline || layers.length === 0}
-                onClick={() => setExportSpriteOpen(true)}
-                className="min-h-[42px] px-2.5 pixel-btn text-xs font-bold flex items-center justify-center gap-1.5"
-                data-testid="detail-export-spritesheet-btn"
-              >
-                <PixelIcon name="sheet" size={14} />
-                <span>{t('exportSpriteSheet')}</span>
-              </button>
+            <div
+              className={`grid gap-2.5 ${
+                isAnimationArtwork ? 'grid-cols-2' : 'grid-cols-1'
+              }`}
+            >
+              {isAnimationArtwork && (
+                <button
+                  type="button"
+                  disabled={!timeline || layers.length === 0}
+                  onClick={() => setExportSpriteOpen(true)}
+                  className="min-h-[42px] px-2.5 pixel-btn text-xs font-bold flex items-center justify-center gap-1.5"
+                  data-testid="detail-export-spritesheet-btn"
+                >
+                  <PixelIcon name="sheet" size={14} />
+                  <span>{t('exportSpriteSheet')}</span>
+                </button>
+              )}
 
               <button
                 type="button"
@@ -749,11 +798,13 @@ export function ProjectDetailPage() {
               label={t('layerCount')}
               value={`${activeProject.layers.length}`}
             />
-            <MetaRow
-              label={t('frameCount')}
-              value={`${frameCount}`}
-              testId="detail-frame-count"
-            />
+            {isAnimationArtwork && (
+              <MetaRow
+                label={t('frameCount')}
+                value={`${frameCount}`}
+                testId="detail-frame-count"
+              />
+            )}
             <MetaRow
               label={t('artworkDataSizeLabel')}
               value={formatByteSize(sizeEstimate?.totalBytes ?? null)}
@@ -792,61 +843,47 @@ export function ProjectDetailPage() {
           </section>
         </main>
 
-        <ExportPngModal
-          open={exportOpen && layers.length > 0}
+        <UnifiedExportModal
+          open={exportOpen}
+          mode={isAnimationArtwork ? 'animation' : 'still'}
           projectName={activeProject.name}
           width={activeProject.width}
           height={activeProject.height}
           palette={activeProject.palette}
           layers={layers}
+          layerMetas={layers}
+          frames={timeline?.frames}
+          cels={timeline?.cels}
+          celBuffers={timeline?.celBuffers}
+          defaultDirection={timeline?.playbackDirection}
+          defaultLoop={timeline?.loopPlayback}
           checkerDark={settings.checkerboardDark}
-          initialIntent={exportIntent}
           onClose={() => setExportOpen(false)}
-          onDownloaded={() => showToast(t('toastExportedPng'), 'success')}
-          onShared={() => showToast(t('toastSharedPng'), 'success')}
+          onDownloaded={() => showToast(t('toastExportedFile'), 'success')}
+          onShared={() => showToast(t('toastSharedFile'), 'success')}
         />
-
-        {timeline && isAnimationArtwork && (
-          <ExportGifModal
-            open={exportGifOpen}
-            projectName={activeProject.name}
-            width={activeProject.width}
-            height={activeProject.height}
-            palette={activeProject.palette}
-            layerMetas={layers}
-            frames={timeline.frames}
-            cels={timeline.cels}
-            celBuffers={timeline.celBuffers}
-            fallbackSingleFrameLayers={layers}
-            defaultDirection={timeline.playbackDirection}
-            defaultLoop={timeline.loopPlayback}
-            checkerDark={settings.checkerboardDark}
-            onClose={() => setExportGifOpen(false)}
-            onDownloaded={() => showToast(t('toastExportedGif'), 'success')}
-            onShared={() => showToast(t('toastSharedGif'), 'success')}
-            onCancelled={() => showToast(t('toastGifCancelled'), 'info')}
-          />
-        )}
 
         {timeline && layers.length > 0 && (
           <>
-            <ExportSpriteSheetModal
-              open={exportSpriteOpen}
-              onClose={() => setExportSpriteOpen(false)}
-              projectName={activeProject.name}
-              width={activeProject.width}
-              height={activeProject.height}
-              palette={activeProject.palette}
-              layerMetas={layers}
-              frames={timeline.frames}
-              cels={timeline.cels}
-              celBuffers={timeline.celBuffers}
-              fallbackSingleFrameLayers={layers}
-              defaultDirection={timeline.playbackDirection}
-              checkerDark={settings.checkerboardDark}
-              onExportedPng={() => showToast(t('toastExportedSpriteSheet'), 'success')}
-              onExportedJson={() => showToast(t('toastExportedSpriteJson'), 'success')}
-            />
+            {isAnimationArtwork && (
+              <ExportSpriteSheetModal
+                open={exportSpriteOpen}
+                onClose={() => setExportSpriteOpen(false)}
+                projectName={activeProject.name}
+                width={activeProject.width}
+                height={activeProject.height}
+                palette={activeProject.palette}
+                layerMetas={layers}
+                frames={timeline.frames}
+                cels={timeline.cels}
+                celBuffers={timeline.celBuffers}
+                fallbackSingleFrameLayers={layers}
+                defaultDirection={timeline.playbackDirection}
+                checkerDark={settings.checkerboardDark}
+                onExportedPng={() => showToast(t('toastExportedSpriteSheet'), 'success')}
+                onExportedJson={() => showToast(t('toastExportedSpriteJson'), 'success')}
+              />
+            )}
 
             <ExportAsepriteModal
               open={exportAseOpen}

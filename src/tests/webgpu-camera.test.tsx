@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { App } from '../App'
 import { db, initializeDatabase, loadProjectFull, resetAllAppData } from '../db/database'
 import { normalizeProjectPalette, TRANSPARENT_INDEX } from '../engine/indexedPalette'
@@ -466,27 +466,39 @@ describe('Stage 2 (feature/webgpu): Real-Time WebGPU Camera Pixel Art Studio, Pa
     render(<App />)
 
     // Verify getUserMedia is NEVER called before explicit user action!
-    const importMenuBtn = await screen.findByTestId('gallery-import-menu-btn')
-    fireEvent.click(importMenuBtn)
     const openCameraBtn = await screen.findByTestId('gallery-camera-capture-btn')
     expect(openCameraBtn.textContent).toContain('カメラから取り込む')
     fireEvent.click(openCameraBtn)
 
     await screen.findByTestId('camera-capture-modal')
     expect(getUserMediaCalls).toBe(0)
-    // Advanced settings are hidden by default for beginner friendliness
+    // Settings overlay AND advanced panel are collapsed by default so the large camera viewfinder dominates!
+    expect(screen.queryByTestId('camera-settings-overlay')).toBeNull()
     expect(screen.queryByTestId('camera-advanced-panel')).toBeNull()
+    expect(screen.getByTestId('camera-preview-stage').className).toContain('h-[56dvh]')
 
-    // Select 32x32 canvas size, Auto Palette (16 colors), and Retro mode
+    // Open translucent collapsible Settings overlay (`camera-settings-toggle-btn`) -> configure 32x32, Auto Palette (16 colors), Retro mode while live canvas stays mounted behind backdrop
+    fireEvent.click(screen.getByTestId('camera-settings-toggle-btn'))
+    expect(await screen.findByTestId('camera-settings-overlay')).toBeTruthy()
+    expect(screen.getByTestId('camera-settings-backdrop').className).toContain('bg-black/35')
+    expect(screen.getByTestId('camera-preview-canvas')).toBeTruthy()
+
     fireEvent.click(screen.getByTestId('camera-size-preset-32x32'))
     fireEvent.click(screen.getByTestId('camera-palette-mode-auto'))
     fireEvent.click(screen.getByTestId('camera-auto-count-16'))
     fireEvent.click(screen.getByTestId('camera-finish-retro'))
 
+    // Collapse settings back down via 1-tap collapse button so full viewfinder is unobstructed!
+    fireEvent.click(screen.getByTestId('camera-settings-collapse-btn'))
+    await waitFor(() => {
+      expect(screen.queryByTestId('camera-settings-overlay')).toBeNull()
+    })
+
     // Explicitly press Start Camera -> requests getUserMedia & locks auto-palette
     fireEvent.click(screen.getByTestId('camera-start-btn'))
 
-    await screen.findByTestId('camera-shutter-btn')
+    const shutterBtn = await screen.findByTestId('camera-shutter-btn')
+    expect(shutterBtn.className).toContain('min-h-[64px]')
     expect(getUserMediaCalls).toBe(1)
     expect(await screen.findByTestId('camera-palette-locked-badge')).toBeTruthy()
     // In JSDOM (no native WebGPU), honest Canvas 2D fallback badge is displayed
@@ -495,7 +507,7 @@ describe('Stage 2 (feature/webgpu): Real-Time WebGPU Camera Pixel Art Studio, Pa
     )
 
     // Press Capture -> stops MediaStreamTrack immediately, saves 1-frame 32x32 `indexed-v1` artwork, and transitions to `/editor/:id`!
-    fireEvent.click(screen.getByTestId('camera-shutter-btn'))
+    fireEvent.click(shutterBtn)
 
     await screen.findByTestId('workspace-tab-tools')
     expect(stopCalls).toBeGreaterThanOrEqual(1)
@@ -535,7 +547,6 @@ describe('Stage 2 (feature/webgpu): Real-Time WebGPU Camera Pixel Art Studio, Pa
 
     render(<App />)
 
-    fireEvent.click(await screen.findByTestId('gallery-import-menu-btn'))
     fireEvent.click(await screen.findByTestId('gallery-camera-capture-btn'))
     fireEvent.click(await screen.findByTestId('camera-start-btn'))
 

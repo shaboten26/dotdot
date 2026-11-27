@@ -579,14 +579,12 @@ describe('Stage 1: GIF Import (Still, Animated, Disposal 0-3, Resolution Restore
 
     render(<App />)
 
-    // Open Gallery Import Menu -> click GIF Import
+    // Open Gallery single Unified Import button (auto-detects PNG/GIF/Aseprite)
     const importMenuBtn = await screen.findByTestId('gallery-import-menu-btn')
     fireEvent.click(importMenuBtn)
-    const importGifBtn = await screen.findByTestId('gallery-import-gif-btn')
-    fireEvent.click(importGifBtn)
 
     const fileInput = (await screen.findByTestId(
-      'import-gif-file-input'
+      'unified-import-file-input'
     )) as HTMLInputElement
 
     // Create a 2-frame 8x8 dotdot GIF exported at 4x (32x32)
@@ -627,7 +625,7 @@ describe('Stage 1: GIF Import (Still, Animated, Disposal 0-3, Resolution Restore
     ).toContain('330')
 
     // Confirm import -> navigates directly to Editor with the new 2-frame 8x8 project!
-    fireEvent.click(screen.getByTestId('import-gif-confirm-btn'))
+    fireEvent.click(screen.getByTestId('unified-import-confirm-btn'))
     await screen.findByTestId('workspace-tab-tools')
 
     const projects = await db.projects.toArray()

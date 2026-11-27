@@ -1,5 +1,5 @@
 import { ViewTransition, useMemo, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
+import { motion } from 'motion/react'
 import type { AppSettings, ProjectRecord } from '../types'
 import { createNewProject, db } from '../db/database'
 import { exportEnvironmentPackZip } from '../db/envPack'
@@ -7,10 +7,8 @@ import { MAX_CANVAS_SIZE, MIN_CANVAS_SIZE } from '../engine/pixelBuffer'
 import { useApp } from '../state/AppContext'
 import { useI18n } from '../i18n/I18nContext'
 import { Modal } from '../components/common/Modal'
-import { ImportPngModal } from '../components/common/ImportPngModal'
-import { ImportGifModal } from '../components/common/ImportGifModal'
+import { UnifiedImportModal } from '../components/common/UnifiedImportModal'
 import { CameraCaptureModal } from '../components/common/CameraCaptureModal'
-import { ImportAsepriteModal } from '../components/common/AsepriteModals'
 import {
   PixelEmptyCanvasArt,
   PixelIcon,
@@ -58,10 +56,7 @@ export function GalleryPage() {
   const vtNavigate = useViewTransitionNavigate()
 
   const [newModalOpen, setNewModalOpen] = useState(false)
-  const [importMenuOpen, setImportMenuOpen] = useState(false)
-  const [importPngOpen, setImportPngOpen] = useState(false)
-  const [importGifOpen, setImportGifOpen] = useState(false)
-  const [importAseOpen, setImportAseOpen] = useState(false)
+  const [importModalOpen, setImportModalOpen] = useState(false)
   const [cameraCaptureOpen, setCameraCaptureOpen] = useState(false)
   const [newName, setNewName] = useState('')
   const [newW, setNewW] = useState(32)
@@ -229,88 +224,27 @@ export function GalleryPage() {
               <span>{t('newArtwork')}</span>
             </button>
 
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setImportMenuOpen((v) => !v)}
-                aria-expanded={importMenuOpen}
-                className={`min-h-[44px] px-2.5 text-xs font-bold flex items-center gap-1.5 ${
-                  importMenuOpen ? 'pixel-btn pixel-btn-teal' : 'pixel-btn'
-                }`}
-                data-testid="gallery-import-menu-btn"
-              >
-                <PixelIcon name="upload" size={15} />
-                <span className="hidden sm:inline">{t('importArtworkBtn')}</span>
-              </button>
+            <button
+              type="button"
+              onClick={() => setCameraCaptureOpen(true)}
+              title={t('cameraCaptureMenuBtn')}
+              className="pixel-btn pixel-btn-teal min-h-[44px] px-2.5 text-xs font-bold flex items-center gap-1.5"
+              data-testid="gallery-camera-capture-btn"
+            >
+              <PixelIcon name="camera" size={16} />
+              <span className="hidden md:inline">{t('cameraCaptureMenuBtn')}</span>
+            </button>
 
-              <AnimatePresence>
-                {importMenuOpen && (
-                  <>
-                    <div
-                      className="fixed inset-0 z-20"
-                      onClick={() => setImportMenuOpen(false)}
-                    />
-                    <motion.div
-                      initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: -6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
-                      transition={{ duration: reducedMotion ? 0 : 0.12 }}
-                      className="absolute right-0 top-full mt-1.5 z-30 w-56 pixel-panel p-2 space-y-1.5"
-                      data-testid="gallery-import-popover"
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setImportMenuOpen(false)
-                          setCameraCaptureOpen(true)
-                        }}
-                        className="w-full min-h-[40px] px-2.5 pixel-btn pixel-btn-teal flex items-center gap-2 text-xs font-bold text-left"
-                        data-testid="gallery-camera-capture-btn"
-                      >
-                        <PixelIcon name="camera" size={14} />
-                        <span>{t('cameraCaptureMenuBtn')}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setImportMenuOpen(false)
-                          setImportPngOpen(true)
-                        }}
-                        className="w-full min-h-[40px] px-2.5 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
-                        data-testid="gallery-import-png-btn"
-                      >
-                        <PixelIcon name="upload" size={14} />
-                        <span>{t('importPngTitle')}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setImportMenuOpen(false)
-                          setImportGifOpen(true)
-                        }}
-                        className="w-full min-h-[40px] px-2.5 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
-                        data-testid="gallery-import-gif-btn"
-                      >
-                        <PixelIcon name="film" size={14} />
-                        <span>{t('importGifTitle')}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setImportMenuOpen(false)
-                          setImportAseOpen(true)
-                        }}
-                        className="w-full min-h-[40px] px-2.5 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
-                        data-testid="gallery-import-aseprite-btn"
-                      >
-                        <PixelIcon name="aseprite" size={14} />
-                        <span>{t('importAsepriteTitle')}</span>
-                      </button>
-                    </motion.div>
-                  </>
-                )}
-              </AnimatePresence>
-            </div>
+            <button
+              type="button"
+              onClick={() => setImportModalOpen(true)}
+              title={t('importArtworkBtn')}
+              className="pixel-btn min-h-[44px] px-2.5 text-xs font-bold flex items-center gap-1.5"
+              data-testid="gallery-import-menu-btn"
+            >
+              <PixelIcon name="upload" size={15} />
+              <span className="hidden sm:inline">{t('importArtworkBtn')}</span>
+            </button>
 
             <VTButtonLink
               to="/settings"
@@ -787,37 +721,19 @@ export function GalleryPage() {
           </div>
         </Modal>
 
-        <ImportPngModal
-          open={importPngOpen}
-          onClose={() => setImportPngOpen(false)}
+        <UnifiedImportModal
+          open={importModalOpen}
+          onClose={() => setImportModalOpen(false)}
           checkerDark={settings.checkerboardDark}
-          allowImportAsLayer={false}
-          onCreatedProject={async (proj) => {
+          onCreatedProject={async (proj, kind) => {
             await refreshProjects()
-            showToast(t('importPngSuccessProject'), 'success')
-            vtNavigate(`/editor/${proj.id}`)
-          }}
-          onError={(msg) => showToast(msg, 'error')}
-        />
-
-        <ImportGifModal
-          open={importGifOpen}
-          onClose={() => setImportGifOpen(false)}
-          checkerDark={settings.checkerboardDark}
-          onCreatedProject={async (proj) => {
-            await refreshProjects()
-            showToast(t('toastImportedGif'), 'success')
-            vtNavigate(`/editor/${proj.id}`)
-          }}
-          onError={(msg) => showToast(msg, 'error')}
-        />
-
-        <ImportAsepriteModal
-          open={importAseOpen}
-          onClose={() => setImportAseOpen(false)}
-          onImportedProject={async (proj) => {
-            await refreshProjects()
-            showToast(t('toastImportedAseprite'), 'success')
+            if (kind === 'gif') {
+              showToast(t('toastImportedGif'), 'success')
+            } else if (kind === 'aseprite') {
+              showToast(t('toastImportedAseprite'), 'success')
+            } else {
+              showToast(t('importPngSuccessProject'), 'success')
+            }
             vtNavigate(`/editor/${proj.id}`)
           }}
           onError={(msg) => showToast(msg, 'error')}
