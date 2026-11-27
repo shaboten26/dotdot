@@ -9,7 +9,8 @@
 ## URL・リポジトリ・ブランチ構成
 
 - **GitHub リポジトリ**: `https://github.com/shaboten26/dotdot`
-  - **`main` ブランチ**: 全機能・全テスト検証済みの統合安定版 (`v2.6.0`)
+  - **`main` ブランチ**: 全機能・全テスト検証済みの統合安定版 (`v2.6.0` + GIF読み込み・同色選択初期値対応)
+  - **`feature/webgpu` ブランチ**: WebGPU リアルタイムカメラドット絵取り込みスタジオ（実験・専用機能ブランチ、`main` とは独立保持）
   - **`dev` ブランチ**: 継続開発・段階統合ブランチ（マージ後も保持）
   - **`feature/music` ブランチ**: 音楽変換実験ブランチ（`main` / `dev` とは分離保持）
 
@@ -45,6 +46,7 @@
 - **8bpp インデックスカラー Aseprite (`.ase` / `.aseprite`) オフライン入出力（リンクセル双方向保持）**
 - **PNG画像読み込み & 元ドット解像度の自動復元 (`dotdot-meta` / 整数ブロック検出)**
 - **GIF画像（静止画・アニメーション）読み込み & 元ドット解像度の自動復元 (`DOTDOTMT1.0` Application Extension / 全フレーム整数ブロック検出 / Disposal 0〜3・GCT/LCT・透明維持)**
+- **WebGPU リアルタイムカメラドット絵取り込み (`feature/webgpu`)**: WGSL Compute + Nearest-Neighbor Render パイプライン・CIELAB 固定/自動パレット（8〜255色・フレーム間ちらつき防止ロック）・「おまかせ（明暗＆量子化誤差連動） / くっきり / レトロ（4×4・8×8 Bayer）」ディザリング・Canvas 2D 誠実フォールバック（完全端末内処理・外部送信ゼロ）
 - **スプライトシート出力（PNG + Aseprite互換 JSONメタデータ独立出力）**
 - **完全オフライン純 TypeScript 製 GIF89a エンコーダ（元解像度メタデータ記録対応）& 長辺最大 4000px（初期 `floor(2000/長辺)` 倍）PNG/GIF 出力 & OS共有シート**
 - **パレットの CIELAB 知覚順並べ替え・色使用分析・リンクセル維持の色置換 & Lospec 公式 API パレット読込**
@@ -77,7 +79,7 @@
 
 | パス | 画面 | 説明 |
 | :--- | :--- | :--- |
-| `/` | `GalleryPage` | 標準ホーム（作品一覧・新規作成・PNG/GIF/Aseprite読み込み・ソート・並び替え・バックアップ／容量警告通知） |
+| `/` | `GalleryPage` | 標準ホーム（作品一覧・新規作成・カメラから取り込む・PNG/GIF/Aseprite読み込み・ソート・並び替え・バックアップ／容量警告通知） |
 | `/project/:id` | `ProjectDetailPage` | 作品閲覧画面（ソリッド背景プレビュー・左右スワイプ切替・PNG/GIF/スプライトシート/Aseprite出力・OS共有・複製・削除・「編集する」導線） |
 | `/editor/:id` | `EditorPage` | 指定作品の制作画面（1バイト・インデックスカラー描画・シンメトリー・タイル/シームレス・パレット整理/分析/色置換・PNG/Aseprite入出力・スプライトシート出力） |
 | `/editor` | `EditorPage` | 直近アクティブ作品の制作画面 |
@@ -91,7 +93,7 @@
 # TypeScript 厳格型チェック
 npm run typecheck
 
-# Vitest 単体・結合・UI E2E テスト実行（全16スイート・76テスト）
+# Vitest 単体・結合・UI E2E テスト実行（全18スイート・86テスト）
 npm test
 
 # 本番ビルド（PWAアイコン生成 → TypeScript/Viteビルド → オフラインSW dist/sw.js 生成）
