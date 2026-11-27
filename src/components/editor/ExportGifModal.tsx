@@ -380,13 +380,21 @@ export function ExportGifModal({
               </span>
               <div className="flex items-center gap-1.5">
                 <span className="text-xs font-mono font-bold">{matteColor}</span>
-                <input
-                  type="color"
-                  value={matteColor}
-                  onChange={(e) => setMatteColor(e.target.value.toUpperCase())}
-                  className="w-8 h-8 border-2 border-[var(--border-pixel)] cursor-pointer bg-transparent"
-                  data-testid="gif-matte-color-input"
-                />
+                <label className="relative w-8 h-8 border-2 border-[var(--border-pixel)] hover:border-[var(--border-strong)] cursor-pointer shrink-0 block">
+                  <span
+                    style={{ backgroundColor: matteColor }}
+                    className="block w-full h-full"
+                    aria-hidden="true"
+                  />
+                  <input
+                    type="color"
+                    value={matteColor}
+                    aria-label={t('gifMatteColorLabel')}
+                    onChange={(e) => setMatteColor(e.target.value.toUpperCase())}
+                    className="sr-only"
+                    data-testid="gif-matte-color-input"
+                  />
+                </label>
               </div>
             </div>
           )}

@@ -1,5 +1,18 @@
 import 'fake-indexeddb/auto'
 
+// Default jsdom navigator locale to Japanese ('ja-JP') for existing Japanese UI assertions;
+// individual language-detection tests explicitly test en / ko / fr / unknown locales.
+if (typeof navigator !== 'undefined') {
+  Object.defineProperty(navigator, 'language', {
+    value: 'ja-JP',
+    configurable: true,
+  })
+  Object.defineProperty(navigator, 'languages', {
+    value: ['ja-JP', 'ja'],
+    configurable: true,
+  })
+}
+
 // Minimal Canvas/ImageData polyfill for jsdom unit tests when needed
 if (typeof globalThis.ImageData === 'undefined') {
   class PolyfillImageData {

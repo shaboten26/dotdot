@@ -8,8 +8,8 @@ export interface I18nContextValue {
 }
 
 export const I18nContext = createContext<I18nContextValue>({
-  language: 'ja',
-  t: (key) => translate('ja', key),
+  language: 'en',
+  t: (key) => translate('en', key),
 })
 
 export function useI18n(): I18nContextValue {

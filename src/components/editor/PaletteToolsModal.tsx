@@ -17,6 +17,7 @@ import {
 } from '../../engine/paletteTools'
 import { normalizeHex } from '../../engine/color'
 import { Modal } from '../common/Modal'
+import { PixelCheckbox } from '../common/PixelCheckbox'
 import { PixelIcon } from '../common/PixelIcon'
 import { PixelSlider } from '../common/PixelSlider'
 import { getCheckerboardStyle } from '../common/PixelThumbnail'
@@ -475,7 +476,7 @@ export function PaletteToolsModal({
                     #{clampedStartIdx + 1} {rampStartHex}
                   </span>
                 </div>
-                <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto p-1.5 bg-[var(--bg-panel)] border border-[var(--border-subtle)]">
+                <div className="flex flex-wrap gap-1 max-h-14 overflow-y-auto p-1 bg-[var(--bg-panel)] border border-[var(--border-subtle)]">
                   {palette.colors.map((hex, idx) => {
                     const active = idx === clampedStartIdx
                     return (
@@ -505,7 +506,7 @@ export function PaletteToolsModal({
                     #{clampedEndIdx + 1} {rampEndHex}
                   </span>
                 </div>
-                <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto p-1.5 bg-[var(--bg-panel)] border border-[var(--border-subtle)]">
+                <div className="flex flex-wrap gap-1 max-h-14 overflow-y-auto p-1 bg-[var(--bg-panel)] border border-[var(--border-subtle)]">
                   {palette.colors.map((hex, idx) => {
                     const active = idx === clampedEndIdx
                     return (
@@ -987,7 +988,7 @@ export function PaletteToolsModal({
                 })}
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <input
                   type="text"
                   value={customTargetHex}
@@ -1003,14 +1004,13 @@ export function PaletteToolsModal({
                   data-testid="replace-custom-hex-input"
                 />
                 {replaceScope === 'project' && targetHex !== 'transparent' && (
-                  <label className="flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)] cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={syncSwatchOnReplace}
-                      onChange={(e) => setSyncSwatchOnReplace(e.target.checked)}
-                    />
-                    <span>パレット枠の色も同時更新</span>
-                  </label>
+                  <PixelCheckbox
+                    checked={syncSwatchOnReplace}
+                    onChange={setSyncSwatchOnReplace}
+                    label={t('paletteReplaceSyncSwatchLabel')}
+                    size={18}
+                    testId="replace-sync-swatch-checkbox"
+                  />
                 )}
               </div>
             </div>

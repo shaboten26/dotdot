@@ -14,6 +14,7 @@ import {
   type FrameMeta,
   type LayerPixelRecord,
   type LayerRuntime,
+  type LanguageCode,
   type LightThemeVariantId,
   type MigrationStateRecord,
   type PaletteData,
@@ -347,12 +348,46 @@ export const VALID_DARK_THEME_VARIANTS: ReadonlyArray<DarkThemeVariantId> = [
   'amber-crt',
 ]
 
+export function detectPreferredLanguage(
+  rawLocales?: readonly string[] | string | null
+): LanguageCode {
+  const candidates: string[] = []
+  if (Array.isArray(rawLocales)) {
+    for (const item of rawLocales) {
+      if (typeof item === 'string' && item.trim()) {
+        candidates.push(item.trim().toLowerCase())
+      }
+    }
+  } else if (typeof rawLocales === 'string' && rawLocales.trim()) {
+    candidates.push(rawLocales.trim().toLowerCase())
+  } else if (typeof navigator !== 'undefined') {
+    if (Array.isArray(navigator.languages)) {
+      for (const item of navigator.languages) {
+        if (typeof item === 'string' && item.trim()) {
+          candidates.push(item.trim().toLowerCase())
+        }
+      }
+    }
+    if (typeof navigator.language === 'string' && navigator.language.trim()) {
+      candidates.push(navigator.language.trim().toLowerCase())
+    }
+  }
+
+  for (const tag of candidates) {
+    const primary = tag.split(/[-_]/)[0]
+    if (primary === 'ja') return 'ja'
+    if (primary === 'ko') return 'ko'
+    if (primary === 'en') return 'en'
+  }
+  return 'en'
+}
+
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   id: 'app-settings',
   theme: 'system',
   lightThemeVariant: 'lavender-cream',
   darkThemeVariant: 'dusk-plum',
-  language: 'ja',
+  language: detectPreferredLanguage(),
   historyLimit: 'unlimited',
   historyLimitCustomized: false,
   lowStorageSnoozedUntil: null,
@@ -604,10 +639,16 @@ export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSett
       ? raw.preferredSelectType
       : 'wand'
 
+  const language: LanguageCode =
+    raw?.language === 'ja' || raw?.language === 'en' || raw?.language === 'ko'
+      ? raw.language
+      : detectPreferredLanguage()
+
   return {
     ...DEFAULT_APP_SETTINGS,
     ...(raw ?? {}),
     id: 'app-settings',
+    language,
     lightThemeVariant,
     darkThemeVariant,
     historyLimit,

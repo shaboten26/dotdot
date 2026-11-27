@@ -38,9 +38,11 @@ import { encodeAsepriteBytes, parseAsepriteBytes } from '../engine/aseprite'
 import {
   createNewProject,
   db,
+  detectPreferredLanguage,
   DotDotDatabase,
   initializeDatabase,
   loadProjectFull,
+  normalizeAppSettings,
   resetAllAppData,
 } from '../db/database'
 import { migrateDatabaseToIndexedColor } from '../db/indexedMigration'
@@ -881,6 +883,15 @@ describe('v2.5.0+ UI Integration: Stamp Withdrawal, Indexed Palette Safe Deletio
     expect(cleaned.removedCount).toBe(5)
     expect(cleaned.palette.colors).toEqual(['#FF0055'])
 
+    // Verify browser locale auto-detection (Japanese -> 'ja', Korean -> 'ko', English -> 'en', unknown/other -> 'en')
+    expect(detectPreferredLanguage(['ja-JP'])).toBe('ja')
+    expect(detectPreferredLanguage(['ko-KR', 'en-US'])).toBe('ko')
+    expect(detectPreferredLanguage(['en-GB'])).toBe('en')
+    expect(detectPreferredLanguage(['fr-FR', 'de-DE'])).toBe('en')
+    expect(detectPreferredLanguage([])).toBe('en')
+    expect(detectPreferredLanguage(null)).toBe('ja') // falls back to test navigator ('ja-JP')
+    expect(normalizeAppSettings({ language: 'unknown' as never }).language).toBe('ja')
+
     // Verify legacy removed variant ID gracefully resolves to default theme tokens
     expect(
       resolveActiveThemeTokens(false, 'milk-lilac' as never, 'dusk-plum')['--bg-app']
@@ -930,25 +941,34 @@ describe('v2.5.0+ UI Integration: Stamp Withdrawal, Indexed Palette Safe Deletio
 
     fireEvent.click(screen.getByTestId('close-global-editor-settings-btn'))
 
-    // Open PaletteSheet -> test direct `＋中間色・明暗` button (`palette-open-create-tools-btn`)
+    // Open PaletteSheet -> verify single unified button (`palette-open-tools-btn`) & NO duplicate `palette-open-create-tools-btn`
     const openPaletteBtn = screen.getByTestId('open-palette-btn')
     fireEvent.click(openPaletteBtn)
+    expect(screen.queryByTestId('palette-open-create-tools-btn')).toBeNull()
 
-    const openCreateToolsBtn = await screen.findByTestId(
-      'palette-open-create-tools-btn'
-    )
-    fireEvent.click(openCreateToolsBtn)
+    const openToolsBtn = await screen.findByTestId('palette-open-tools-btn')
+    fireEvent.click(openToolsBtn)
+    expect(await screen.findByTestId('palette-tools-modal')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('palette-sort-light-asc'))
+    expect(await screen.findByTestId('palette-restore-original-btn')).toBeTruthy()
+
+    // Switch to `色生成・中間色` (`create`) tab -> close (`×`) button stays pinned & accessible
+    fireEvent.click(screen.getByTestId('palette-tools-tab-create'))
     expect(await screen.findByTestId('palette-create-panel')).toBeTruthy()
+    expect(screen.getAllByTestId('modal-close-btn').length).toBeGreaterThanOrEqual(2)
     fireEvent.click(screen.getByTestId('palette-insert-ramp-btn'))
     fireEvent.click(screen.getByTestId('palette-add-tone-pair-btn'))
 
-    // Switch to Sort & Analyze tabs inside PaletteToolsModal
-    fireEvent.click(screen.getByTestId('palette-tools-tab-sort'))
-    fireEvent.click(screen.getByTestId('palette-sort-light-asc'))
-    expect(await screen.findByTestId('palette-restore-original-btn')).toBeTruthy()
+    // Switch to Analyze & Replace tabs -> verify ZERO native input[type="checkbox"] and PixelCheckbox (`role="checkbox"`) in Replace tab!
     fireEvent.click(screen.getByTestId('palette-tools-tab-analyze'))
     expect(await screen.findByTestId('palette-analyze-panel')).toBeTruthy()
     expect(screen.getByTestId('palette-cleanup-unused-btn')).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId('palette-tools-tab-replace'))
+    expect(await screen.findByTestId('palette-replace-panel')).toBeTruthy()
+    const syncCheckbox = screen.getByTestId('replace-sync-swatch-checkbox')
+    expect(syncCheckbox.getAttribute('role')).toBe('checkbox')
+    expect(document.querySelector('input[type="checkbox"]')).toBeNull()
 
     // Navigate to Settings -> verify PixelSlider cursor speed & 6 Light + 6 Dark distinct retro themes!
     window.history.pushState({}, '', '/settings')

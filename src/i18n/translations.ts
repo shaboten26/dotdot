@@ -611,8 +611,8 @@ export const TRANSLATIONS = {
     importSummaryStamps: 'スタンプ数',
 
     // v2.5.0: Palette Sort, Analysis & Color Replace
-    paletteOrganizeBtn: '整理・分析',
-    paletteToolsTitle: 'パレット整理・色分析・色置換',
+    paletteOrganizeBtn: 'パレット機能',
+    paletteToolsTitle: 'パレット整理・色生成・色分析・色置換',
     paletteTabSort: '並べ替え',
     paletteTabAnalyze: '色分析',
     paletteTabReplace: '色置換',
@@ -637,6 +637,7 @@ export const TRANSLATIONS = {
     paletteReplaceScopeLayer: '現在のレイヤー（現フレーム）',
     paletteReplaceTransparentSlot: '透明（消去）',
     paletteReplacePreviewCount: '対象ドット数（推定）',
+    paletteReplaceSyncSwatchLabel: 'パレット枠の色も同時更新',
     paletteReplaceExecBtn: '色を置換する',
     paletteReplacedMsg: '色を置換しました（Undo可能）',
 
@@ -1447,8 +1448,8 @@ export const TRANSLATIONS = {
     importSummaryStamps: 'Stamps',
 
     // v2.5.0: Palette Sort, Analysis & Color Replace
-    paletteOrganizeBtn: 'Sort & Info',
-    paletteToolsTitle: 'Palette Sort, Analysis & Color Replace',
+    paletteOrganizeBtn: 'Palette Tools',
+    paletteToolsTitle: 'Palette Sort, Color Gen, Analysis & Replace',
     paletteTabSort: 'Sort',
     paletteTabAnalyze: 'Analyze',
     paletteTabReplace: 'Replace',
@@ -1473,6 +1474,7 @@ export const TRANSLATIONS = {
     paletteReplaceScopeLayer: 'Active Layer (Current Frame)',
     paletteReplaceTransparentSlot: 'Transparent (Erase)',
     paletteReplacePreviewCount: 'Matching Pixels',
+    paletteReplaceSyncSwatchLabel: 'Also update palette swatch color',
     paletteReplaceExecBtn: 'Replace Color',
     paletteReplacedMsg: 'Color replaced (Undoable)',
 
@@ -2283,8 +2285,8 @@ export const TRANSLATIONS = {
     importSummaryStamps: '스탬프 수',
 
     // v2.5.0: Palette Sort, Analysis & Color Replace
-    paletteOrganizeBtn: '정리·분석',
-    paletteToolsTitle: '팔레트 정렬 · 색상 분석 · 색상 치환',
+    paletteOrganizeBtn: '팔레트 도구',
+    paletteToolsTitle: '팔레트 정렬 · 색상 생성 · 분석 · 치환',
     paletteTabSort: '정렬',
     paletteTabAnalyze: '색상 분석',
     paletteTabReplace: '색상 치환',
@@ -2309,6 +2311,7 @@ export const TRANSLATIONS = {
     paletteReplaceScopeLayer: '현재 레이어 (현재 프레임)',
     paletteReplaceTransparentSlot: '투명 (지우기)',
     paletteReplacePreviewCount: '대상 도트 수',
+    paletteReplaceSyncSwatchLabel: '팔레트 칸 색상도 함께 변경',
     paletteReplaceExecBtn: '색상 치환 실행',
     paletteReplacedMsg: '색상을 치환했습니다 (취소 가능)',
 
@@ -2537,5 +2540,5 @@ export const TRANSLATIONS = {
 export type TranslationKey = keyof (typeof TRANSLATIONS)['ja']
 
 export function translate(lang: LanguageCode, key: TranslationKey): string {
-  return TRANSLATIONS[lang]?.[key] ?? TRANSLATIONS.ja[key]
+  return TRANSLATIONS[lang]?.[key] ?? TRANSLATIONS.en[key] ?? TRANSLATIONS.ja[key]
 }

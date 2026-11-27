@@ -865,13 +865,21 @@ export function UnifiedExportModal({
               {t('exportJpegBgLabel')}
             </span>
             <div className="flex items-center gap-2">
-              <input
-                type="color"
-                value={jpegBgColor}
-                onChange={(e) => setJpegBgColor(e.target.value)}
-                className="w-8 h-8 border-2 border-[var(--border-pixel)] cursor-pointer bg-transparent"
-                data-testid="export-jpeg-bg-input"
-              />
+              <label className="relative w-8 h-8 border-2 border-[var(--border-pixel)] hover:border-[var(--border-strong)] cursor-pointer shrink-0 block">
+                <span
+                  style={{ backgroundColor: jpegBgColor }}
+                  className="block w-full h-full"
+                  aria-hidden="true"
+                />
+                <input
+                  type="color"
+                  value={jpegBgColor}
+                  aria-label={t('exportJpegBgLabel')}
+                  onChange={(e) => setJpegBgColor(e.target.value)}
+                  className="sr-only"
+                  data-testid="export-jpeg-bg-input"
+                />
+              </label>
               <span className="font-mono text-[11px] font-bold">
                 {jpegBgColor.toUpperCase()}
               </span>
@@ -935,12 +943,25 @@ export function UnifiedExportModal({
                 <span className="text-[11px] font-bold text-[var(--text-secondary)]">
                   {t('gifMatteColorLabel')}
                 </span>
-                <input
-                  type="color"
-                  value={gifMatteColor}
-                  onChange={(e) => setGifMatteColor(e.target.value)}
-                  className="w-8 h-7 border-2 border-[var(--border-pixel)] cursor-pointer"
-                />
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono text-[11px] font-bold">
+                    {gifMatteColor.toUpperCase()}
+                  </span>
+                  <label className="relative w-8 h-7 border-2 border-[var(--border-pixel)] hover:border-[var(--border-strong)] cursor-pointer shrink-0 block">
+                    <span
+                      style={{ backgroundColor: gifMatteColor }}
+                      className="block w-full h-full"
+                      aria-hidden="true"
+                    />
+                    <input
+                      type="color"
+                      value={gifMatteColor}
+                      aria-label={t('gifMatteColorLabel')}
+                      onChange={(e) => setGifMatteColor(e.target.value)}
+                      className="sr-only"
+                    />
+                  </label>
+                </div>
               </div>
             )}
           </div>
