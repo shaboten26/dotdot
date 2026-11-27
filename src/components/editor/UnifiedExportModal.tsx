@@ -1082,27 +1082,27 @@ export function UnifiedExportModal({
         )}
 
         {/* Primary Download + Share Actions */}
-        <div className="grid grid-cols-2 gap-2.5 pt-1">
+        <div className="grid grid-cols-1 min-[380px]:grid-cols-2 gap-2.5 pt-1">
           <button
             type="button"
             disabled={encoding}
             onClick={() => void handleDownload()}
-            className="min-h-[46px] px-3 pixel-btn pixel-btn-active text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
+            className="min-h-[46px] min-w-0 px-3 pixel-btn pixel-btn-active text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
             data-testid="unified-export-download-btn"
           >
             <PixelIcon name="download" size={16} />
-            <span>{t('exportSaveFileBtn')}</span>
+            <span className="truncate">{t('exportSaveFileBtn')}</span>
           </button>
 
           <button
             type="button"
             disabled={encoding}
             onClick={() => void handleShare()}
-            className="min-h-[46px] px-3 pixel-btn pixel-btn-teal text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
+            className="min-h-[46px] min-w-0 px-3 pixel-btn pixel-btn-teal text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
             data-testid="unified-export-share-btn"
           >
             <PixelIcon name="share" size={16} />
-            <span>{t('exportShareFileBtn')}</span>
+            <span className="truncate">{t('exportShareFileBtn')}</span>
           </button>
         </div>
 

@@ -701,18 +701,18 @@ export function ProjectDetailPage() {
               <span>{t('openInEditor')}</span>
             </button>
 
-            <div className="grid grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-1 min-[360px]:grid-cols-2 gap-2.5">
               <button
                 type="button"
                 onClick={() => setExportOpen(true)}
-                className="min-h-[48px] px-2.5 pixel-btn pixel-btn-teal text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
+                className="min-h-[48px] px-2.5 pixel-btn pixel-btn-teal text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 min-w-0"
                 data-testid="detail-export-btn"
               >
                 <PixelIcon
                   name={isAnimationArtwork ? 'film' : 'download'}
-                  size={16}
+                  size={15}
                 />
-                <span>
+                <span className="truncate">
                   {isAnimationArtwork
                     ? t('exportAnimationBtn')
                     : t('exportImageBtn')}
@@ -722,17 +722,19 @@ export function ProjectDetailPage() {
               <button
                 type="button"
                 onClick={() => void handleDuplicateArtwork()}
-                className="min-h-[48px] px-2.5 pixel-btn text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5"
+                className="min-h-[48px] px-2.5 pixel-btn text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 min-w-0"
                 data-testid="detail-duplicate-btn"
               >
-                <PixelIcon name="copy" size={16} />
-                <span>{t('duplicate')}</span>
+                <PixelIcon name="copy" size={15} />
+                <span className="truncate">{t('duplicate')}</span>
               </button>
             </div>
 
             <div
               className={`grid gap-2.5 ${
-                isAnimationArtwork ? 'grid-cols-2' : 'grid-cols-1'
+                isAnimationArtwork
+                  ? 'grid-cols-1 min-[420px]:grid-cols-2'
+                  : 'grid-cols-1'
               }`}
             >
               {isAnimationArtwork && (
@@ -740,11 +742,11 @@ export function ProjectDetailPage() {
                   type="button"
                   disabled={!timeline || layers.length === 0}
                   onClick={() => setExportSpriteOpen(true)}
-                  className="min-h-[42px] px-2.5 pixel-btn text-xs font-bold flex items-center justify-center gap-1.5"
+                  className="min-h-[42px] px-2.5 pixel-btn text-xs font-bold flex items-center justify-center gap-1.5 min-w-0"
                   data-testid="detail-export-spritesheet-btn"
                 >
                   <PixelIcon name="sheet" size={14} />
-                  <span>{t('exportSpriteSheet')}</span>
+                  <span className="truncate">{t('exportSpriteSheet')}</span>
                 </button>
               )}
 
@@ -752,11 +754,11 @@ export function ProjectDetailPage() {
                 type="button"
                 disabled={!timeline || layers.length === 0}
                 onClick={() => setExportAseOpen(true)}
-                className="min-h-[42px] px-2.5 pixel-btn text-xs font-bold flex items-center justify-center gap-1.5"
+                className="min-h-[42px] px-2.5 pixel-btn text-xs font-bold flex items-center justify-center gap-1.5 min-w-0"
                 data-testid="detail-export-aseprite-btn"
               >
                 <PixelIcon name="aseprite" size={14} />
-                <span>{t('exportAseprite')}</span>
+                <span className="truncate">{t('exportAseprite')}</span>
               </button>
             </div>
           </div>

@@ -264,19 +264,19 @@ export function SettingsPage() {
 
   return (
     <ViewTransition>
-      <div className="min-h-dvh w-full flex flex-col bg-[var(--bg-app)] pl-safe pr-safe">
+      <div className="min-h-dvh w-full max-w-[100vw] overflow-x-hidden flex flex-col bg-[var(--bg-app)] pl-safe pr-safe">
         {/* Top Bar */}
-        <header className="sticky top-0 z-20 px-3.5 py-2.5 pt-safe bg-[var(--bg-surface)] border-b-2 border-[var(--border-pixel)] flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
+        <header className="sticky top-0 z-20 px-3 sm:px-3.5 py-2.5 pt-safe bg-[var(--bg-surface)] border-b-2 border-[var(--border-pixel)] flex items-center justify-between gap-2 overflow-hidden">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
             <VTButtonLink
               to="/"
-              className="pixel-btn min-h-[44px] px-3 text-xs font-bold flex items-center gap-1.5"
+              className="pixel-btn min-h-[44px] px-2.5 sm:px-3 text-xs font-bold flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shrink-0"
               data-testid="settings-to-gallery-btn"
             >
               <PixelIcon name="back" size={16} />
-              <span>{t('back')}</span>
+              <span className="whitespace-nowrap">{t('back')}</span>
             </VTButtonLink>
-            <h1 className="text-base sm:text-lg font-bold tracking-wide">
+            <h1 className="text-sm sm:text-lg font-bold tracking-wide truncate min-w-0">
               {t('settingsTitle')}
             </h1>
           </div>
@@ -284,16 +284,16 @@ export function SettingsPage() {
           {settings.activeProjectId && projects.length > 0 && (
             <VTButtonLink
               to={`/editor/${settings.activeProjectId}`}
-              className="pixel-btn pixel-btn-active min-h-[44px] px-3 text-xs font-bold flex items-center gap-1.5"
+              className="pixel-btn pixel-btn-active min-h-[44px] px-2.5 sm:px-3 text-xs font-bold flex items-center gap-1 sm:gap-1.5 whitespace-nowrap shrink-0"
               data-testid="settings-to-editor-btn"
             >
-              <PixelIcon name="pen" size={16} />
-              <span>{t('navEditor')}</span>
+              <PixelIcon name="pen" size={15} />
+              <span className="whitespace-nowrap">{t('navEditor')}</span>
             </VTButtonLink>
           )}
         </header>
 
-        <main className="flex-1 max-w-3xl w-full mx-auto p-3.5 sm:p-4 pb-12 pb-safe space-y-5">
+        <main className="flex-1 max-w-3xl w-full min-w-0 mx-auto p-3.5 sm:p-4 pb-12 pb-safe space-y-5 overflow-x-hidden">
           {/* 1. Theme (Light / Dark / System + Collapsible Sub-Theme Variants) & Language */}
           <section className="pixel-card p-4 space-y-4">
             <SectionTitle icon="sparkle" title={t('sectionAppearance')} />
@@ -503,13 +503,16 @@ export function SettingsPage() {
           </section>
 
           {/* 2. UI Size Customization + Live UI Preview */}
-          <section className="pixel-card p-4 space-y-4" data-testid="ui-size-section">
-            <div className="flex flex-wrap items-center justify-between gap-2">
+          <section
+            className="pixel-card p-4 space-y-4 overflow-hidden"
+            data-testid="ui-size-section"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
               <SectionTitle icon="resize" title={t('sectionUiSize')} />
               <button
                 type="button"
                 onClick={() => void updateUiSize({ ...DEFAULT_UI_SIZE_CONFIG })}
-                className="pixel-btn min-h-[36px] px-2.5 text-xs font-bold"
+                className="pixel-btn min-h-[36px] px-2.5 text-xs font-bold whitespace-nowrap shrink-0"
                 data-testid="ui-size-reset-btn"
               >
                 {t('uiResetDefaults')}
@@ -1110,22 +1113,22 @@ export function SettingsPage() {
           )}
 
           {/* 4. Palette Library Manager (Max 255 Opaque Colors) */}
-          <section className="pixel-card p-4 space-y-3">
-            <div className="flex items-center justify-between gap-2">
+          <section className="pixel-card p-4 space-y-3 overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 min-w-0">
               <SectionTitle
                 icon="palette"
                 title={`${t('sectionPaletteLibrary')} (${palettes.length})`}
               />
 
-              <div className="flex flex-wrap items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5 min-w-0">
                 <button
                   type="button"
                   onClick={() => setLospecLibOpen(true)}
-                  className="pixel-btn pixel-btn-teal min-h-[40px] px-3 text-xs font-bold flex items-center gap-1"
+                  className="pixel-btn pixel-btn-teal min-h-[40px] px-2.5 sm:px-3 text-xs font-bold flex items-center gap-1 min-w-0"
                   data-testid="settings-lospec-import-btn"
                 >
                   <PixelIcon name="download" size={14} />
-                  <span>{t('lospecImportBtn')}</span>
+                  <span className="truncate">{t('lospecImportBtn')}</span>
                 </button>
 
                 <button
@@ -1138,11 +1141,11 @@ export function SettingsPage() {
                     setEditingPalette(created)
                     setEditingColorIdx(0)
                   }}
-                  className="pixel-btn pixel-btn-active min-h-[40px] px-3 text-xs font-bold flex items-center gap-1"
+                  className="pixel-btn pixel-btn-active min-h-[40px] px-2.5 sm:px-3 text-xs font-bold flex items-center gap-1 min-w-0"
                   data-testid="settings-add-palette-btn"
                 >
                   <PixelIcon name="plus" size={14} />
-                  <span>{t('newPalette')}</span>
+                  <span className="truncate">{t('newPalette')}</span>
                 </button>
               </div>
             </div>
@@ -1679,10 +1682,19 @@ function UiSliderRow({
   onChange: (next: number) => void
 }) {
   return (
-    <div className="flex items-center justify-between gap-2.5">
-      <span className="text-xs text-[var(--text-primary)] min-w-[120px] shrink-0">
-        {label}
-      </span>
+    <div
+      className="w-full min-w-0 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3 py-0.5"
+      data-testid="ui-size-slider-row"
+    >
+      <div className="flex items-center justify-between gap-2 min-w-0 sm:w-[150px] sm:shrink-0">
+        <span className="text-xs text-[var(--text-primary)] truncate min-w-0">
+          {label}
+        </span>
+        <span className="sm:hidden text-xs font-mono font-bold text-[var(--accent-primary)] whitespace-nowrap shrink-0">
+          {value}
+          {unit}
+        </span>
+      </div>
       <PixelSlider
         min={min}
         max={max}
@@ -1691,9 +1703,9 @@ function UiSliderRow({
         unit={unit}
         ariaLabel={label}
         onChange={onChange}
-        className="flex-1 max-w-[220px]"
+        className="w-full min-w-0 sm:flex-1"
       />
-      <span className="w-12 text-right text-xs font-bold shrink-0">
+      <span className="hidden sm:inline-block w-14 text-right text-xs font-mono font-bold whitespace-nowrap shrink-0">
         {value}
         {unit}
       </span>

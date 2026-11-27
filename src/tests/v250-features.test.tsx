@@ -1151,11 +1151,25 @@ describe('v2.5.0+ UI Integration: Stamp Withdrawal, Indexed Palette Safe Deletio
       expect(quickPlayBtn.getAttribute('aria-pressed')).toBe('false')
       expect(countOpaque(lastMainImageData)).toBeGreaterThan(0)
 
-      // Verify Settings brand icon & wordmark
+      // Verify Settings brand icon & wordmark + non-overflowing UI size sliders & single-line buttons
       window.history.pushState({}, '', '/settings')
       fireEvent(window, new PopStateEvent('popstate'))
       expect(await screen.findByTestId('settings-app-icon')).toBeTruthy()
       expect(screen.getByTestId('settings-app-wordmark')).toBeTruthy()
+
+      const uiSizeSection = screen.getByTestId('ui-size-section')
+      expect(uiSizeSection.className).toContain('overflow-hidden')
+      const sliderRows = screen.getAllByTestId('ui-size-slider-row')
+      expect(sliderRows.length).toBeGreaterThanOrEqual(8)
+      for (const row of sliderRows) {
+        expect(row.className).toContain('min-w-0')
+      }
+
+      // Return to Gallery (which now has artworks) and verify `new-artwork-btn` is strictly `whitespace-nowrap`
+      window.history.pushState({}, '', '/')
+      fireEvent(window, new PopStateEvent('popstate'))
+      const newArtworkBtn = await screen.findByTestId('new-artwork-btn')
+      expect(newArtworkBtn.className).toContain('whitespace-nowrap')
     } finally {
       HTMLCanvasElement.prototype.getContext = origGetContext
     }

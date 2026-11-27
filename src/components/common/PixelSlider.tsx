@@ -171,7 +171,7 @@ export function PixelSlider({
         onKeyDown={handleKeyDown}
         style={{ touchAction: 'none' }}
         data-testid={testId}
-        className={`relative flex-1 min-w-[72px] flex items-center min-h-[36px] py-2 select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-primary)] ${
+        className={`relative flex-1 min-w-[48px] flex items-center min-h-[36px] py-2 select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-primary)] ${
           disabled ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer'
         }`}
       >

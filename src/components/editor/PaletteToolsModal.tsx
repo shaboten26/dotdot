@@ -319,49 +319,49 @@ export function PaletteToolsModal({
           <button
             type="button"
             onClick={() => setTab('sort')}
-            className={`min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1 ${
+            className={`min-h-[38px] min-w-0 px-2 text-xs font-bold flex items-center justify-center gap-1 ${
               tab === 'sort' ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
             }`}
             data-testid="palette-tools-tab-sort"
           >
             <PixelIcon name="palette" size={13} />
-            <span>{t('paletteTabSort')}</span>
+            <span className="truncate">{t('paletteTabSort')}</span>
           </button>
           <button
             type="button"
             onClick={() => setTab('create')}
-            className={`min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1 ${
+            className={`min-h-[38px] min-w-0 px-2 text-xs font-bold flex items-center justify-center gap-1 ${
               tab === 'create' ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
             }`}
             data-testid="palette-tools-tab-create"
           >
             <PixelIcon name="plus" size={13} />
-            <span>{t('paletteTabCreate')}</span>
+            <span className="truncate">{t('paletteTabCreate')}</span>
           </button>
           {hasArtworkContext && (
             <>
               <button
                 type="button"
                 onClick={() => setTab('analyze')}
-                className={`min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1 ${
+                className={`min-h-[38px] min-w-0 px-2 text-xs font-bold flex items-center justify-center gap-1 ${
                   tab === 'analyze' ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
                 }`}
                 data-testid="palette-tools-tab-analyze"
               >
                 <PixelIcon name="sparkle" size={13} />
-                <span>{t('paletteTabAnalyze')}</span>
+                <span className="truncate">{t('paletteTabAnalyze')}</span>
               </button>
               <button
                 type="button"
                 onClick={() => setTab('replace')}
                 disabled={!onReplaceColor}
-                className={`min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1 ${
+                className={`min-h-[38px] min-w-0 px-2 text-xs font-bold flex items-center justify-center gap-1 ${
                   tab === 'replace' ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
                 }`}
                 data-testid="palette-tools-tab-replace"
               >
                 <PixelIcon name="replace" size={13} />
-                <span>{t('paletteTabReplace')}</span>
+                <span className="truncate">{t('paletteTabReplace')}</span>
               </button>
             </>
           )}

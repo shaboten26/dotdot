@@ -201,65 +201,69 @@ export function GalleryPage() {
     <ViewTransition>
       <div className="min-h-dvh w-full flex flex-col bg-[var(--bg-app)] pl-safe pr-safe">
         {/* Retro Pixel Header */}
-        <header className="sticky top-0 z-20 px-3.5 py-2.5 pt-safe bg-[var(--bg-surface)] border-b-2 border-[var(--border-pixel)] flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5">
+        <header className="sticky top-0 z-20 px-3 sm:px-3.5 py-2.5 pt-safe bg-[var(--bg-surface)] border-b-2 border-[var(--border-pixel)] flex items-center justify-between gap-2 overflow-hidden">
+          <div className="flex items-center gap-2 min-w-0 shrink">
             <DotDotAppIcon
-              size={32}
-              className="border-2 border-[var(--border-pixel)]"
+              size={30}
+              className="border-2 border-[var(--border-pixel)] shrink-0"
               testId="gallery-header-app-icon"
             />
-            <div className="flex flex-col justify-center gap-0.5">
+            <div className="flex flex-col justify-center gap-0.5 min-w-0">
               <h1 className="m-0 leading-none flex items-center">
                 <span className="sr-only">{t('appName')}</span>
                 <DotDotWordmark
-                  height={15}
+                  height={14}
                   color="var(--accent-rose)"
+                  className="hidden min-[360px]:block"
                   testId="gallery-header-wordmark"
                 />
+                <span className="min-[360px]:hidden text-xs font-bold tracking-wide truncate">
+                  {t('appName')}
+                </span>
               </h1>
-              <span className="text-[10px] text-[var(--text-secondary)] leading-none">
+              <span className="text-[10px] text-[var(--text-secondary)] leading-none truncate hidden min-[380px]:block">
                 {t('galleryTitle')}
               </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 relative">
+          <div className="flex items-center gap-1.5 sm:gap-2 relative shrink-0">
             <button
               type="button"
               onClick={openNewProjectModal}
-              className="pixel-btn pixel-btn-active min-h-[44px] px-3.5 text-xs font-bold flex items-center gap-1.5"
+              className="pixel-btn pixel-btn-active min-h-[44px] px-2.5 sm:px-3.5 text-xs font-bold flex items-center justify-center gap-1 sm:gap-1.5 whitespace-nowrap shrink-0"
               data-testid="new-artwork-btn"
             >
-              <PixelIcon name="plus" size={16} />
-              <span>{t('newArtwork')}</span>
+              <PixelIcon name="plus" size={15} />
+              <span className="whitespace-nowrap">{t('newArtwork')}</span>
             </button>
 
             <button
               type="button"
               onClick={() => setCameraCaptureOpen(true)}
               title={t('cameraCaptureMenuBtn')}
-              className="pixel-btn pixel-btn-teal min-h-[44px] px-2.5 text-xs font-bold flex items-center gap-1.5"
+              className="pixel-btn pixel-btn-teal min-h-[44px] min-w-[40px] sm:min-w-[44px] px-2 sm:px-2.5 text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
               data-testid="gallery-camera-capture-btn"
             >
               <PixelIcon name="camera" size={16} />
-              <span className="hidden md:inline">{t('cameraCaptureMenuBtn')}</span>
+              <span className="hidden md:inline whitespace-nowrap">{t('cameraCaptureMenuBtn')}</span>
             </button>
 
             <button
               type="button"
               onClick={() => setImportModalOpen(true)}
               title={t('importArtworkBtn')}
-              className="pixel-btn min-h-[44px] px-2.5 text-xs font-bold flex items-center gap-1.5"
+              className="pixel-btn min-h-[44px] min-w-[40px] sm:min-w-[44px] px-2 sm:px-2.5 text-xs font-bold flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
               data-testid="gallery-import-menu-btn"
             >
               <PixelIcon name="upload" size={15} />
-              <span className="hidden sm:inline">{t('importArtworkBtn')}</span>
+              <span className="hidden sm:inline whitespace-nowrap">{t('importArtworkBtn')}</span>
             </button>
 
             <VTButtonLink
               to="/settings"
               title={t('navSettings')}
-              className="pixel-btn w-[44px] h-[44px] min-w-[44px] min-h-[44px] p-0 aspect-square shrink-0 flex items-center justify-center"
+              className="pixel-btn w-[40px] sm:w-[44px] h-[44px] min-w-[40px] sm:min-w-[44px] min-h-[44px] p-0 shrink-0 flex items-center justify-center"
               data-testid="gallery-settings-btn"
             >
               <PixelIcon name="settings" size={18} />
