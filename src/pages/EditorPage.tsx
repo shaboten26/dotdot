@@ -18,19 +18,14 @@ import {
 import { PaletteSheet } from '../components/editor/PaletteSheet'
 import { LayerPanelContent, LayerSheet } from '../components/editor/LayerSheet'
 import { TimelinePanel } from '../components/editor/TimelinePanel'
-import { ExportGifModal } from '../components/editor/ExportGifModal'
 import { ExportSpriteSheetModal } from '../components/editor/ExportSpriteSheetModal'
 import { GlobalEditorSettingsModal } from '../components/editor/GlobalEditorSettingsModal'
+import { CanvasResizeModal } from '../components/editor/EditorModals'
 import {
-  CanvasResizeModal,
-  ExportPngModal,
-} from '../components/editor/EditorModals'
-import { ImportPngModal } from '../components/common/ImportPngModal'
-import { ImportGifModal } from '../components/common/ImportGifModal'
-import {
-  ExportAsepriteModal,
-  ImportAsepriteModal,
-} from '../components/common/AsepriteModals'
+  UnifiedExportModal,
+  type UnifiedExportMode,
+} from '../components/editor/UnifiedExportModal'
+import { ExportAsepriteModal } from '../components/common/AsepriteModals'
 import {
   detectInitialInputModality,
   type InputModality,
@@ -69,12 +64,9 @@ export function EditorPage() {
   const [layersOpen, setLayersOpen] = useState(false)
   const [resizeOpen, setResizeOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
-  const [exportGifOpen, setExportGifOpen] = useState(false)
+  const [exportMode, setExportMode] = useState<UnifiedExportMode>('still')
   const [exportSpriteOpen, setExportSpriteOpen] = useState(false)
   const [exportAseOpen, setExportAseOpen] = useState(false)
-  const [importPngOpen, setImportPngOpen] = useState(false)
-  const [importGifOpen, setImportGifOpen] = useState(false)
-  const [importAseOpen, setImportAseOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   const [previewFlipX, setPreviewFlipX] = useState(false)
   const [previewFlipY, setPreviewFlipY] = useState(false)
@@ -419,66 +411,59 @@ export function EditorPage() {
                     type="button"
                     onClick={() => {
                       setHeaderMenuOpen(false)
-                      setImportPngOpen(true)
-                    }}
-                    className="w-full min-h-[42px] px-3 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
-                    data-testid="editor-import-png-btn"
-                  >
-                    <PixelIcon name="upload" size={16} />
-                    <span>{t('importPngTitle')}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setHeaderMenuOpen(false)
-                      setImportGifOpen(true)
-                    }}
-                    className="w-full min-h-[42px] px-3 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
-                    data-testid="editor-import-gif-btn"
-                  >
-                    <PixelIcon name="film" size={16} />
-                    <span>{t('importGifTitle')}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setHeaderMenuOpen(false)
-                      setImportAseOpen(true)
-                    }}
-                    className="w-full min-h-[42px] px-3 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
-                    data-testid="editor-import-aseprite-btn"
-                  >
-                    <PixelIcon name="aseprite" size={16} />
-                    <span>{t('importAsepriteTitle')}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setHeaderMenuOpen(false)
+                      setExportMode(
+                        editor.timeline.frames.length >= 2
+                          ? 'animation'
+                          : 'still'
+                      )
                       setExportOpen(true)
                     }}
                     className="w-full min-h-[42px] px-3 pixel-btn pixel-btn-teal flex items-center gap-2 text-xs font-bold text-left"
-                    data-testid="editor-export-png-btn"
+                    data-testid="editor-export-btn"
                   >
-                    <PixelIcon name="download" size={16} />
-                    <span>{t('exportPng')}</span>
+                    <PixelIcon
+                      name={
+                        editor.timeline.frames.length >= 2 ? 'film' : 'download'
+                      }
+                      size={16}
+                    />
+                    <span>
+                      {editor.timeline.frames.length >= 2
+                        ? t('exportAnimationBtn')
+                        : t('exportImageBtn')}
+                    </span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setHeaderMenuOpen(false)
-                      setExportSpriteOpen(true)
-                    }}
-                    className="w-full min-h-[42px] px-3 pixel-btn pixel-btn-teal flex items-center gap-2 text-xs font-bold text-left"
-                    data-testid="editor-export-spritesheet-btn"
-                  >
-                    <PixelIcon name="sheet" size={16} />
-                    <span>{t('exportSpriteSheet')}</span>
-                  </button>
+                  {editor.timeline.frames.length >= 2 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHeaderMenuOpen(false)
+                        setExportMode('current-frame')
+                        setExportOpen(true)
+                      }}
+                      className="w-full min-h-[42px] px-3 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
+                      data-testid="editor-export-current-frame-btn"
+                    >
+                      <PixelIcon name="download" size={16} />
+                      <span>{t('exportCurrentFrameBtn')}</span>
+                    </button>
+                  )}
+
+                  {editor.timeline.frames.length >= 2 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHeaderMenuOpen(false)
+                        setExportSpriteOpen(true)
+                      }}
+                      className="w-full min-h-[42px] px-3 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
+                      data-testid="editor-export-spritesheet-btn"
+                    >
+                      <PixelIcon name="sheet" size={16} />
+                      <span>{t('exportSpriteSheet')}</span>
+                    </button>
+                  )}
 
                   <button
                     type="button"
@@ -492,21 +477,6 @@ export function EditorPage() {
                     <PixelIcon name="aseprite" size={16} />
                     <span>{t('exportAseprite')}</span>
                   </button>
-
-                  {editor.timeline.frames.length >= 2 && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setHeaderMenuOpen(false)
-                        setExportGifOpen(true)
-                      }}
-                      className="w-full min-h-[42px] px-3 pixel-btn pixel-btn-active flex items-center gap-2 text-xs font-bold text-left"
-                      data-testid="editor-export-gif-btn"
-                    >
-                      <PixelIcon name="film" size={16} />
-                      <span>{t('exportGif')}</span>
-                    </button>
-                  )}
 
                   <button
                     type="button"
@@ -1140,37 +1110,30 @@ export function EditorPage() {
           onResize={editor.resizeCanvas}
         />
 
-        <ExportPngModal
+        <UnifiedExportModal
           open={exportOpen}
+          mode={exportMode}
           projectName={editor.project.name}
           width={editor.project.width}
           height={editor.project.height}
           palette={editor.palette}
           layers={editor.layers}
-          checkerDark={settings.checkerboardDark}
-          onClose={() => setExportOpen(false)}
-          onDownloaded={() => showToast(t('toastExportedPng'), 'success')}
-          onShared={() => showToast(t('toastSharedPng'), 'success')}
-        />
-
-        <ExportGifModal
-          open={exportGifOpen}
-          projectName={editor.project.name}
-          width={editor.project.width}
-          height={editor.project.height}
-          palette={editor.palette}
           layerMetas={editor.layers}
           frames={editor.timeline.frames}
           cels={editor.timeline.cels}
           celBuffers={editor.timeline.celBuffers}
-          fallbackSingleFrameLayers={editor.layers}
+          activeFrameIndex={Math.max(
+            0,
+            editor.timeline.frames.findIndex(
+              (f) => f.id === editor.timeline.activeFrameId
+            )
+          )}
           defaultDirection={editor.timeline.playbackDirection}
           defaultLoop={editor.timeline.loopPlayback}
           checkerDark={settings.checkerboardDark}
-          onClose={() => setExportGifOpen(false)}
-          onDownloaded={() => showToast(t('toastExportedGif'), 'success')}
-          onShared={() => showToast(t('toastSharedGif'), 'success')}
-          onCancelled={() => showToast(t('toastGifCancelled'), 'info')}
+          onClose={() => setExportOpen(false)}
+          onDownloaded={() => showToast(t('toastExportedFile'), 'success')}
+          onShared={() => showToast(t('toastSharedFile'), 'success')}
         />
 
         <GlobalEditorSettingsModal
@@ -1224,52 +1187,6 @@ export function EditorPage() {
           palette={editor.palette}
           paletteColors={editor.palette.colors}
           onExported={() => showToast(t('toastExportedAseprite'), 'success')}
-        />
-
-        <ImportPngModal
-          open={importPngOpen}
-          onClose={() => setImportPngOpen(false)}
-          checkerDark={settings.checkerboardDark}
-          allowImportAsLayer={true}
-          defaultTarget="new-layer"
-          onImportAsLayer={(params) => {
-            const ok = editor.importPngAsNewLayer(params)
-            if (ok) {
-              showToast(t('importPngSuccessLayer'), 'success')
-            } else {
-              showToast(t('layerMaxReached'), 'warning')
-            }
-            return ok
-          }}
-          onCreatedProject={(proj) => {
-            void refreshProjects()
-            showToast(t('importPngSuccessProject'), 'success')
-            vtNavigate(`/editor/${proj.id}`)
-          }}
-          onError={(msg) => showToast(msg, 'error')}
-        />
-
-        <ImportGifModal
-          open={importGifOpen}
-          onClose={() => setImportGifOpen(false)}
-          checkerDark={settings.checkerboardDark}
-          onCreatedProject={(proj) => {
-            void refreshProjects()
-            showToast(t('toastImportedGif'), 'success')
-            vtNavigate(`/editor/${proj.id}`)
-          }}
-          onError={(msg) => showToast(msg, 'error')}
-        />
-
-        <ImportAsepriteModal
-          open={importAseOpen}
-          onClose={() => setImportAseOpen(false)}
-          onImportedProject={(proj) => {
-            void refreshProjects()
-            showToast(t('toastImportedAseprite'), 'success')
-            vtNavigate(`/editor/${proj.id}`)
-          }}
-          onError={(msg) => showToast(msg, 'error')}
         />
       </div>
     </ViewTransition>

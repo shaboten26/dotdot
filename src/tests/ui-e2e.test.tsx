@@ -157,15 +157,21 @@ describe('Full React UI Workflow Integration Tests', () => {
 
     // Verify we are on Project Viewing Screen (`/project/:id`), NOT directly in Editor!
     expect(await screen.findByTestId('detail-open-editor-btn')).toBeTruthy()
-    expect(screen.getByTestId('detail-download-png-btn')).toBeTruthy()
-    expect(screen.getByTestId('detail-share-png-btn')).toBeTruthy()
+    await waitFor(() => {
+      expect(screen.getByTestId('detail-project-size').textContent).not.toBe('—')
+    })
+    const detailExportBtn = screen.getByTestId('detail-export-btn')
+    expect(detailExportBtn.textContent).toContain('画像を出力')
+    // 1-frame artwork MUST hide frameCount and MUST NOT show Sprite Sheet export on Detail page
+    expect(screen.queryByTestId('detail-frame-count')).toBeNull()
+    expect(screen.queryByTestId('detail-export-spritesheet-btn')).toBeNull()
 
-    // Open PNG Export modal -> verify default ~2000px scale for 24x24 (83x = 1992x1992px) and max <= 4000px
-    fireEvent.click(screen.getByTestId('detail-download-png-btn'))
-    const outSize = await screen.findByTestId('export-output-size')
-    expect(outSize.textContent).toContain('1992 × 1992 px (83x)')
-    expect(screen.getByTestId('download-png-btn')).toBeTruthy()
-    expect(screen.getByTestId('share-png-btn')).toBeTruthy()
+    // Open Unified Export modal -> verify default PNG & ~2000px scale for 24x24 (83x = 1992x1992px)
+    fireEvent.click(detailExportBtn)
+    const outSize = await screen.findByTestId('export-output-dimensions')
+    expect(outSize.textContent).toContain('1992 × 1992 px')
+    expect(screen.getByTestId('unified-export-download-btn')).toBeTruthy()
+    expect(screen.getByTestId('unified-export-share-btn')).toBeTruthy()
     fireEvent.keyDown(window, { key: 'Escape' })
 
     // 9. Navigate to Settings -> Test Live UI Size Preview, Presets, Languages (ko / en), and Dark/Light themes

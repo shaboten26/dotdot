@@ -28,10 +28,14 @@ describe('Streamlined Timeline, Layer Workspace Separation, GIF Visibility & Vie
     expect(layersTab.textContent).toContain('レイヤー')
     expect(screen.queryByTestId('open-layers-btn')).toBeNull()
 
-    // 1-frame still artwork MUST NOT show GIF export in header menu
+    // 1-frame still artwork shows `画像を出力`, hides all imports & hides `このフレームを出力` in header menu
     fireEvent.click(screen.getByTestId('editor-menu-btn'))
-    expect(await screen.findByTestId('editor-export-png-btn')).toBeTruthy()
-    expect(screen.queryByTestId('editor-export-gif-btn')).toBeNull()
+    const editorExportBtn1f = await screen.findByTestId('editor-export-btn')
+    expect(editorExportBtn1f.textContent).toContain('画像を出力')
+    expect(screen.queryByTestId('editor-export-current-frame-btn')).toBeNull()
+    expect(screen.queryByTestId('editor-import-png-btn')).toBeNull()
+    expect(screen.queryByTestId('editor-import-gif-btn')).toBeNull()
+    expect(screen.queryByTestId('editor-import-aseprite-btn')).toBeNull()
     fireEvent.click(screen.getByTestId('editor-menu-btn'))
 
     // Draw a pixel on Frame 1 via Draw button (touch modality)
@@ -159,9 +163,10 @@ describe('Streamlined Timeline, Layer Workspace Separation, GIF Visibility & Vie
     const stillProj = allProjs.find((p) => p.name === 'Still Tree')!
     fireEvent.click(await screen.findByTestId(`gallery-tile-${stillProj.id}`))
 
-    // [0] Still Tree has only 1 frame -> GIF export button MUST NOT be shown!
-    expect((await screen.findByTestId('detail-frame-count')).textContent).toBe('1')
-    expect(screen.queryByTestId('detail-export-gif-btn')).toBeNull()
+    // [0] Still Tree has only 1 frame -> frameCount & spriteSheet button MUST NOT be shown, and export button says `画像を出力`!
+    expect((await screen.findByTestId('detail-export-btn')).textContent).toContain('画像を出力')
+    expect(screen.queryByTestId('detail-frame-count')).toBeNull()
+    expect(screen.queryByTestId('detail-export-spritesheet-btn')).toBeNull()
 
     // Vertical scroll gesture on Viewer MUST NOT switch artworks
     const swipeSurface = screen.getByTestId('project-detail-swipe-surface')
@@ -229,12 +234,18 @@ describe('Streamlined Timeline, Layer Workspace Separation, GIF Visibility & Vie
     await waitFor(() => {
       expect(screen.getByTestId('detail-header-title').textContent).toBe('Slime Walk')
     })
-    // Slime Walk has 3 frames -> GIF export button IS visible, and default scale for 16x16 is 125x (2000x2000px <= 2000px)
+    // Slime Walk has 3 frames -> frameCount IS shown ('3'), Sprite Sheet IS visible, preview animates, and export button says `アニメーションを出力` (default GIF, 2000x2000px for 16x16)
+    await waitFor(() => {
+      expect(screen.getByTestId('detail-project-size').textContent).not.toBe('—')
+    })
     expect(screen.getByTestId('detail-frame-count').textContent).toBe('3')
-    const gifBtn = screen.getByTestId('detail-export-gif-btn')
-    fireEvent.click(gifBtn)
-    expect(await screen.findByTestId('export-gif-modal')).toBeTruthy()
-    expect(screen.getByTestId('export-gif-output-size').textContent).toContain('2000')
+    expect(screen.getByTestId('detail-export-spritesheet-btn')).toBeTruthy()
+    expect(screen.getByTestId('detail-preview-img').getAttribute('data-animated')).toBe('true')
+    const animExportBtn = screen.getByTestId('detail-export-btn')
+    expect(animExportBtn.textContent).toContain('アニメーションを出力')
+    fireEvent.click(animExportBtn)
+    expect(await screen.findByTestId('unified-export-modal')).toBeTruthy()
+    expect(screen.getByTestId('export-output-dimensions').textContent).toContain('2000')
     fireEvent.click(screen.getByLabelText('閉じる'))
 
     // Left swipe at last artwork ([1]) MUST NOT move past the end
@@ -282,7 +293,9 @@ describe('Streamlined Timeline, Layer Workspace Separation, GIF Visibility & Vie
     await waitFor(() => {
       expect(screen.getByTestId('detail-header-title').textContent).toBe('Still Tree')
     })
-    expect(screen.queryByTestId('detail-export-gif-btn')).toBeNull()
+    expect(screen.queryByTestId('detail-frame-count')).toBeNull()
+    expect(screen.queryByTestId('detail-export-spritesheet-btn')).toBeNull()
+    expect(screen.getByTestId('detail-export-btn').textContent).toContain('画像を出力')
 
     // 8. Open "Still Tree" in Editor and verify SelectionReadyBar -> Compact ActiveMoveBar 1px directional buttons + Marching Ants overlay purity!
     fireEvent.click(screen.getByTestId('detail-open-editor-btn'))

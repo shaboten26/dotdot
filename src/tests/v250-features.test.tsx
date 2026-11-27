@@ -815,12 +815,12 @@ describe('v2.5.0+ UI Integration: Stamp Withdrawal, Indexed Palette Safe Deletio
     window.history.pushState({}, '', '/')
     render(<App />)
 
-    // Gallery import menu opens PNG & Aseprite import triggers
+    // Gallery single unified import button directly opens UnifiedImportModal (auto-detecting PNG/GIF/Aseprite)
     const galleryImportBtn = await screen.findByTestId('gallery-import-menu-btn')
     fireEvent.click(galleryImportBtn)
-    expect(await screen.findByTestId('gallery-import-png-btn')).toBeTruthy()
-    expect(screen.getByTestId('gallery-import-aseprite-btn')).toBeTruthy()
-    fireEvent.click(galleryImportBtn)
+    expect(await screen.findByTestId('unified-import-modal')).toBeTruthy()
+    expect(screen.getByTestId('unified-import-file-input')).toBeTruthy()
+    fireEvent.keyDown(window, { key: 'Escape' })
 
     // Create new artwork -> opens Editor
     const newBtn = await screen.findByTestId('new-artwork-btn')
