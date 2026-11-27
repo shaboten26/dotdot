@@ -22,6 +22,7 @@ import { PixelIcon } from '../common/PixelIcon'
 import { PixelSelect } from '../common/PixelSelect'
 import { PixelCheckbox } from '../common/PixelCheckbox'
 import { getCheckerboardStyle } from '../common/PixelThumbnail'
+import { useApp } from '../../state/AppContext'
 import { useI18n } from '../../i18n/I18nContext'
 
 interface ExportGifModalProps {
@@ -64,6 +65,7 @@ export function ExportGifModal({
   onCancelled,
 }: ExportGifModalProps) {
   const { t } = useI18n()
+  const { settings } = useApp()
 
   const scaleOptions = useMemo(
     () => getExportScaleOptions(width, height),
@@ -79,6 +81,9 @@ export function ExportGifModal({
   const [matteColor, setMatteColor] = useState<string>('#221E2E')
   const [direction, setDirection] = useState<PlaybackDirection>(defaultDirection)
   const [loop, setLoop] = useState<boolean>(defaultLoop)
+  const [embedMeta, setEmbedMeta] = useState<boolean>(
+    settings.embedPngMetadata ?? true
+  )
 
   const [encoding, setEncoding] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number }>({
@@ -95,13 +100,14 @@ export function ExportGifModal({
       setSelectedScale(defaultScale)
       setDirection(defaultDirection)
       setLoop(defaultLoop)
+      setEmbedMeta(settings.embedPngMetadata ?? true)
       setShareFallbackNotice(false)
     } else {
       abortRef.current?.abort()
       abortRef.current = null
       setEncoding(false)
     }
-  }, [open, defaultScale, defaultDirection, defaultLoop])
+  }, [open, defaultScale, defaultDirection, defaultLoop, settings.embedPngMetadata])
 
   // Build crisp lightweight animated GIF preview whenever modal is open & settings change
   useEffect(() => {
@@ -197,6 +203,7 @@ export function ExportGifModal({
         matteColor,
         direction,
         loop,
+        embedMetadata: embedMeta,
         signal: ctrl.signal,
         onProgress: (done, total) => setProgress({ done, total }),
       })
@@ -419,6 +426,18 @@ export function ExportGifModal({
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-1">
+          <PixelCheckbox
+            checked={embedMeta}
+            onChange={setEmbedMeta}
+            label={t('exportEmbedMetaLabel')}
+            testId="export-gif-embed-meta-checkbox"
+          />
+          <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
+            {t('exportEmbedMetaHint')}
+          </p>
         </div>
 
         <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">

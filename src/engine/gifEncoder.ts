@@ -43,6 +43,8 @@ export interface GifEncodeOptions {
   direction?: PlaybackDirection
   /** Loop infinitely (`true` -> NETSCAPE2.0 loop=0) or play once (`false` -> omit NETSCAPE2.0). Default `true`. */
   loop?: boolean
+  /** Embed GIF89a Application Extension metadata (`DOTDOTMT1.0`) for lossless 1x resolution restoration on re-import. Default `true`. */
+  embedMetadata?: boolean
   /** Optional progress callback `(completedFrames, totalFrames)` */
   onProgress?: (completedFrames: number, totalFrames: number) => void
   /** Optional `AbortSignal` for user cancellation */
@@ -63,8 +65,22 @@ export interface GifTimelineExportOptions {
   matteColor?: string
   direction?: PlaybackDirection
   loop?: boolean
+  embedMetadata?: boolean
   onProgress?: (completedFrames: number, totalFrames: number) => void
   signal?: AbortSignal
+}
+
+export const DOTDOT_GIF_APP_IDENTIFIER = 'DOTDOTMT'
+export const DOTDOT_GIF_APP_AUTH_CODE = '1.0'
+
+export interface DotDotGifMetadata {
+  app: 'dotdot'
+  version: 1
+  originalWidth: number
+  originalHeight: number
+  scale: number
+  exportedWidth: number
+  exportedHeight: number
 }
 
 export interface GifEncodeResult {
@@ -649,6 +665,32 @@ function writeGifFrameBlock(
 }
 
 /**
+ * Write a GIF89a-compliant Application Extension (`0x21 0xFF 0x0B "DOTDOTMT1.0"`)
+ * storing dotdot's lossless resolution metadata as 255-byte sub-blocks.
+ * Standard GIF viewers ignore unrecognized Application Extensions safely.
+ */
+function writeDotDotMetadataExtension(
+  writer: ByteWriter,
+  meta: DotDotGifMetadata
+): void {
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(meta))
+  writer.writeByte(0x21)
+  writer.writeByte(0xff)
+  writer.writeByte(0x0b)
+  writer.writeAscii(DOTDOT_GIF_APP_IDENTIFIER) // 8 bytes
+  writer.writeAscii(DOTDOT_GIF_APP_AUTH_CODE) // 3 bytes ("1.0")
+
+  let offset = 0
+  while (offset < jsonBytes.length) {
+    const chunkLen = Math.min(255, jsonBytes.length - offset)
+    writer.writeByte(chunkLen)
+    writer.writeBytes(jsonBytes.subarray(offset, offset + chunkLen))
+    offset += chunkLen
+  }
+  writer.writeByte(0x00) // Block terminator
+}
+
+/**
  * Synchronous GIF89a encoder (ideal for deterministic unit tests and lightweight frames).
  */
 export function encodeAnimatedGifSync(options: GifEncodeOptions): GifEncodeResult {
@@ -660,6 +702,7 @@ export function encodeAnimatedGifSync(options: GifEncodeOptions): GifEncodeResul
     matteColor = '#221E2E',
     direction = 'forward',
     loop = true,
+    embedMetadata = true,
     onProgress,
     signal,
   } = options
@@ -694,6 +737,18 @@ export function encodeAnimatedGifSync(options: GifEncodeOptions): GifEncodeResul
       0x00, 0x00, // Loop count = 0 (infinite)
       0x00,
     ])
+  }
+
+  if (embedMetadata) {
+    writeDotDotMetadataExtension(writer, {
+      app: 'dotdot',
+      version: 1,
+      originalWidth: width,
+      originalHeight: height,
+      scale,
+      exportedWidth: outWidth,
+      exportedHeight: outHeight,
+    })
   }
 
   let hasVeryShortFrameWarning = false
@@ -746,6 +801,7 @@ export async function encodeAnimatedGif(
     matteColor = '#221E2E',
     direction = 'forward',
     loop = true,
+    embedMetadata = true,
     onProgress,
     signal,
   } = options
@@ -778,6 +834,18 @@ export async function encodeAnimatedGif(
       0x00, 0x00,
       0x00,
     ])
+  }
+
+  if (embedMetadata) {
+    writeDotDotMetadataExtension(writer, {
+      app: 'dotdot',
+      version: 1,
+      originalWidth: width,
+      originalHeight: height,
+      scale,
+      exportedWidth: outWidth,
+      exportedHeight: outHeight,
+    })
   }
 
   let hasVeryShortFrameWarning = false

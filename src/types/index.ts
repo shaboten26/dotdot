@@ -385,6 +385,10 @@ export interface AppSettings {
   embedPngMetadata?: boolean
   defaultSpriteSheetScale?: number
   defaultSpriteSheetPadding?: number
+  /** Explicit user-selected default selection sub-tool (`'wand' | 'rect' | 'ellipse'`). Unset defaults to `'wand'`. */
+  preferredSelectType?: SelectSubTool
+  /** True only when the user explicitly chose `preferredSelectType` (prevents legacy implicit `'rect'` defaults from overriding `'wand'`). */
+  preferredSelectTypeCustomized?: boolean
 }
 
 export interface FloatingShapeState {

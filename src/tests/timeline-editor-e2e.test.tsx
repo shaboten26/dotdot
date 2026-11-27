@@ -293,12 +293,10 @@ describe('Streamlined Timeline, Layer Workspace Separation, GIF Visibility & Vie
     fireEvent.pointerDown(stillDrawBtn, { pointerId: 30, pointerType: 'touch' })
     fireEvent.pointerUp(stillDrawBtn, { pointerId: 30, pointerType: 'touch' })
 
-    // Select 1x1 rect at (16, 16) (Step 1 start + Step 2 end) -> `selection-ready-bar` appears BEFORE move starts
+    // Select painted pixel at (16, 16) via default Same-Color Select (`wand`) -> `selection-ready-bar` appears BEFORE move starts
     fireEvent.click(screen.getByTestId('tool-select'))
     fireEvent.pointerDown(stillDrawBtn, { pointerId: 31, pointerType: 'touch' })
     fireEvent.pointerUp(stillDrawBtn, { pointerId: 31, pointerType: 'touch' })
-    fireEvent.pointerDown(stillDrawBtn, { pointerId: 32, pointerType: 'touch' })
-    fireEvent.pointerUp(stillDrawBtn, { pointerId: 32, pointerType: 'touch' })
 
     expect(await screen.findByTestId('selection-ready-bar')).toBeTruthy()
     fireEvent.click(screen.getByTestId('quick-start-selection-move-btn'))

@@ -374,6 +374,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   embedPngMetadata: true,
   defaultSpriteSheetScale: 1,
   defaultSpriteSheetPadding: 0,
+  preferredSelectType: 'wand',
+  preferredSelectTypeCustomized: false,
 }
 
 export function normalizeCustomCursors(
@@ -587,6 +589,17 @@ export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSett
     ? Math.max(0, Math.min(64, Math.round(rawSheetPadding)))
     : 0
 
+  const preferredSelectTypeCustomized = Boolean(
+    raw?.preferredSelectTypeCustomized
+  )
+  const preferredSelectType: AppSettings['preferredSelectType'] =
+    preferredSelectTypeCustomized &&
+    (raw?.preferredSelectType === 'wand' ||
+      raw?.preferredSelectType === 'rect' ||
+      raw?.preferredSelectType === 'ellipse')
+      ? raw.preferredSelectType
+      : 'wand'
+
   return {
     ...DEFAULT_APP_SETTINGS,
     ...(raw ?? {}),
@@ -620,6 +633,8 @@ export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSett
       typeof raw?.embedPngMetadata === 'boolean' ? raw.embedPngMetadata : true,
     defaultSpriteSheetScale,
     defaultSpriteSheetPadding,
+    preferredSelectType,
+    preferredSelectTypeCustomized,
   }
 }
 

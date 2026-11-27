@@ -1145,7 +1145,10 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
     fireEvent.pointerDown(drawBtn, { pointerId: 1 })
     fireEvent.pointerUp(drawBtn, { pointerId: 1 })
 
-    // Select a rectangle covering (4, 4) -> out-of-canvas endpoint (-2, -2) via Select tool
+    // Select a rectangle covering (4, 4) -> out-of-canvas endpoint (-2, -2) via Select tool (switch from default 'wand' to 'rect')
+    fireEvent.click(screen.getByTestId('tool-select'))
+    fireEvent.click(screen.getByTestId('tool-select'))
+    fireEvent.click(await screen.findByTestId('select-type-rect'))
     fireEvent.click(screen.getByTestId('tool-select'))
     // Step 1 at (4, 4)
     fireEvent.pointerDown(drawBtn, { pointerId: 2 })

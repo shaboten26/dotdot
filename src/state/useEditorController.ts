@@ -17,6 +17,7 @@ import {
   type ProjectRecord,
   type ResizeAnchor,
   type SeamlessWrapMode,
+  type SelectSubTool,
   type SymmetryMode,
   type TilePreviewGrid,
   type ToolId,
@@ -168,7 +169,7 @@ export const ALL_BLEND_MODES: ReadonlyArray<BlendMode> = [
   'difference',
 ]
 
-const DEFAULT_TOOL_SETTINGS: ToolSettings = {
+export const DEFAULT_TOOL_SETTINGS: ToolSettings = {
   penSize: 1,
   penShape: 'square',
   penDither: 1,
@@ -196,7 +197,7 @@ const DEFAULT_TOOL_SETTINGS: ToolSettings = {
   shapeSize: 1,
   shapeDither: 1,
 
-  selectType: 'rect',
+  selectType: 'wand',
   selectConnectivity: 4,
   outlineMode: 'pixelPerfect',
   outlineSize: 1,
@@ -217,6 +218,8 @@ export interface UseEditorOptions {
   defaultSymmetryMode?: SymmetryMode
   defaultTilePreviewGrid?: TilePreviewGrid
   defaultSeamlessWrapMode?: SeamlessWrapMode
+  preferredSelectType?: SelectSubTool
+  onSelectTypeChanged?: (next: SelectSubTool) => void
   sharedClipboard?: ClipboardBuffer | null
   onUpdateSharedClipboard?: (clip: ClipboardBuffer | null) => void
   onSaved?: () => void
@@ -234,6 +237,8 @@ export function useEditorController(options: UseEditorOptions) {
     defaultSymmetryMode = 'none',
     defaultTilePreviewGrid = 'off',
     defaultSeamlessWrapMode = 'none',
+    preferredSelectType,
+    onSelectTypeChanged,
     sharedClipboard,
     onUpdateSharedClipboard,
     onSaved,
@@ -287,8 +292,33 @@ export function useEditorController(options: UseEditorOptions) {
   const toolRef = useRef<ToolId>('pen')
   toolRef.current = tool
   const prevToolBeforeEyedropperRef = useRef<ToolId>('pen')
-  const [toolSettings, setToolSettings] = useState<ToolSettings>(DEFAULT_TOOL_SETTINGS)
+  const resolvedInitialSelectType: SelectSubTool =
+    preferredSelectType === 'wand' ||
+    preferredSelectType === 'rect' ||
+    preferredSelectType === 'ellipse'
+      ? preferredSelectType
+      : DEFAULT_TOOL_SETTINGS.selectType
+  const [toolSettings, setToolSettings] = useState<ToolSettings>(() => ({
+    ...DEFAULT_TOOL_SETTINGS,
+    selectType: resolvedInitialSelectType,
+  }))
+  const selectTypeExplicitInSessionRef = useRef<boolean>(false)
   const outlineColorExplicitRef = useRef<boolean>(false)
+
+  useEffect(() => {
+    if (selectTypeExplicitInSessionRef.current) return
+    if (
+      preferredSelectType === 'wand' ||
+      preferredSelectType === 'rect' ||
+      preferredSelectType === 'ellipse'
+    ) {
+      setToolSettings((prev) =>
+        prev.selectType === preferredSelectType
+          ? prev
+          : { ...prev, selectType: preferredSelectType }
+      )
+    }
+  }, [preferredSelectType])
 
   const [cursor, setCursor] = useState<Point>({ x: 0, y: 0 })
   const cursorRef = useRef<Point>({ x: 0, y: 0 })
@@ -490,12 +520,19 @@ export function useEditorController(options: UseEditorOptions) {
     })
   }, [palette.colors, selectedColorIndex])
 
-  const updateToolSettings = useCallback((patch: Partial<ToolSettings>) => {
-    if (patch.outlineColor !== undefined) {
-      outlineColorExplicitRef.current = true
-    }
-    setToolSettings((prev) => ({ ...prev, ...patch }))
-  }, [])
+  const updateToolSettings = useCallback(
+    (patch: Partial<ToolSettings>) => {
+      if (patch.outlineColor !== undefined) {
+        outlineColorExplicitRef.current = true
+      }
+      if (patch.selectType !== undefined) {
+        selectTypeExplicitInSessionRef.current = true
+        onSelectTypeChanged?.(patch.selectType)
+      }
+      setToolSettings((prev) => ({ ...prev, ...patch }))
+    },
+    [onSelectTypeChanged]
+  )
 
   const activeLayer = useMemo(
     () => layers.find((l) => l.id === activeLayerId) ?? layers[0] ?? null,

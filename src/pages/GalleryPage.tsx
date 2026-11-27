@@ -8,6 +8,7 @@ import { useApp } from '../state/AppContext'
 import { useI18n } from '../i18n/I18nContext'
 import { Modal } from '../components/common/Modal'
 import { ImportPngModal } from '../components/common/ImportPngModal'
+import { ImportGifModal } from '../components/common/ImportGifModal'
 import { ImportAsepriteModal } from '../components/common/AsepriteModals'
 import {
   PixelEmptyCanvasArt,
@@ -58,6 +59,7 @@ export function GalleryPage() {
   const [newModalOpen, setNewModalOpen] = useState(false)
   const [importMenuOpen, setImportMenuOpen] = useState(false)
   const [importPngOpen, setImportPngOpen] = useState(false)
+  const [importGifOpen, setImportGifOpen] = useState(false)
   const [importAseOpen, setImportAseOpen] = useState(false)
   const [newName, setNewName] = useState('')
   const [newW, setNewW] = useState(32)
@@ -265,6 +267,18 @@ export function GalleryPage() {
                       >
                         <PixelIcon name="upload" size={14} />
                         <span>{t('importPngTitle')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setImportMenuOpen(false)
+                          setImportGifOpen(true)
+                        }}
+                        className="w-full min-h-[40px] px-2.5 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
+                        data-testid="gallery-import-gif-btn"
+                      >
+                        <PixelIcon name="film" size={14} />
+                        <span>{t('importGifTitle')}</span>
                       </button>
                       <button
                         type="button"
@@ -754,6 +768,18 @@ export function GalleryPage() {
           onCreatedProject={async (proj) => {
             await refreshProjects()
             showToast(t('importPngSuccessProject'), 'success')
+            vtNavigate(`/editor/${proj.id}`)
+          }}
+          onError={(msg) => showToast(msg, 'error')}
+        />
+
+        <ImportGifModal
+          open={importGifOpen}
+          onClose={() => setImportGifOpen(false)}
+          checkerDark={settings.checkerboardDark}
+          onCreatedProject={async (proj) => {
+            await refreshProjects()
+            showToast(t('toastImportedGif'), 'success')
             vtNavigate(`/editor/${proj.id}`)
           }}
           onError={(msg) => showToast(msg, 'error')}

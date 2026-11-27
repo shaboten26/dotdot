@@ -26,6 +26,7 @@ import {
   ExportPngModal,
 } from '../components/editor/EditorModals'
 import { ImportPngModal } from '../components/common/ImportPngModal'
+import { ImportGifModal } from '../components/common/ImportGifModal'
 import {
   ExportAsepriteModal,
   ImportAsepriteModal,
@@ -72,6 +73,7 @@ export function EditorPage() {
   const [exportSpriteOpen, setExportSpriteOpen] = useState(false)
   const [exportAseOpen, setExportAseOpen] = useState(false)
   const [importPngOpen, setImportPngOpen] = useState(false)
+  const [importGifOpen, setImportGifOpen] = useState(false)
   const [importAseOpen, setImportAseOpen] = useState(false)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   const [previewFlipX, setPreviewFlipX] = useState(false)
@@ -97,6 +99,15 @@ export function EditorPage() {
     defaultSymmetryMode: settings.defaultSymmetryMode,
     defaultSeamlessWrapMode: settings.defaultSeamlessWrapMode,
     defaultTilePreviewGrid: settings.defaultTilePreviewGrid,
+    preferredSelectType: settings.preferredSelectTypeCustomized
+      ? settings.preferredSelectType
+      : 'wand',
+    onSelectTypeChanged: (nextType) => {
+      void updateSettings({
+        preferredSelectType: nextType,
+        preferredSelectTypeCustomized: true,
+      })
+    },
     sharedClipboard,
     onUpdateSharedClipboard: setSharedClipboard,
     onSaved: () => {
@@ -421,6 +432,19 @@ export function EditorPage() {
                     type="button"
                     onClick={() => {
                       setHeaderMenuOpen(false)
+                      setImportGifOpen(true)
+                    }}
+                    className="w-full min-h-[42px] px-3 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
+                    data-testid="editor-import-gif-btn"
+                  >
+                    <PixelIcon name="film" size={16} />
+                    <span>{t('importGifTitle')}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false)
                       setImportAseOpen(true)
                     }}
                     className="w-full min-h-[42px] px-3 pixel-btn flex items-center gap-2 text-xs font-bold text-left"
@@ -666,9 +690,7 @@ export function EditorPage() {
               }
               hasSelection={editor.hasSelection}
               hasClipboard={editor.clipboard !== null}
-              onChange={(patch) =>
-                editor.setToolSettings((prev) => ({ ...prev, ...patch }))
-              }
+              onChange={editor.updateToolSettings}
               onStartSelectionMove={() => {
                 editor.startSelectionMove()
               }}
@@ -1222,6 +1244,18 @@ export function EditorPage() {
           onCreatedProject={(proj) => {
             void refreshProjects()
             showToast(t('importPngSuccessProject'), 'success')
+            vtNavigate(`/editor/${proj.id}`)
+          }}
+          onError={(msg) => showToast(msg, 'error')}
+        />
+
+        <ImportGifModal
+          open={importGifOpen}
+          onClose={() => setImportGifOpen(false)}
+          checkerDark={settings.checkerboardDark}
+          onCreatedProject={(proj) => {
+            void refreshProjects()
+            showToast(t('toastImportedGif'), 'success')
             vtNavigate(`/editor/${proj.id}`)
           }}
           onError={(msg) => showToast(msg, 'error')}
