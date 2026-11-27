@@ -42,6 +42,23 @@ export const TOUCH_SLIDE_DEADZONE_PX = 6
 /** Maximum screen distance (CSS px) between two stationary touch taps to count as an intentional double-tap gesture */
 export const TOUCH_DOUBLE_TAP_MAX_SEPARATION_PX = 44
 
+/**
+ * Computes the canvas-space checkerboard cell size in integer dot units (`1 | 2 | 4 | 8 | 16 | 32 | 64`)
+ * so transparency checkerboard squares ALWAYS lock onto exact canvas pixel grid boundaries and scale/pan
+ * cohesively with the canvas rather than drifting in screen space during zoom!
+ */
+export function computeCanvasCheckerDots(
+  canvasWidth: number,
+  canvasHeight: number
+): number {
+  const minSide = Math.max(1, Math.min(canvasWidth, canvasHeight))
+  if (minSide <= 4) return 1
+  if (minSide <= 12) return 2
+  if (minSide <= 48) return 4
+  if (minSide <= 128) return 8
+  return 16
+}
+
 interface InteractiveViewportProps {
   projectId: string
   width: number
@@ -533,34 +550,59 @@ export function InteractiveViewport({
     }
 
     // 1. Transparency Checkerboard + Artwork strictly clipped to `[devLeft, devTop, devW, devH]`
+    // Checkerboard cells are anchored in CANVAS DOT COORDINATES (`checkerDots` dots per square),
+    // scaling and translating strictly in lockstep with the canvas pixel grid!
+    const checkerDots = computeCanvasCheckerDots(width, height)
+    const checkerCols = Math.ceil(width / checkerDots)
+    const checkerRows = Math.ceil(height / checkerDots)
+    const drawCanvasLockedCheckerboard = (
+      originLeft: number,
+      originTop: number,
+      lightColor: string,
+      darkColor: string
+    ) => {
+      ctx.fillStyle = lightColor
+      ctx.fillRect(originLeft, originTop, devW, devH)
+      ctx.fillStyle = darkColor
+
+      for (let r = 0; r < checkerRows; r++) {
+        const dotY0 = r * checkerDots
+        const dotSpanY = Math.min(checkerDots, height - dotY0)
+        if (dotSpanY <= 0) continue
+        const y0 = previewFlipY
+          ? originTop + devH - Math.round(((dotY0 + dotSpanY) * devH) / height)
+          : originTop + Math.round((dotY0 * devH) / height)
+        const y1 = previewFlipY
+          ? originTop + devH - Math.round((dotY0 * devH) / height)
+          : originTop + Math.round(((dotY0 + dotSpanY) * devH) / height)
+        const hCell = y1 - y0
+        if (hCell <= 0) continue
+
+        for (let c = r % 2; c < checkerCols; c += 2) {
+          const dotX0 = c * checkerDots
+          const dotSpanX = Math.min(checkerDots, width - dotX0)
+          if (dotSpanX <= 0) continue
+          const x0 = previewFlipX
+            ? originLeft + devW - Math.round(((dotX0 + dotSpanX) * devW) / width)
+            : originLeft + Math.round((dotX0 * devW) / width)
+          const x1 = previewFlipX
+            ? originLeft + devW - Math.round((dotX0 * devW) / width)
+            : originLeft + Math.round(((dotX0 + dotSpanX) * devW) / width)
+          const wCell = x1 - x0
+          if (wCell <= 0) continue
+          ctx.fillRect(x0, y0, wCell, hCell)
+        }
+      }
+    }
+
     ctx.save()
     ctx.beginPath()
     ctx.rect(devLeft, devTop, devW, devH)
     ctx.clip()
 
-    const checkCell = Math.max(
-      Math.round(4 * dpr),
-      Math.min(Math.round(16 * dpr), scale >= 2 ? Math.round(scale * dpr) : Math.round(8 * dpr))
-    )
     const cLight = checkerboardDark ? '#272235' : '#f5f1f8'
     const cDark = checkerboardDark ? '#1d1928' : '#e4dce9'
-    ctx.fillStyle = cLight
-    ctx.fillRect(devLeft, devTop, devW, devH)
-    ctx.fillStyle = cDark
-
-    const cols = Math.ceil(devW / checkCell)
-    const rows = Math.ceil(devH / checkCell)
-    for (let r = 0; r < rows; r++) {
-      const y0 = devTop + r * checkCell
-      const hCell = Math.min(checkCell, devTop + devH - y0)
-      if (hCell <= 0) continue
-      for (let c = r % 2; c < cols; c += 2) {
-        const x0 = devLeft + c * checkCell
-        const wCell = Math.min(checkCell, devLeft + devW - x0)
-        if (wCell <= 0) continue
-        ctx.fillRect(x0, y0, wCell, hCell)
-      }
-    }
+    drawCanvasLockedCheckerboard(devLeft, devTop, cLight, cDark)
 
     // 1b. Optional Onion Skin Underlays (Prev frame tinted warm rose, Next frame tinted cool teal) when not playing
     const drawOnionBuffer = (
@@ -680,21 +722,13 @@ export function InteractiveViewport({
           ctx.rect(tLeft, tTop, devW, devH)
           ctx.clip()
 
-          // Subtle checkerboard background for neighboring tiles
-          ctx.fillStyle = checkerboardDark ? '#231e30' : '#ece5f1'
-          ctx.fillRect(tLeft, tTop, devW, devH)
-          ctx.fillStyle = checkerboardDark ? '#1a1625' : '#ddd4e4'
-          for (let r = 0; r < rows; r++) {
-            const y0 = tTop + r * checkCell
-            const hCell = Math.min(checkCell, tTop + devH - y0)
-            if (hCell <= 0) continue
-            for (let c = r % 2; c < cols; c += 2) {
-              const x0 = tLeft + c * checkCell
-              const wCell = Math.min(checkCell, tLeft + devW - x0)
-              if (wCell <= 0) continue
-              ctx.fillRect(x0, y0, wCell, hCell)
-            }
-          }
+          // Subtle canvas-locked checkerboard background for neighboring tiles
+          drawCanvasLockedCheckerboard(
+            tLeft,
+            tTop,
+            checkerboardDark ? '#231e30' : '#ece5f1',
+            checkerboardDark ? '#1a1625' : '#ddd4e4'
+          )
 
           ctx.save()
           ctx.globalAlpha = 0.88

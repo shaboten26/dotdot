@@ -57,6 +57,7 @@ import {
   LIGHT_THEME_VARIANTS,
   resolveActiveThemeTokens,
 } from '../theme/themes'
+import { computeCanvasCheckerDots } from '../components/editor/InteractiveViewport'
 import {
   MAX_OPAQUE_PALETTE_COLORS,
   TRANSPARENT_COLOR_INDEX,
@@ -1021,5 +1022,142 @@ describe('v2.5.0+ UI Integration: Stamp Withdrawal, Indexed Palette Safe Deletio
       palette: { name: 'P', colors: ['#112233'] },
     })
     expect(tmp.project.pixelFormat).toBe('indexed-v1')
+  })
+
+  it('9. Playback Cursor Suppression, Canvas-Locked Checkerboard, Portrait/Landscape Detail Fit & Official Brand Assets', async () => {
+    // (A) Canvas-locked checkerboard dot-unit sizing
+    expect(computeCanvasCheckerDots(4, 4)).toBe(1)
+    expect(computeCanvasCheckerDots(8, 8)).toBe(2)
+    expect(computeCanvasCheckerDots(16, 16)).toBe(4)
+    expect(computeCanvasCheckerDots(32, 32)).toBe(4)
+    expect(computeCanvasCheckerDots(16, 64)).toBe(4)
+    expect(computeCanvasCheckerDots(64, 64)).toBe(8)
+    expect(computeCanvasCheckerDots(256, 256)).toBe(16)
+
+    // (B) Create a tall portrait artwork (16x64) and a wide landscape artwork (64x16) and verify ProjectDetailPage full-fit styles
+    const tallCreated = await createNewProject({
+      name: 'Tall Tower',
+      width: 16,
+      height: 64,
+      palette: { name: 'TallPal', colors: ['#7964A5', '#FDF1FF'] },
+    })
+    const wideCreated = await createNewProject({
+      name: 'Wide Horizon',
+      width: 64,
+      height: 16,
+      palette: { name: 'WidePal', colors: ['#31253C', '#B47E8C'] },
+    })
+
+    // Track putImageData calls so we can verify cursor color dot is NOT stamped while animation is playing!
+    let lastMainImageData: Uint8ClampedArray | null = null
+    const origGetContext = HTMLCanvasElement.prototype.getContext
+    HTMLCanvasElement.prototype.getContext = (function (this: HTMLCanvasElement) {
+      const c = this
+      return {
+        save: () => {},
+        restore: () => {},
+        scale: () => {},
+        translate: () => {},
+        setTransform: () => {},
+        resetTransform: () => {},
+        clearRect: () => {},
+        fillRect: () => {},
+        strokeRect: () => {},
+        beginPath: () => {},
+        rect: () => {},
+        clip: () => {},
+        moveTo: () => {},
+        lineTo: () => {},
+        stroke: () => {},
+        fill: () => {},
+        arc: () => {},
+        setLineDash: () => {},
+        putImageData: (img: ImageData) => {
+          if (c.width === 8 && c.height === 8 && img.data.length === 8 * 8 * 4) {
+            lastMainImageData = new Uint8ClampedArray(img.data)
+          }
+        },
+        drawImage: () => {},
+        strokeText: () => {},
+        fillText: () => {},
+        measureText: (txt: string) => ({ width: txt.length * 6 }),
+        imageSmoothingEnabled: false,
+      } as unknown as CanvasRenderingContext2D
+    }) as unknown as typeof HTMLCanvasElement.prototype.getContext
+
+    try {
+      // Check Gallery Header brand icon & wordmark
+      window.history.pushState({}, '', '/')
+      render(<App />)
+
+      expect(await screen.findByTestId('gallery-header-app-icon')).toBeTruthy()
+      expect(screen.getByTestId('gallery-header-wordmark')).toBeTruthy()
+
+      // Navigate to Tall Portrait ProjectDetailPage (`/project/:id`)
+      window.history.pushState({}, '', `/project/${tallCreated.project.id}`)
+      fireEvent(window, new PopStateEvent('popstate'))
+
+      const tallCard = await screen.findByTestId('detail-preview-card')
+      const tallImg = await screen.findByTestId('detail-preview-img')
+      expect(tallCard.style.height).toContain('min(50dvh')
+      expect(tallImg.className).toContain('object-contain')
+      expect(tallImg.className).toContain('h-full')
+      expect(tallImg.style.aspectRatio.replace(/\s+/g, '')).toBe('16/64')
+
+      // Navigate to Wide Landscape ProjectDetailPage (`/project/:id`)
+      window.history.pushState({}, '', `/project/${wideCreated.project.id}`)
+      fireEvent(window, new PopStateEvent('popstate'))
+
+      const wideImg = await screen.findByTestId('detail-preview-img')
+      expect(wideImg.style.aspectRatio.replace(/\s+/g, '')).toBe('64/16')
+
+      // Create an 8x8 blank artwork, add a 2nd animation frame, and verify cursor color dot disappears while playing!
+      const animCreated = await createNewProject({
+        name: 'Anim Blank',
+        width: 8,
+        height: 8,
+        palette: { name: 'AnimPal', colors: ['#FF0055', '#00FFAA'] },
+      })
+      window.history.pushState({}, '', `/editor/${animCreated.project.id}`)
+      fireEvent(window, new PopStateEvent('popstate'))
+
+      const layersTabBtn = await screen.findByTestId('workspace-tab-layers')
+      fireEvent.click(layersTabBtn)
+      const addFirstFrameBtn = await screen.findByTestId('add-first-frame-btn')
+      fireEvent.click(addFirstFrameBtn)
+
+      const quickPlayBtn = await screen.findByTestId('quick-play-toggle-btn')
+      expect(quickPlayBtn.getAttribute('aria-pressed')).toBe('false')
+
+      // When paused (`isPlaying === false`), idle pen preview stamps active color onto cursor pixel -> at least 1 opaque pixel in composited ImageData
+      expect(lastMainImageData).not.toBeNull()
+      const countOpaque = (arr: Uint8ClampedArray | null) => {
+        if (!arr) return 0
+        let c = 0
+        for (let i = 3; i < arr.length; i += 4) {
+          if (arr[i]! > 0) c++
+        }
+        return c
+      }
+      expect(countOpaque(lastMainImageData)).toBeGreaterThan(0)
+
+      // Start animation playback (`isPlaying === true`) -> cursor color dot MUST NOT be stamped!
+      fireEvent.click(quickPlayBtn)
+      expect(quickPlayBtn.getAttribute('aria-pressed')).toBe('true')
+      expect(countOpaque(lastMainImageData)).toBe(0)
+
+      // Pause playback -> cursor preview dot returns cleanly
+      fireEvent.click(quickPlayBtn)
+      expect(quickPlayBtn.getAttribute('aria-pressed')).toBe('false')
+      expect(countOpaque(lastMainImageData)).toBeGreaterThan(0)
+
+      // Verify Settings brand icon & wordmark
+      window.history.pushState({}, '', '/settings')
+      fireEvent(window, new PopStateEvent('popstate'))
+      expect(await screen.findByTestId('settings-app-icon')).toBeTruthy()
+      expect(screen.getByTestId('settings-app-wordmark')).toBeTruthy()
+    } finally {
+      HTMLCanvasElement.prototype.getContext = origGetContext
+    }
   })
 })

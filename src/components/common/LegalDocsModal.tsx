@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Modal } from './Modal'
+import { DotDotAppIcon, DotDotWordmark } from './DotDotBrand'
 import { useI18n } from '../../i18n/I18nContext'
 
 export type LegalDocTab = 'terms' | 'privacy' | 'license'
@@ -69,6 +70,17 @@ export function LegalDocsModal({
       maxWidthClass="max-w-lg"
     >
       <div className="space-y-3" data-testid="legal-docs-modal">
+        <div className="flex items-center gap-2.5 p-2.5 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)]">
+          <DotDotAppIcon
+            size={28}
+            className="border-2 border-[var(--border-pixel)]"
+          />
+          <DotDotWordmark height={13} color="var(--accent-rose)" />
+          <span className="ml-auto text-[11px] font-bold text-[var(--text-secondary)]">
+            Pixel Art Studio
+          </span>
+        </div>
+
         <div className="grid grid-cols-3 gap-1.5">
           <button
             type="button"

@@ -605,7 +605,8 @@ export function ProjectDetailPage() {
         </header>
 
         <main className="flex-1 max-w-2xl w-full mx-auto p-4 pb-12 pb-safe space-y-4">
-          {/* Large Pixel-Art Preview (Long-pressable native <img> + ViewTransition + directional swipe motion, solid background matching page --bg-app) */}
+          {/* Large Pixel-Art Preview (Long-pressable native <img> + ViewTransition + directional swipe motion, solid background matching page --bg-app).
+              Uses explicit `min(100%, 50dvh)` height so portrait (`height > width`) and landscape (`width > height`) artworks ALWAYS fit completely inside the frame! */}
           <motion.div
             key={activeProject.id}
             initial={
@@ -619,24 +620,32 @@ export function ProjectDetailPage() {
                 ? { duration: 0 }
                 : { type: 'spring', stiffness: 420, damping: 36, mass: 0.85 }
             }
-            className="aspect-square max-h-[50dvh] w-full mx-auto border-2 border-[var(--border-pixel)] bg-[var(--bg-app)] overflow-hidden flex items-center justify-center p-4"
+            style={{
+              height: 'min(50dvh, calc(100vw - 2rem))',
+            }}
+            className="aspect-square max-h-[50dvh] w-full max-w-[50dvh] mx-auto border-2 border-[var(--border-pixel)] bg-[var(--bg-app)] overflow-hidden flex items-center justify-center p-4"
             data-testid="detail-preview-card"
           >
-            <ViewTransition name={`artwork-${activeProject.id}`}>
-              {previewUrl ? (
-                <img
-                  src={previewUrl}
-                  alt={activeProject.name}
-                  draggable={false}
-                  className="max-w-full max-h-full object-contain pixelated"
-                  data-testid="detail-preview-img"
-                  data-animated={isAnimationArtwork ? 'true' : 'false'}
-                  data-anim-step={isAnimationArtwork ? String(animStepIdx) : undefined}
-                />
-              ) : (
-                <div className="w-full h-full" />
-              )}
-            </ViewTransition>
+            <div className="w-full h-full min-w-0 min-h-0 flex items-center justify-center">
+              <ViewTransition name={`artwork-${activeProject.id}`}>
+                {previewUrl ? (
+                  <img
+                    src={previewUrl}
+                    alt={activeProject.name}
+                    draggable={false}
+                    style={{
+                      aspectRatio: `${activeProject.width} / ${activeProject.height}`,
+                    }}
+                    className="w-full h-full max-w-full max-h-full object-contain pixelated block select-none"
+                    data-testid="detail-preview-img"
+                    data-animated={isAnimationArtwork ? 'true' : 'false'}
+                    data-anim-step={isAnimationArtwork ? String(animStepIdx) : undefined}
+                  />
+                ) : (
+                  <div className="w-full h-full" />
+                )}
+              </ViewTransition>
+            </div>
           </motion.div>
 
           {/* Neighbor Navigation Indicator (shown when gallery has >= 2 artworks) */}

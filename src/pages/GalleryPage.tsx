@@ -14,6 +14,10 @@ import {
   PixelIcon,
   PixelLoadingIndicator,
 } from '../components/common/PixelIcon'
+import {
+  DotDotAppIcon,
+  DotDotWordmark,
+} from '../components/common/DotDotBrand'
 import { PixelSelect } from '../components/common/PixelSelect'
 import { PixelSlider } from '../components/common/PixelSlider'
 import { PixelThumbnail } from '../components/common/PixelThumbnail'
@@ -199,15 +203,21 @@ export function GalleryPage() {
         {/* Retro Pixel Header */}
         <header className="sticky top-0 z-20 px-3.5 py-2.5 pt-safe bg-[var(--bg-surface)] border-b-2 border-[var(--border-pixel)] flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
-            <span
-              className="w-3.5 h-3.5 bg-[var(--accent-primary)] border-2 border-[var(--border-pixel)] shrink-0"
-              aria-hidden="true"
+            <DotDotAppIcon
+              size={32}
+              className="border-2 border-[var(--border-pixel)]"
+              testId="gallery-header-app-icon"
             />
-            <div>
-              <h1 className="text-base sm:text-lg font-bold tracking-wider leading-none">
-                {t('appName')}
+            <div className="flex flex-col justify-center gap-0.5">
+              <h1 className="m-0 leading-none flex items-center">
+                <span className="sr-only">{t('appName')}</span>
+                <DotDotWordmark
+                  height={15}
+                  color="var(--accent-rose)"
+                  testId="gallery-header-wordmark"
+                />
               </h1>
-              <span className="text-[10px] text-[var(--text-secondary)]">
+              <span className="text-[10px] text-[var(--text-secondary)] leading-none">
                 {t('galleryTitle')}
               </span>
             </div>
@@ -358,6 +368,11 @@ export function GalleryPage() {
         {sortedProjects.length === 0 ? (
           <main className="flex-1 flex flex-col items-center justify-center px-6 py-12 text-center">
             <div className="pixel-card p-6 sm:p-8 max-w-sm w-full flex flex-col items-center gap-4">
+              <DotDotWordmark
+                height={20}
+                color="var(--accent-rose)"
+                testId="empty-gallery-wordmark"
+              />
               <PixelEmptyCanvasArt size={108} />
               <div className="space-y-1.5">
                 <h2 className="text-base font-bold text-[var(--text-primary)]">

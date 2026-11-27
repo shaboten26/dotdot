@@ -39,6 +39,10 @@ import { useI18n } from '../i18n/I18nContext'
 import type { TranslationKey } from '../i18n/translations'
 import { LANGUAGE_OPTIONS } from '../i18n/extraLocales'
 import { ConfirmDialog, Modal } from '../components/common/Modal'
+import {
+  DotDotAppIcon,
+  DotDotWordmark,
+} from '../components/common/DotDotBrand'
 import { PixelIcon } from '../components/common/PixelIcon'
 import { PixelCheckbox } from '../components/common/PixelCheckbox'
 import { PixelSelect } from '../components/common/PixelSelect'
@@ -1381,7 +1385,28 @@ export function SettingsPage() {
 
           {/* 7. App Info & Factory Reset */}
           <section className="pixel-card p-4 space-y-3">
-            <h2 className="text-sm font-bold">{t('sectionAppInfo')}</h2>
+            <div className="flex items-center justify-between gap-3 pb-2.5 border-b border-[var(--border-subtle)]">
+              <div className="flex items-center gap-3">
+                <DotDotAppIcon
+                  size={40}
+                  className="border-2 border-[var(--border-pixel)]"
+                  testId="settings-app-icon"
+                />
+                <div className="space-y-1">
+                  <DotDotWordmark
+                    height={16}
+                    color="var(--accent-rose)"
+                    testId="settings-app-wordmark"
+                  />
+                  <h2 className="text-xs font-bold text-[var(--text-secondary)]">
+                    {t('sectionAppInfo')}
+                  </h2>
+                </div>
+              </div>
+              <span className="px-2 py-0.5 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] text-xs font-bold">
+                v3.0.0
+              </span>
+            </div>
             <div className="text-xs space-y-1.5 text-[var(--text-secondary)]">
               <div className="flex justify-between">
                 <span>{t('appVersionLabel')}</span>

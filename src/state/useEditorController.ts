@@ -1338,7 +1338,11 @@ export function useEditorController(options: UseEditorOptions) {
       return { layerId: activeLayer.id, data: buf }
     }
 
-    if (stepPhase.kind === 'idle' && (tool === 'pen' || tool === 'eraser' || tool === 'line')) {
+    if (
+      !isPlaying &&
+      stepPhase.kind === 'idle' &&
+      (tool === 'pen' || tool === 'eraser' || tool === 'line')
+    ) {
       const buf = new Uint8Array(activeLayerCanvasView)
       const brushSize =
         tool === 'pen'
@@ -1379,6 +1383,7 @@ export function useEditorController(options: UseEditorOptions) {
     project,
     activeLayer,
     activeLayerCanvasView,
+    isPlaying,
     moveSession,
     layers,
     liveStrokeBuffer,
