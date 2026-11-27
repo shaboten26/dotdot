@@ -9,6 +9,7 @@ import { useI18n } from '../i18n/I18nContext'
 import { Modal } from '../components/common/Modal'
 import { ImportPngModal } from '../components/common/ImportPngModal'
 import { ImportGifModal } from '../components/common/ImportGifModal'
+import { CameraCaptureModal } from '../components/common/CameraCaptureModal'
 import { ImportAsepriteModal } from '../components/common/AsepriteModals'
 import {
   PixelEmptyCanvasArt,
@@ -61,6 +62,7 @@ export function GalleryPage() {
   const [importPngOpen, setImportPngOpen] = useState(false)
   const [importGifOpen, setImportGifOpen] = useState(false)
   const [importAseOpen, setImportAseOpen] = useState(false)
+  const [cameraCaptureOpen, setCameraCaptureOpen] = useState(false)
   const [newName, setNewName] = useState('')
   const [newW, setNewW] = useState(32)
   const [newH, setNewH] = useState(32)
@@ -256,6 +258,18 @@ export function GalleryPage() {
                       className="absolute right-0 top-full mt-1.5 z-30 w-56 pixel-panel p-2 space-y-1.5"
                       data-testid="gallery-import-popover"
                     >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setImportMenuOpen(false)
+                          setCameraCaptureOpen(true)
+                        }}
+                        className="w-full min-h-[40px] px-2.5 pixel-btn pixel-btn-teal flex items-center gap-2 text-xs font-bold text-left"
+                        data-testid="gallery-camera-capture-btn"
+                      >
+                        <PixelIcon name="camera" size={14} />
+                        <span>{t('cameraCaptureMenuBtn')}</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => {
@@ -600,6 +614,19 @@ export function GalleryPage() {
           maxWidthClass="max-w-md"
         >
           <div className="space-y-4">
+            <button
+              type="button"
+              onClick={() => {
+                setNewModalOpen(false)
+                setCameraCaptureOpen(true)
+              }}
+              className="w-full min-h-[40px] px-3 pixel-btn pixel-btn-teal text-xs font-bold flex items-center justify-center gap-2"
+              data-testid="new-modal-open-camera-btn"
+            >
+              <PixelIcon name="camera" size={15} />
+              <span>{t('cameraCaptureMenuBtn')}</span>
+            </button>
+
             <label className="block space-y-1">
               <span className="text-xs font-bold text-[var(--text-secondary)]">
                 {t('artworkName')}
@@ -791,6 +818,19 @@ export function GalleryPage() {
           onImportedProject={async (proj) => {
             await refreshProjects()
             showToast(t('toastImportedAseprite'), 'success')
+            vtNavigate(`/editor/${proj.id}`)
+          }}
+          onError={(msg) => showToast(msg, 'error')}
+        />
+
+        <CameraCaptureModal
+          open={cameraCaptureOpen}
+          onClose={() => setCameraCaptureOpen(false)}
+          palettes={palettes}
+          checkerDark={settings.checkerboardDark}
+          onCreatedProject={async (proj) => {
+            await refreshProjects()
+            showToast(t('toastCapturedCameraArtwork'), 'success')
             vtNavigate(`/editor/${proj.id}`)
           }}
           onError={(msg) => showToast(msg, 'error')}
