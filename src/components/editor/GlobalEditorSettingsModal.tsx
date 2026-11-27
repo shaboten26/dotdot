@@ -11,6 +11,7 @@ import { useApp } from '../../state/AppContext'
 import { useI18n } from '../../i18n/I18nContext'
 import { PixelIcon } from '../common/PixelIcon'
 import { PixelCheckbox } from '../common/PixelCheckbox'
+import { PixelSlider } from '../common/PixelSlider'
 
 interface GlobalEditorSettingsModalProps {
   open: boolean
@@ -356,19 +357,19 @@ export function GlobalEditorSettingsModal({
                   </span>
                 </div>
 
-                <input
-                  type="range"
+                <PixelSlider
                   min={Math.round(MIN_CURSOR_SPEED * 100)}
                   max={Math.round(MAX_CURSOR_SPEED * 100)}
                   step={5}
+                  buttonStep={5}
                   value={Math.round(settings.cursorSpeed * 100)}
-                  aria-label={t('cursorSpeedSection')}
-                  onChange={(e) => {
-                    const next = Number(e.target.value) / 100
+                  unit="%"
+                  ariaLabel={t('cursorSpeedSection')}
+                  onChange={(pct) => {
+                    const next = pct / 100
                     void updateSettings({ cursorSpeed: next })
                   }}
-                  className="w-full cursor-pointer accent-[var(--accent-primary)]"
-                  data-testid="cursor-speed-slider"
+                  testId="cursor-speed-slider"
                 />
 
                 <div className="grid grid-cols-3 gap-1.5">

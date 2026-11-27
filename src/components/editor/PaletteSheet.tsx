@@ -21,7 +21,10 @@ import {
 } from '../../db/lospec'
 import { Modal } from '../common/Modal'
 import { LospecImportModal } from '../common/LospecImportModal'
-import { PaletteToolsModal } from './PaletteToolsModal'
+import {
+  PaletteToolsModal,
+  type PaletteToolTab,
+} from './PaletteToolsModal'
 import { PixelIcon } from '../common/PixelIcon'
 import { PixelSlider } from '../common/PixelSlider'
 import { PixelSelect } from '../common/PixelSelect'
@@ -64,6 +67,8 @@ interface PaletteSheetProps {
       | { kind: 'transparent' }
       | { kind: 'displayIndex'; targetDisplayIndex: number }
   ) => void
+  /** Removes all unused palette slots across the project in 1 Undo step */
+  onRemoveUnusedColors?: () => number
 }
 
 export function PaletteSheet({
@@ -83,11 +88,14 @@ export function PaletteSheet({
   onReplaceColor,
   onCountColorSlotUsage,
   onDeleteColorSlot,
+  onRemoveUnusedColors,
 }: PaletteSheetProps) {
   const { t } = useI18n()
   const { reducedMotion, showToast } = useApp()
   const [tab, setTab] = useState<'hsv' | 'rgb' | 'hex'>('hsv')
   const [toolsModalOpen, setToolsModalOpen] = useState(false)
+  const [toolsInitialTab, setToolsInitialTab] =
+    useState<PaletteToolTab>('sort')
   const swatchGridRef = useRef<HTMLDivElement | null>(null)
 
   // State for safe deletion dialog when a palette color is used by >=1 pixel
@@ -421,7 +429,22 @@ export function PaletteSheet({
             <div className="flex flex-wrap items-center gap-1">
               <button
                 type="button"
-                onClick={() => setToolsModalOpen(true)}
+                onClick={() => {
+                  setToolsInitialTab('create')
+                  setToolsModalOpen(true)
+                }}
+                className="pixel-btn pixel-btn-teal min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1"
+                data-testid="palette-open-create-tools-btn"
+              >
+                <PixelIcon name="sparkle" size={13} />
+                <span>{t('paletteQuickCreateBtn')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setToolsInitialTab('sort')
+                  setToolsModalOpen(true)
+                }}
                 className="pixel-btn min-h-[38px] px-2.5 text-xs font-bold flex items-center gap-1"
                 data-testid="palette-open-tools-btn"
               >
@@ -847,6 +870,7 @@ export function PaletteSheet({
         palette={palette}
         selectedIndex={selectedIndex}
         checkerDark={checkerDark}
+        initialTab={toolsInitialTab}
         onUpdatePalette={onUpdatePalette}
         onSelectColor={onSelectColor}
         canvasWidth={canvasWidth}
@@ -854,6 +878,7 @@ export function PaletteSheet({
         layers={layers}
         activeLayerId={activeLayerId}
         onReplaceColor={onReplaceColor}
+        onRemoveUnusedColors={onRemoveUnusedColors}
         onToast={(msg) => showToast(msg, 'success')}
       />
     </Modal>

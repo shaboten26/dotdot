@@ -331,16 +331,20 @@ export const DEFAULT_CURSOR_SPEED = 1.0
 
 export const VALID_LIGHT_THEME_VARIANTS: ReadonlyArray<LightThemeVariantId> = [
   'lavender-cream',
-  'milk-lilac',
-  'sage-ivory',
-  'berry-paper',
+  'peach-cotton',
+  'mint-pocket',
+  'antique-brass',
+  'urban-concrete',
+  'retro-kissaten',
 ]
 
 export const VALID_DARK_THEME_VARIANTS: ReadonlyArray<DarkThemeVariantId> = [
   'dusk-plum',
-  'midnight-lavender',
-  'moss-grape',
-  'velvet-fig',
+  'royal-velvet',
+  'tokyo-neon',
+  'urban-graphite',
+  'forest-apothecary',
+  'amber-crt',
 ]
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {

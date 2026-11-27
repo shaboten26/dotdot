@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  MAX_OPAQUE_PALETTE_COLORS,
   TRANSPARENT_COLOR_INDEX,
   type LayerRuntime,
   type ProjectPalette,
 } from '../../types'
 import {
   analyzeArtworkColors,
+  generateColorHarmonyCompanions,
+  generateIntermediateRampColors,
+  generatePixelArtToneVariant,
+  insertColorsIntoIndexedPalette,
   restorePaletteOriginalOrder,
   sortProjectPalette,
   type PaletteSortMode,
@@ -13,8 +18,11 @@ import {
 import { normalizeHex } from '../../engine/color'
 import { Modal } from '../common/Modal'
 import { PixelIcon } from '../common/PixelIcon'
+import { PixelSlider } from '../common/PixelSlider'
 import { getCheckerboardStyle } from '../common/PixelThumbnail'
 import { useI18n } from '../../i18n/I18nContext'
+
+export type PaletteToolTab = 'sort' | 'create' | 'analyze' | 'replace'
 
 interface PaletteToolsModalProps {
   open: boolean
@@ -22,6 +30,7 @@ interface PaletteToolsModalProps {
   palette: ProjectPalette
   selectedIndex: number
   checkerDark?: boolean
+  initialTab?: PaletteToolTab
   onUpdatePalette: (next: ProjectPalette, nextSelectedIdx?: number) => void
   onSelectColor?: (index: number) => void
   /** Optional artwork context (when opened inside Editor vs standalone Palette Library) */
@@ -36,10 +45,10 @@ interface PaletteToolsModalProps {
     frameScope: 'all-frames' | 'active-frame'
     updatePaletteSwatch: boolean
   }) => number
+  onRemoveUnusedColors?: () => number
   onToast?: (msg: string) => void
 }
 
-type ToolTab = 'sort' | 'analyze' | 'replace'
 type ReplaceScopePreset = 'project' | 'frame' | 'layer'
 
 export function PaletteToolsModal({
@@ -48,6 +57,7 @@ export function PaletteToolsModal({
   palette,
   selectedIndex,
   checkerDark = false,
+  initialTab = 'sort',
   onUpdatePalette,
   onSelectColor,
   canvasWidth = 0,
@@ -55,6 +65,7 @@ export function PaletteToolsModal({
   layers,
   activeLayerId,
   onReplaceColor,
+  onRemoveUnusedColors,
   onToast,
 }: PaletteToolsModalProps) {
   const { t } = useI18n()
@@ -62,7 +73,7 @@ export function PaletteToolsModal({
     layers && layers.length > 0 && canvasWidth > 0 && canvasHeight > 0
   )
 
-  const [tab, setTab] = useState<ToolTab>('sort')
+  const [tab, setTab] = useState<PaletteToolTab>(initialTab)
   const [analyzeScope, setAnalyzeScope] = useState<'composite' | 'layer'>(
     'composite'
   )
@@ -76,11 +87,30 @@ export function PaletteToolsModal({
   const [customTargetHex, setCustomTargetHex] = useState<string>('#FFFFFF')
   const [syncSwatchOnReplace, setSyncSwatchOnReplace] = useState<boolean>(false)
 
+  // Intermediate Color Ramp & Tone Generator state
+  const [rampStartIdx, setRampStartIdx] = useState<number>(0)
+  const [rampEndIdx, setRampEndIdx] = useState<number>(1)
+  const [rampSteps, setRampSteps] = useState<number>(2)
+
   useEffect(() => {
     if (!open) return
-    if (!hasArtworkContext && tab !== 'sort') {
-      setTab('sort')
-    }
+    const nextTab: PaletteToolTab =
+      !hasArtworkContext && (initialTab === 'analyze' || initialTab === 'replace')
+        ? 'sort'
+        : initialTab
+    setTab(nextTab)
+
+    const safeStart =
+      selectedIndex >= 0 && selectedIndex < palette.colors.length
+        ? selectedIndex
+        : 0
+    const safeEnd =
+      palette.colors.length > 1
+        ? (safeStart + 1) % palette.colors.length
+        : safeStart
+    setRampStartIdx(safeStart)
+    setRampEndIdx(safeEnd)
+
     const initialSrc =
       selectedIndex >= 0 && palette.colors[selectedIndex]
         ? palette.colors[selectedIndex]!
@@ -91,7 +121,68 @@ export function PaletteToolsModal({
       initialSrc
     setTargetHex(altTarget.toUpperCase())
     setCustomTargetHex(altTarget.toUpperCase())
-  }, [open, hasArtworkContext])
+  }, [open, hasArtworkContext, initialTab])
+
+  // Keep ramp indices within bounds if palette shrinks
+  const clampedStartIdx = Math.max(
+    0,
+    Math.min(palette.colors.length - 1, rampStartIdx)
+  )
+  const clampedEndIdx = Math.max(
+    0,
+    Math.min(palette.colors.length - 1, rampEndIdx)
+  )
+  const activeBaseIdx =
+    selectedIndex >= 0 && selectedIndex < palette.colors.length
+      ? selectedIndex
+      : 0
+  const activeBaseHex = palette.colors[activeBaseIdx] ?? '#000000'
+
+  const rampStartHex = palette.colors[clampedStartIdx] ?? '#000000'
+  const rampEndHex = palette.colors[clampedEndIdx] ?? '#FFFFFF'
+
+  const intermediatePreviewColors = useMemo(
+    () => generateIntermediateRampColors(rampStartHex, rampEndHex, rampSteps),
+    [rampStartHex, rampEndHex, rampSteps]
+  )
+
+  const toneTintPreview = useMemo(
+    () => generatePixelArtToneVariant(activeBaseHex, 'tint'),
+    [activeBaseHex]
+  )
+  const toneShadePreview = useMemo(
+    () => generatePixelArtToneVariant(activeBaseHex, 'shade'),
+    [activeBaseHex]
+  )
+  const complementaryPreview = useMemo(
+    () => generateColorHarmonyCompanions(activeBaseHex, 'complementary'),
+    [activeBaseHex]
+  )
+  const triadicPreview = useMemo(
+    () => generateColorHarmonyCompanions(activeBaseHex, 'triadic'),
+    [activeBaseHex]
+  )
+  const analogousPreview = useMemo(
+    () => generateColorHarmonyCompanions(activeBaseHex, 'analogous'),
+    [activeBaseHex]
+  )
+
+  const applyGeneratedColors = (
+    hexList: readonly string[],
+    insertAfterIdx: number
+  ) => {
+    if (palette.colors.length >= MAX_OPAQUE_PALETTE_COLORS) {
+      onToast?.(t('paletteLimitReachedMsg'))
+      return
+    }
+    const res = insertColorsIntoIndexedPalette(palette, hexList, insertAfterIdx)
+    if (res.addedCount <= 0) {
+      onToast?.(t('paletteColorAlreadyExistsMsg'))
+      return
+    }
+    onUpdatePalette(res.palette, res.lastDisplaySlot)
+    onToast?.(t('paletteAddedGeneratedColorsMsg'))
+  }
 
   const analysis = useMemo(() => {
     if (!open || !hasArtworkContext || !layers) return null
@@ -149,6 +240,14 @@ export function PaletteToolsModal({
     if (!res) return
     onUpdatePalette(res.palette, res.nextSelectedIndex)
     onToast?.(t('paletteRestoredMsg'))
+  }
+
+  const handleCleanupUnused = () => {
+    if (!onRemoveUnusedColors) return
+    const removed = onRemoveUnusedColors()
+    if (removed > 0) {
+      onToast?.(t('paletteCleanupUnusedDoneMsg'))
+    }
   }
 
   // Candidate source colors combine used artwork colors + palette colors (deduplicated)
@@ -210,45 +309,62 @@ export function PaletteToolsModal({
       maxWidthClass="max-w-lg"
     >
       <div className="space-y-3" data-testid="palette-tools-modal">
-        {/* Top Mode Tabs */}
-        {hasArtworkContext && (
-          <div className="grid grid-cols-3 gap-1.5">
-            <button
-              type="button"
-              onClick={() => setTab('sort')}
-              className={`min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1 ${
-                tab === 'sort' ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-              }`}
-              data-testid="palette-tools-tab-sort"
-            >
-              <PixelIcon name="palette" size={13} />
-              <span>{t('paletteTabSort')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab('analyze')}
-              className={`min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1 ${
-                tab === 'analyze' ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-              }`}
-              data-testid="palette-tools-tab-analyze"
-            >
-              <PixelIcon name="sparkle" size={13} />
-              <span>{t('paletteTabAnalyze')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab('replace')}
-              disabled={!onReplaceColor}
-              className={`min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1 ${
-                tab === 'replace' ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
-              }`}
-              data-testid="palette-tools-tab-replace"
-            >
-              <PixelIcon name="replace" size={13} />
-              <span>{t('paletteTabReplace')}</span>
-            </button>
-          </div>
-        )}
+        {/* Top Mode Tabs: 4 tabs in Editor, 2 tabs (Sort + Color Gen) in standalone Palette Library */}
+        <div
+          className={`grid gap-1.5 ${
+            hasArtworkContext ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => setTab('sort')}
+            className={`min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1 ${
+              tab === 'sort' ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+            }`}
+            data-testid="palette-tools-tab-sort"
+          >
+            <PixelIcon name="palette" size={13} />
+            <span>{t('paletteTabSort')}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('create')}
+            className={`min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1 ${
+              tab === 'create' ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+            }`}
+            data-testid="palette-tools-tab-create"
+          >
+            <PixelIcon name="plus" size={13} />
+            <span>{t('paletteTabCreate')}</span>
+          </button>
+          {hasArtworkContext && (
+            <>
+              <button
+                type="button"
+                onClick={() => setTab('analyze')}
+                className={`min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1 ${
+                  tab === 'analyze' ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+                }`}
+                data-testid="palette-tools-tab-analyze"
+              >
+                <PixelIcon name="sparkle" size={13} />
+                <span>{t('paletteTabAnalyze')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTab('replace')}
+                disabled={!onReplaceColor}
+                className={`min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1 ${
+                  tab === 'replace' ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+                }`}
+                data-testid="palette-tools-tab-replace"
+              >
+                <PixelIcon name="replace" size={13} />
+                <span>{t('paletteTabReplace')}</span>
+              </button>
+            </>
+          )}
+        </div>
 
         {/* TAB 1: SORT & RESTORE */}
         {tab === 'sort' && (
@@ -339,7 +455,293 @@ export function PaletteToolsModal({
           </div>
         )}
 
-        {/* TAB 2: READ-ONLY COLOR USAGE ANALYSIS */}
+        {/* TAB 2: CREATE INTERMEDIATE RAMP, TINT/SHADE & COLOR HARMONY */}
+        {tab === 'create' && (
+          <div className="space-y-3" data-testid="palette-create-panel">
+            {/* Section A: 2-Color Intermediate Ramp Generator */}
+            <div className="p-2.5 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-2.5">
+              <div className="text-xs font-bold text-[var(--text-primary)] flex items-center justify-between gap-2">
+                <span>{t('paletteRampSectionTitle')}</span>
+                <span className="text-[11px] font-mono text-[var(--text-secondary)]">
+                  {palette.colors.length}/{MAX_OPAQUE_PALETTE_COLORS}
+                </span>
+              </div>
+
+              {/* Start Color A */}
+              <div className="space-y-1">
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] flex items-center justify-between">
+                  <span>{t('paletteRampStartLabel')}</span>
+                  <span className="font-mono text-[var(--text-primary)]">
+                    #{clampedStartIdx + 1} {rampStartHex}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto p-1.5 bg-[var(--bg-panel)] border border-[var(--border-subtle)]">
+                  {palette.colors.map((hex, idx) => {
+                    const active = idx === clampedStartIdx
+                    return (
+                      <button
+                        key={`ramp-a-${idx}-${hex}`}
+                        type="button"
+                        onClick={() => setRampStartIdx(idx)}
+                        style={{ backgroundColor: hex }}
+                        title={`A: #${idx + 1} ${hex}`}
+                        className={`w-6 h-6 cursor-pointer ${
+                          active
+                            ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-primary)] z-10'
+                            : 'border border-[var(--border-pixel)]'
+                        }`}
+                        data-testid={`ramp-start-swatch-${idx}`}
+                      />
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* End Color B */}
+              <div className="space-y-1">
+                <div className="text-[11px] font-bold text-[var(--text-secondary)] flex items-center justify-between">
+                  <span>{t('paletteRampEndLabel')}</span>
+                  <span className="font-mono text-[var(--text-primary)]">
+                    #{clampedEndIdx + 1} {rampEndHex}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto p-1.5 bg-[var(--bg-panel)] border border-[var(--border-subtle)]">
+                  {palette.colors.map((hex, idx) => {
+                    const active = idx === clampedEndIdx
+                    return (
+                      <button
+                        key={`ramp-b-${idx}-${hex}`}
+                        type="button"
+                        onClick={() => setRampEndIdx(idx)}
+                        style={{ backgroundColor: hex }}
+                        title={`B: #${idx + 1} ${hex}`}
+                        className={`w-6 h-6 cursor-pointer ${
+                          active
+                            ? 'border-2 border-[var(--border-strong)] outline-2 outline-[var(--accent-teal)] z-10'
+                            : 'border border-[var(--border-pixel)]'
+                        }`}
+                        data-testid={`ramp-end-swatch-${idx}`}
+                      />
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Step Count PixelSlider (1..7) */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[11px] font-bold">
+                  <span className="text-[var(--text-secondary)]">
+                    {t('paletteRampStepsLabel')}
+                  </span>
+                  <span className="font-mono text-[var(--text-primary)]">
+                    +{rampSteps}
+                  </span>
+                </div>
+                <PixelSlider
+                  min={1}
+                  max={7}
+                  step={1}
+                  value={rampSteps}
+                  ariaLabel={t('paletteRampStepsLabel')}
+                  onChange={setRampSteps}
+                  testId="palette-ramp-steps-slider"
+                />
+              </div>
+
+              {/* Live Ramp Preview Strip (A -> Intermediates -> B) */}
+              <div className="space-y-1">
+                <div className="text-[11px] font-bold text-[var(--text-secondary)]">
+                  {t('paletteRampPreviewLabel')}
+                </div>
+                <div
+                  className="flex items-center gap-1 p-1.5 bg-[var(--bg-panel)] border-2 border-[var(--border-pixel)] overflow-x-auto"
+                  data-testid="palette-ramp-preview-strip"
+                >
+                  <span
+                    style={{ backgroundColor: rampStartHex }}
+                    title={`A: ${rampStartHex}`}
+                    className="w-7 h-7 border-2 border-[var(--border-strong)] shrink-0 flex items-center justify-center text-[9px] font-bold bg-clip-padding"
+                  />
+                  {intermediatePreviewColors.map((midHex, mIdx) => (
+                    <span
+                      key={`mid-${mIdx}-${midHex}`}
+                      style={{ backgroundColor: midHex }}
+                      title={`+${mIdx + 1}: ${midHex}`}
+                      className="flex-1 min-w-[24px] h-7 border-2 border-[var(--accent-primary)]"
+                      data-testid={`ramp-preview-mid-${mIdx}`}
+                    />
+                  ))}
+                  <span
+                    style={{ backgroundColor: rampEndHex }}
+                    title={`B: ${rampEndHex}`}
+                    className="w-7 h-7 border-2 border-[var(--border-strong)] shrink-0"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={
+                  palette.colors.length >= MAX_OPAQUE_PALETTE_COLORS ||
+                  rampStartHex.toUpperCase() === rampEndHex.toUpperCase()
+                }
+                onClick={() =>
+                  applyGeneratedColors(intermediatePreviewColors, clampedStartIdx)
+                }
+                className="w-full pixel-btn pixel-btn-teal min-h-[40px] px-3 text-xs font-bold flex items-center justify-center gap-1.5"
+                data-testid="palette-insert-ramp-btn"
+              >
+                <PixelIcon name="plus" size={14} />
+                <span>{t('paletteRampInsertBtn')}</span>
+              </button>
+            </div>
+
+            {/* Section B: Pixel-Art Hue-Shifted Highlight / Shadow & Color Harmony */}
+            <div className="p-2.5 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-[var(--text-primary)]">
+                  {t('paletteToneSectionTitle')}
+                </span>
+                <span className="inline-flex items-center gap-1.5 text-xs font-mono font-bold">
+                  <span
+                    style={{ backgroundColor: activeBaseHex }}
+                    className="w-4 h-4 border border-[var(--border-strong)] inline-block"
+                  />
+                  {activeBaseHex}
+                </span>
+              </div>
+
+              {/* Hue-shifted Tint / Shade buttons with live swatch chips */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  disabled={palette.colors.length >= MAX_OPAQUE_PALETTE_COLORS}
+                  onClick={() =>
+                    applyGeneratedColors([toneTintPreview], activeBaseIdx)
+                  }
+                  className="pixel-btn min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1.5"
+                  data-testid="palette-add-tint-btn"
+                >
+                  <span
+                    style={{ backgroundColor: toneTintPreview }}
+                    className="w-4 h-4 border border-[var(--border-strong)] shrink-0"
+                  />
+                  <span className="truncate">{t('paletteToneAddTintBtn')}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={palette.colors.length >= MAX_OPAQUE_PALETTE_COLORS}
+                  onClick={() =>
+                    applyGeneratedColors([toneShadePreview], activeBaseIdx)
+                  }
+                  className="pixel-btn min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1.5"
+                  data-testid="palette-add-shade-btn"
+                >
+                  <span
+                    style={{ backgroundColor: toneShadePreview }}
+                    className="w-4 h-4 border border-[var(--border-strong)] shrink-0"
+                  />
+                  <span className="truncate">{t('paletteToneAddShadeBtn')}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={palette.colors.length >= MAX_OPAQUE_PALETTE_COLORS}
+                  onClick={() =>
+                    applyGeneratedColors(
+                      [toneTintPreview, toneShadePreview],
+                      activeBaseIdx
+                    )
+                  }
+                  className="pixel-btn pixel-btn-active min-h-[38px] px-2 text-xs font-bold flex items-center justify-center gap-1.5"
+                  data-testid="palette-add-tone-pair-btn"
+                >
+                  <span className="inline-flex shrink-0">
+                    <span
+                      style={{ backgroundColor: toneTintPreview }}
+                      className="w-3 h-4 border border-[var(--border-strong)]"
+                    />
+                    <span
+                      style={{ backgroundColor: toneShadePreview }}
+                      className="w-3 h-4 border-y border-r border-[var(--border-strong)]"
+                    />
+                  </span>
+                  <span className="truncate">{t('paletteToneAddPairBtn')}</span>
+                </button>
+              </div>
+
+              {/* Harmony Companion Buttons */}
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  disabled={palette.colors.length >= MAX_OPAQUE_PALETTE_COLORS}
+                  onClick={() =>
+                    applyGeneratedColors(complementaryPreview, activeBaseIdx)
+                  }
+                  className="pixel-btn min-h-[36px] px-2 text-[11px] font-bold flex items-center justify-center gap-1"
+                  data-testid="palette-add-complementary-btn"
+                >
+                  <span
+                    style={{ backgroundColor: complementaryPreview[0] }}
+                    className="w-3.5 h-3.5 border border-[var(--border-strong)] shrink-0"
+                  />
+                  <span className="truncate">
+                    {t('paletteHarmonyComplementaryBtn')}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={palette.colors.length >= MAX_OPAQUE_PALETTE_COLORS}
+                  onClick={() =>
+                    applyGeneratedColors(triadicPreview, activeBaseIdx)
+                  }
+                  className="pixel-btn min-h-[36px] px-2 text-[11px] font-bold flex items-center justify-center gap-1"
+                  data-testid="palette-add-triadic-btn"
+                >
+                  <span className="inline-flex shrink-0">
+                    {triadicPreview.map((hx, idx) => (
+                      <span
+                        key={idx}
+                        style={{ backgroundColor: hx }}
+                        className="w-2.5 h-3.5 border border-[var(--border-strong)]"
+                      />
+                    ))}
+                  </span>
+                  <span className="truncate">
+                    {t('paletteHarmonyTriadicBtn')}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={palette.colors.length >= MAX_OPAQUE_PALETTE_COLORS}
+                  onClick={() =>
+                    applyGeneratedColors(analogousPreview, activeBaseIdx)
+                  }
+                  className="pixel-btn min-h-[36px] px-2 text-[11px] font-bold flex items-center justify-center gap-1"
+                  data-testid="palette-add-analogous-btn"
+                >
+                  <span className="inline-flex shrink-0">
+                    {analogousPreview.map((hx, idx) => (
+                      <span
+                        key={idx}
+                        style={{ backgroundColor: hx }}
+                        className="w-2.5 h-3.5 border border-[var(--border-strong)]"
+                      />
+                    ))}
+                  </span>
+                  <span className="truncate">
+                    {t('paletteHarmonyAnalogousBtn')}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: COLOR USAGE ANALYSIS + UNUSED CLEANUP */}
         {tab === 'analyze' && analysis && (
           <div className="space-y-3" data-testid="palette-analyze-panel">
             <div className="grid grid-cols-2 gap-1.5">
@@ -435,10 +837,23 @@ export function PaletteToolsModal({
             )}
 
             {analysis.unusedPaletteColors.length > 0 && (
-              <div className="space-y-1">
-                <div className="text-[11px] font-bold text-[var(--text-secondary)]">
-                  {t('paletteUnusedPaletteColors')} (
-                  {analysis.unusedPaletteColors.length})
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[11px] font-bold text-[var(--text-secondary)]">
+                    {t('paletteUnusedPaletteColors')} (
+                    {analysis.unusedPaletteColors.length})
+                  </div>
+                  {onRemoveUnusedColors && palette.colors.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={handleCleanupUnused}
+                      className="pixel-btn pixel-btn-danger min-h-[32px] px-2.5 text-[11px] font-bold flex items-center gap-1"
+                      data-testid="palette-cleanup-unused-btn"
+                    >
+                      <PixelIcon name="trash" size={12} />
+                      <span>{t('paletteCleanupUnusedBtn')}</span>
+                    </button>
+                  )}
                 </div>
                 <div
                   className="flex flex-wrap gap-1 p-2 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)] max-h-20 overflow-y-auto"
@@ -460,7 +875,7 @@ export function PaletteToolsModal({
           </div>
         )}
 
-        {/* TAB 3: COLOR REPLACEMENT */}
+        {/* TAB 4: COLOR REPLACEMENT */}
         {tab === 'replace' && onReplaceColor && (
           <div className="space-y-3" data-testid="palette-replace-panel">
             {/* Scope Selector */}

@@ -777,3 +777,233 @@ export function deletePaletteSlotWithReplacement(params: {
     replacedPixelCount: replaced.replacedPixelCount,
   }
 }
+
+// ==================== ADVANCED PIXEL-ART PALETTE GENERATORS & CLEANUP ====================
+
+function linearToSrgbByte(lin: number): number {
+  const c = Math.max(0, Math.min(1, lin))
+  const s = c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055
+  return Math.max(0, Math.min(255, Math.round(s * 255)))
+}
+
+function labInvF(t: number): number {
+  const delta = 6 / 29
+  return t > delta ? t * t * t : 3 * delta * delta * (t - 4 / 29)
+}
+
+export function cielabToHex(L: number, a: number, b: number): string {
+  const fy = (L + 16) / 116
+  const fx = a / 500 + fy
+  const fz = fy - b / 200
+
+  const x = 0.95047 * labInvF(fx)
+  const y = 1.0 * labInvF(fy)
+  const z = 1.08883 * labInvF(fz)
+
+  const lr = 3.2404542 * x - 1.5371385 * y - 0.4985314 * z
+  const lg = -0.969266 * x + 1.8760108 * y + 0.041556 * z
+  const lb = 0.0556434 * x - 0.2040259 * y + 1.0572252 * z
+
+  return rgbaToHex({
+    r: linearToSrgbByte(lr),
+    g: linearToSrgbByte(lg),
+    b: linearToSrgbByte(lb),
+  })
+}
+
+/**
+ * Generate `intermediateCount` perceptually even intermediate colors (CIELAB interpolation)
+ * between `fromHex` and `toHex`! Ideal for pixel-art anti-aliasing and color ramps.
+ */
+export function generateIntermediateRampColors(
+  fromHex: string,
+  toHex: string,
+  intermediateCount: number
+): string[] {
+  const n = Math.max(1, Math.min(12, Math.trunc(intermediateCount)))
+  const startLab = hexToCielab(fromHex)
+  const endLab = hexToCielab(toHex)
+  const out: string[] = []
+  for (let i = 1; i <= n; i++) {
+    const t = i / (n + 1)
+    const L = startLab.L + (endLab.L - startLab.L) * t
+    const a = startLab.a + (endLab.a - startLab.a) * t
+    const b = startLab.b + (endLab.b - startLab.b) * t
+    out.push(cielabToHex(L, a, b))
+  }
+  return out
+}
+
+/**
+ * Pixel-Art Hue-Shifted Shade / Highlight Generator:
+ * - Darker shade (`shade`): lowers L while shifting hue slightly toward cool violet/indigo (`~255°`) for rich retro shadows!
+ * - Lighter tint (`tint`): raises L while shifting hue slightly toward warm sunlight (`~65°`) for crisp highlights!
+ */
+export function generatePixelArtToneVariant(
+  baseHex: string,
+  kind: 'tint' | 'shade'
+): string {
+  const lab = hexToCielab(baseHex)
+  if (kind === 'tint') {
+    const nextL = Math.min(97, lab.L + Math.max(8, (100 - lab.L) * 0.28))
+    const nextChroma = Math.max(0, lab.chroma * 0.88)
+    const targetHue = 75 // warm golden light
+    const diff = ((targetHue - lab.hueDeg + 540) % 360) - 180
+    const nextHue = ((lab.hueDeg + diff * 0.16 + 360) % 360) * (Math.PI / 180)
+    return cielabToHex(
+      nextL,
+      nextChroma * Math.cos(nextHue),
+      nextChroma * Math.sin(nextHue)
+    )
+  }
+  const nextL = Math.max(5, lab.L - Math.max(8, lab.L * 0.26))
+  const nextChroma = Math.min(95, lab.chroma * 1.06 + (lab.chroma > 4 ? 2 : 0))
+  const targetHue = 285 // cool plum/indigo shadow
+  const diff = ((targetHue - lab.hueDeg + 540) % 360) - 180
+  const nextHue = ((lab.hueDeg + diff * 0.18 + 360) % 360) * (Math.PI / 180)
+  return cielabToHex(
+    nextL,
+    nextChroma * Math.cos(nextHue),
+    nextChroma * Math.sin(nextHue)
+  )
+}
+
+/**
+ * Generate color-harmony companions (Complementary `+180°`, Triadic `+120°/-120°`, Analogous `+32°/-32°`) in CIELAB LCh space.
+ */
+export function generateColorHarmonyCompanions(
+  baseHex: string,
+  harmony: 'complementary' | 'triadic' | 'analogous'
+): string[] {
+  const lab = hexToCielab(baseHex)
+  const effectiveChroma = Math.max(18, lab.chroma)
+  const offsets =
+    harmony === 'complementary'
+      ? [180]
+      : harmony === 'triadic'
+        ? [120, 240]
+        : [-32, 32]
+  return offsets.map((deg) => {
+    const rad = (((lab.hueDeg + deg) % 360 + 360) % 360) * (Math.PI / 180)
+    return cielabToHex(
+      Math.max(18, Math.min(88, lab.L)),
+      effectiveChroma * Math.cos(rad),
+      effectiveChroma * Math.sin(rad)
+    )
+  })
+}
+
+/**
+ * Insert one or more new `#RRGGBB` colors into an indexed `ProjectPalette` right after `insertAfterDisplaySlot`
+ * WITHOUT modifying any existing fixed index in `colorTable` (zero pixel mutation on canvas!).
+ */
+export function insertColorsIntoIndexedPalette(
+  palette: ProjectPalette,
+  hexList: readonly string[],
+  insertAfterDisplaySlot?: number
+): {
+  palette: ProjectPalette
+  addedCount: number
+  lastDisplaySlot: number
+} {
+  let working = normalizeProjectPalette(palette)
+  let insertPos =
+    typeof insertAfterDisplaySlot === 'number' &&
+    insertAfterDisplaySlot >= 0 &&
+    insertAfterDisplaySlot < working.displayOrder!.length
+      ? insertAfterDisplaySlot + 1
+      : working.displayOrder!.length
+
+  let addedCount = 0
+  let lastSlot = Math.max(0, insertPos - 1)
+
+  for (const rawHex of hexList) {
+    const clean = normalizeHex(rawHex)
+    if (!clean) continue
+    const existingFixed = findExactFixedIndex(working, clean)
+    if (existingFixed >= 0) {
+      lastSlot = working.displayOrder!.indexOf(existingFixed)
+      continue
+    }
+    const added = addColorToIndexedPalette(working, clean)
+    if (!added) break
+
+    // Move newly appended fixedIndex from end to `insertPos`
+    const order = [...added.palette.displayOrder!]
+    const popped = order.pop()!
+    order.splice(insertPos, 0, popped)
+    working = {
+      ...added.palette,
+      displayOrder: order,
+      colors: order.map((idx) => added.palette.colorTable![idx]!),
+    }
+    lastSlot = insertPos
+    insertPos++
+    addedCount++
+  }
+
+  return {
+    palette: working,
+    addedCount,
+    lastDisplaySlot: lastSlot,
+  }
+}
+
+/**
+ * Remove duplicate `#RRGGBB` slots or unused slots that have ZERO pixel references across the project
+ * while keeping at least 1 color and preserving all used fixed indices verbatim!
+ */
+export function removeUnusedColorsFromIndexedPalette(params: {
+  palette: ProjectPalette
+  selectedDisplaySlot: number
+  cels?: CelMap
+  celBuffers?: Readonly<Record<string, CelBufferRuntime>>
+  layers?: readonly LayerRuntime[]
+}): {
+  palette: ProjectPalette
+  removedCount: number
+  nextSelectedSlot: number
+} {
+  const norm = normalizeProjectPalette(params.palette)
+  if (norm.displayOrder!.length <= 1) {
+    return {
+      palette: norm,
+      removedCount: 0,
+      nextSelectedSlot: params.selectedDisplaySlot,
+    }
+  }
+
+  let working = norm
+  let currentSelected = params.selectedDisplaySlot
+  let removedCount = 0
+
+  // Snapshot original fixed indices in reverse so removing doesn't shift earlier checks
+  const candidates = [...norm.displayOrder!]
+  for (const fixedIdx of candidates) {
+    if (working.displayOrder!.length <= 1) break
+    const usage = countFixedIndexUsageAcrossProject({
+      fixedIndex: fixedIdx,
+      cels: params.cels,
+      celBuffers: params.celBuffers,
+      layers: params.layers,
+    })
+    if (usage.pixelCount === 0) {
+      const removed = removeFixedIndexFromPalette(
+        working,
+        fixedIdx,
+        currentSelected
+      )
+      if (removed) {
+        working = removed.palette
+        currentSelected = removed.nextSelectedSlot
+        removedCount++
+      }
+    }
+  }
+
+  return {
+    palette: working,
+    removedCount,
+    nextSelectedSlot: currentSelected,
+  }
+}

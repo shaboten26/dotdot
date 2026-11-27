@@ -97,15 +97,19 @@ export const MAX_OPAQUE_PALETTE_COLORS = 255
 
 export type LightThemeVariantId =
   | 'lavender-cream'
-  | 'milk-lilac'
-  | 'sage-ivory'
-  | 'berry-paper'
+  | 'peach-cotton'
+  | 'mint-pocket'
+  | 'antique-brass'
+  | 'urban-concrete'
+  | 'retro-kissaten'
 
 export type DarkThemeVariantId =
   | 'dusk-plum'
-  | 'midnight-lavender'
-  | 'moss-grape'
-  | 'velvet-fig'
+  | 'royal-velvet'
+  | 'tokyo-neon'
+  | 'urban-graphite'
+  | 'forest-apothecary'
+  | 'amber-crt'
 
 /**
  * 9-directional anchor for Canvas Resize.

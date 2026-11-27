@@ -1040,6 +1040,7 @@ export function EditorPage() {
           onReplaceColor={editor.replaceProjectColor}
           onCountColorSlotUsage={editor.countPaletteSlotUsage}
           onDeleteColorSlot={editor.deletePaletteColorSlot}
+          onRemoveUnusedColors={editor.removeUnusedPaletteColors}
         />
 
         <LayerSheet

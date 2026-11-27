@@ -11,7 +11,12 @@ import {
   analyzeArtworkColors,
   countFixedIndexUsageAcrossProject,
   deletePaletteSlotWithReplacement,
+  generateColorHarmonyCompanions,
+  generateIntermediateRampColors,
+  generatePixelArtToneVariant,
   hexToCielab,
+  insertColorsIntoIndexedPalette,
+  removeUnusedColorsFromIndexedPalette,
   replaceColorAcrossTimeline,
   restorePaletteOriginalOrder,
   sortProjectPalette,
@@ -45,7 +50,11 @@ import {
   inspectAndValidateEnvPack,
 } from '../db/envPack'
 import { makeCellKey } from '../engine/animation'
-import { DARK_THEME_VARIANTS, LIGHT_THEME_VARIANTS } from '../theme/themes'
+import {
+  DARK_THEME_VARIANTS,
+  LIGHT_THEME_VARIANTS,
+  resolveActiveThemeTokens,
+} from '../theme/themes'
 import {
   MAX_OPAQUE_PALETTE_COLORS,
   TRANSPARENT_COLOR_INDEX,
@@ -808,9 +817,74 @@ describe('v2.5.0+ UI Integration: Stamp Withdrawal, Indexed Palette Safe Deletio
     await resetAllAppData(db)
   })
 
-  it('8. UI Integration: removes Stamp buttons cleanly, opens PaletteToolsModal, verifies 4 Light + 4 Dark lavender sub-themes behind collapsible Settings toggle, and keeps Advanced Settings neat', async () => {
-    expect(LIGHT_THEME_VARIANTS).toHaveLength(4)
-    expect(DARK_THEME_VARIANTS).toHaveLength(4)
+  it('8. UI Integration: verifies pixel-art cursor speed PixelSlider, advanced palette ramp/shade/harmony/unused-cleanup tools, and 6 Light + 6 Dark distinct retro themes', async () => {
+    expect(LIGHT_THEME_VARIANTS).toHaveLength(6)
+    expect(DARK_THEME_VARIANTS).toHaveLength(6)
+
+    // Verify perceptual CIELAB intermediate ramp, hue-shifted tint/shade, harmony & unused cleanup helpers
+    const ramp3 = generateIntermediateRampColors('#241F31', '#FAF6F0', 3)
+    expect(ramp3).toHaveLength(3)
+    const L0 = hexToCielab('#241F31').L
+    const L1 = hexToCielab(ramp3[0]!).L
+    const L2 = hexToCielab(ramp3[1]!).L
+    const L3 = hexToCielab(ramp3[2]!).L
+    const L4 = hexToCielab('#FAF6F0').L
+    expect(L1).toBeGreaterThan(L0)
+    expect(L2).toBeGreaterThan(L1)
+    expect(L3).toBeGreaterThan(L2)
+    expect(L4).toBeGreaterThan(L3)
+
+    const tintHex = generatePixelArtToneVariant('#7B62AD', 'tint')
+    const shadeHex = generatePixelArtToneVariant('#7B62AD', 'shade')
+    expect(hexToCielab(tintHex).L).toBeGreaterThan(hexToCielab('#7B62AD').L)
+    expect(hexToCielab(shadeHex).L).toBeLessThan(hexToCielab('#7B62AD').L)
+
+    expect(generateColorHarmonyCompanions('#7B62AD', 'complementary')).toHaveLength(1)
+    expect(generateColorHarmonyCompanions('#7B62AD', 'triadic')).toHaveLength(2)
+    expect(generateColorHarmonyCompanions('#7B62AD', 'analogous')).toHaveLength(2)
+
+    const basePal = normalizeProjectPalette({
+      name: 'RampBase',
+      colors: ['#111111', '#EEEEEE', '#FF0055'],
+    })
+    const inserted = insertColorsIntoIndexedPalette(basePal, ramp3, 0)
+    expect(inserted.addedCount).toBe(3)
+    expect(inserted.palette.colors.slice(0, 5)).toEqual([
+      '#111111',
+      ...ramp3,
+      '#EEEEEE',
+    ])
+    // Fixed index 2 ('#FF0055') stays intact on canvas!
+    expect(inserted.palette.colorTable![2]).toBe('#FF0055')
+
+    const usedBuf = createPixelBuffer(4, 4)
+    setPixel(usedBuf, 4, 4, 0, 0, 2) // uses fixedIndex 2 ('#FF0055') only
+    const cleaned = removeUnusedColorsFromIndexedPalette({
+      palette: inserted.palette,
+      selectedDisplaySlot: 0,
+      layers: [
+        {
+          id: 'l-clean',
+          name: 'L',
+          visible: true,
+          opacity: 100,
+          blendMode: 'normal',
+          clipping: false,
+          offsetX: 0,
+          offsetY: 0,
+          dataWidth: 4,
+          dataHeight: 4,
+          data: usedBuf,
+        },
+      ],
+    })
+    expect(cleaned.removedCount).toBe(5)
+    expect(cleaned.palette.colors).toEqual(['#FF0055'])
+
+    // Verify legacy removed variant ID gracefully resolves to default theme tokens
+    expect(
+      resolveActiveThemeTokens(false, 'milk-lilac' as never, 'dusk-plum')['--bg-app']
+    ).toBe(LIGHT_THEME_VARIANTS[0]!.tokens['--bg-app'])
 
     window.history.pushState({}, '', '/')
     render(<App />)
@@ -828,7 +902,7 @@ describe('v2.5.0+ UI Integration: Stamp Withdrawal, Indexed Palette Safe Deletio
     const confirmCreate = await screen.findByTestId('confirm-create-artwork-btn')
     fireEvent.click(confirmCreate)
 
-    // Stamp button MUST NOT exist anywhere; Symmetry & Tile Preview live inside GlobalEditorSettingsModal!
+    // Stamp button MUST NOT exist anywhere; Symmetry, Tile Preview & PixelSlider Cursor Speed live inside GlobalEditorSettingsModal!
     expect(screen.queryByTestId('quick-stamp-sheet-btn')).toBeNull()
     expect(screen.queryByTestId('stamp-sheet-modal')).toBeNull()
 
@@ -837,6 +911,13 @@ describe('v2.5.0+ UI Integration: Stamp Withdrawal, Indexed Palette Safe Deletio
     )
     fireEvent.click(openGlobalSettingsBtn)
     expect(await screen.findByTestId('global-editor-settings-modal')).toBeTruthy()
+
+    // Cursor speed slider in Editor settings MUST be pixel-art PixelSlider (no native input[type="range"]!)
+    const editorCursorSlider = screen.getByTestId('cursor-speed-slider')
+    expect(editorCursorSlider.getAttribute('role')).toBe('slider')
+    expect(screen.getByTestId('cursor-speed-slider-minus')).toBeTruthy()
+    expect(screen.getByTestId('cursor-speed-slider-plus')).toBeTruthy()
+    expect(document.querySelector('input[type="range"]')).toBeNull()
 
     const symHorizBtn = screen.getByTestId('global-symmetry-horizontal')
     expect(symHorizBtn.getAttribute('aria-pressed')).toBe('false')
@@ -849,20 +930,37 @@ describe('v2.5.0+ UI Integration: Stamp Withdrawal, Indexed Palette Safe Deletio
 
     fireEvent.click(screen.getByTestId('close-global-editor-settings-btn'))
 
-    // Open PaletteSheet -> open consolidated PaletteToolsModal (`整理・分析`) -> sort & restore
+    // Open PaletteSheet -> test direct `＋中間色・明暗` button (`palette-open-create-tools-btn`)
     const openPaletteBtn = screen.getByTestId('open-palette-btn')
     fireEvent.click(openPaletteBtn)
-    const openToolsBtn = await screen.findByTestId('palette-open-tools-btn')
-    fireEvent.click(openToolsBtn)
-    expect(await screen.findByTestId('palette-tools-modal')).toBeTruthy()
+
+    const openCreateToolsBtn = await screen.findByTestId(
+      'palette-open-create-tools-btn'
+    )
+    fireEvent.click(openCreateToolsBtn)
+    expect(await screen.findByTestId('palette-create-panel')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('palette-insert-ramp-btn'))
+    fireEvent.click(screen.getByTestId('palette-add-tone-pair-btn'))
+
+    // Switch to Sort & Analyze tabs inside PaletteToolsModal
+    fireEvent.click(screen.getByTestId('palette-tools-tab-sort'))
     fireEvent.click(screen.getByTestId('palette-sort-light-asc'))
     expect(await screen.findByTestId('palette-restore-original-btn')).toBeTruthy()
     fireEvent.click(screen.getByTestId('palette-tools-tab-analyze'))
     expect(await screen.findByTestId('palette-analyze-panel')).toBeTruthy()
+    expect(screen.getByTestId('palette-cleanup-unused-btn')).toBeTruthy()
 
-    // Navigate to Settings -> verify detailed Light/Dark theme variants are hidden by default and expand cleanly!
+    // Navigate to Settings -> verify PixelSlider cursor speed & 6 Light + 6 Dark distinct retro themes!
     window.history.pushState({}, '', '/settings')
     fireEvent(window, new PopStateEvent('popstate'))
+
+    const settingsCursorSlider = await screen.findByTestId(
+      'settings-cursor-speed-slider'
+    )
+    expect(settingsCursorSlider.getAttribute('role')).toBe('slider')
+    expect(screen.getByTestId('settings-cursor-speed-slider-minus')).toBeTruthy()
+    expect(screen.getByTestId('settings-cursor-speed-slider-plus')).toBeTruthy()
+    expect(document.querySelector('input[type="range"]')).toBeNull()
 
     const themeDetailsBtn = await screen.findByTestId('toggle-theme-details-btn')
     expect(themeDetailsBtn.getAttribute('aria-expanded')).toBe('false')
@@ -872,8 +970,11 @@ describe('v2.5.0+ UI Integration: Stamp Withdrawal, Indexed Palette Safe Deletio
     expect(themeDetailsBtn.getAttribute('aria-expanded')).toBe('true')
     expect(await screen.findByTestId('theme-details-panel')).toBeTruthy()
 
-    fireEvent.click(screen.getByTestId('light-theme-variant-berry-paper'))
-    fireEvent.click(screen.getByTestId('dark-theme-variant-velvet-fig'))
+    fireEvent.click(screen.getByTestId('light-theme-variant-antique-brass'))
+    fireEvent.click(screen.getByTestId('light-theme-variant-urban-concrete'))
+    fireEvent.click(screen.getByTestId('dark-theme-variant-royal-velvet'))
+    fireEvent.click(screen.getByTestId('dark-theme-variant-tokyo-neon'))
+    fireEvent.click(screen.getByTestId('dark-theme-variant-amber-crt'))
 
     const advToggle = screen.getByTestId('settings-toggle-advanced-btn')
     expect(advToggle.getAttribute('aria-expanded')).toBe('false')

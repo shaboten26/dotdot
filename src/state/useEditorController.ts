@@ -123,6 +123,7 @@ import { resolveCanvasPoint } from '../engine/symmetry'
 import {
   countFixedIndexUsageAcrossProject,
   deletePaletteSlotWithReplacement,
+  removeUnusedColorsFromIndexedPalette,
   replaceColorAcrossTimeline,
 } from '../engine/paletteTools'
 import { clampCanvasPoint } from '../utils/coordinates'
@@ -3533,6 +3534,52 @@ export function useEditorController(options: UseEditorOptions) {
     ]
   )
 
+  const removeUnusedPaletteColors = useCallback((): number => {
+    if (!project) return 0
+    const curTl = timelineRef.current
+    const curPal = normalizeProjectPalette(palette)
+    const res = removeUnusedColorsFromIndexedPalette({
+      palette: curPal,
+      selectedDisplaySlot: selectedColorIndex,
+      cels: curTl.cels,
+      celBuffers: curTl.celBuffers,
+      layers,
+    })
+    if (res.removedCount <= 0) return 0
+
+    historyRef.current.push({
+      id: generateId('hist'),
+      label: 'Remove Unused Palette Colors',
+      timestamp: Date.now(),
+      kind: 'palette',
+      frameId: curTl.activeFrameId,
+      beforePalette: curPal,
+      afterPalette: res.palette,
+    })
+    syncHistoryCounts()
+    setPalette(res.palette)
+    setSelectedColorIndex(res.nextSelectedSlot)
+    playUiTick('step', soundEnabled)
+    persistCommittedState(
+      project,
+      layers,
+      res.palette,
+      res.nextSelectedSlot,
+      activeLayerId,
+      curTl
+    )
+    return res.removedCount
+  }, [
+    project,
+    palette,
+    selectedColorIndex,
+    layers,
+    syncHistoryCounts,
+    soundEnabled,
+    persistCommittedState,
+    activeLayerId,
+  ])
+
   const replaceProjectColor = useCallback(
     (params: {
       sourceHex: string
@@ -4937,6 +4984,7 @@ export function useEditorController(options: UseEditorOptions) {
     updateProjectPalette,
     countPaletteSlotUsage,
     deletePaletteColorSlot,
+    removeUnusedPaletteColors,
     replaceProjectColor,
     importBufferAsNewLayer,
     importPngAsNewLayer: importBufferAsNewLayer,

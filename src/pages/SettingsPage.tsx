@@ -61,16 +61,20 @@ function formatBytes(bytes: number | null): string | null {
 
 const LIGHT_VARIANT_LABEL_KEYS: Record<LightThemeVariantId, TranslationKey> = {
   'lavender-cream': 'themeVarLavenderCream',
-  'milk-lilac': 'themeVarMilkLilac',
-  'sage-ivory': 'themeVarSageIvory',
-  'berry-paper': 'themeVarBerryPaper',
+  'peach-cotton': 'themeVarPeachCotton',
+  'mint-pocket': 'themeVarMintPocket',
+  'antique-brass': 'themeVarAntiqueBrass',
+  'urban-concrete': 'themeVarUrbanConcrete',
+  'retro-kissaten': 'themeVarRetroKissaten',
 }
 
 const DARK_VARIANT_LABEL_KEYS: Record<DarkThemeVariantId, TranslationKey> = {
   'dusk-plum': 'themeVarDuskPlum',
-  'midnight-lavender': 'themeVarMidnightLavender',
-  'moss-grape': 'themeVarMossGrape',
-  'velvet-fig': 'themeVarVelvetFig',
+  'royal-velvet': 'themeVarRoyalVelvet',
+  'tokyo-neon': 'themeVarTokyoNeon',
+  'urban-graphite': 'themeVarUrbanGraphite',
+  'forest-apothecary': 'themeVarForestApothecary',
+  'amber-crt': 'themeVarAmberCrt',
 }
 
 export function SettingsPage() {
@@ -822,19 +826,19 @@ export function SettingsPage() {
                   {settings.cursorSpeed.toFixed(2)}x ({Math.round(settings.cursorSpeed * 100)}%)
                 </span>
               </div>
-              <input
-                type="range"
+              <PixelSlider
                 min={Math.round(MIN_CURSOR_SPEED * 100)}
                 max={Math.round(MAX_CURSOR_SPEED * 100)}
                 step={5}
+                buttonStep={5}
                 value={Math.round(settings.cursorSpeed * 100)}
-                aria-label={t('cursorSpeedSection')}
-                onChange={(e) => {
-                  const next = Number(e.target.value) / 100
+                unit="%"
+                ariaLabel={t('cursorSpeedSection')}
+                onChange={(pct) => {
+                  const next = pct / 100
                   void updateSettings({ cursorSpeed: next })
                 }}
-                className="w-full cursor-pointer accent-[var(--accent-primary)]"
-                data-testid="settings-cursor-speed-slider"
+                testId="settings-cursor-speed-slider"
               />
               <div className="space-y-1 pt-1">
                 <span className="text-xs font-bold text-[var(--text-secondary)] block">
