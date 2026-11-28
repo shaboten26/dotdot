@@ -1,6 +1,6 @@
 import { ViewTransition, useMemo, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import type { AppSettings, ProjectRecord } from '../types'
+import type { AppSettings, GalleryTileSize, ProjectRecord } from '../types'
 import { createNewProject, db } from '../db/database'
 import { exportEnvironmentPackZip } from '../db/envPack'
 import { MAX_CANVAS_SIZE, MIN_CANVAS_SIZE } from '../engine/pixelBuffer'
@@ -174,6 +174,35 @@ export function GalleryPage() {
     { value: 'updated', label: t('sortUpdated') },
     { value: 'name', label: t('sortName') },
   ]
+
+  const tileSize: GalleryTileSize = settings.galleryTileSize ?? 'standard'
+  const tileSizeOptions: ReadonlyArray<{
+    id: GalleryTileSize
+    label: string
+  }> = [
+    { id: 'compact', label: t('galleryTileSizeCompact') },
+    { id: 'small', label: t('galleryTileSizeSmall') },
+    { id: 'standard', label: t('galleryTileSizeStandard') },
+    { id: 'large', label: t('galleryTileSizeLarge') },
+  ]
+
+  const galleryGridClasses =
+    tileSize === 'compact'
+      ? 'grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2'
+      : tileSize === 'small'
+        ? 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2.5'
+        : tileSize === 'large'
+          ? 'grid grid-cols-1 min-[480px]:grid-cols-2 md:grid-cols-3 gap-4'
+          : 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3'
+
+  const thumbPaddingClass =
+    tileSize === 'compact'
+      ? 'p-1'
+      : tileSize === 'small'
+        ? 'p-1.5'
+        : tileSize === 'large'
+          ? 'p-3.5'
+          : 'p-2.5'
 
   if (!ready) {
     return (
@@ -399,9 +428,9 @@ export function GalleryPage() {
           </main>
         ) : (
           <>
-            {/* Sort & Manual Reorder Bar */}
+            {/* Sort, Tile Size & Manual Reorder Bar */}
             <div className="px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 max-w-5xl w-full mx-auto">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <PixelIcon
                   name="sort"
                   size={16}
@@ -414,7 +443,7 @@ export function GalleryPage() {
                     void updateSettings({ gallerySortMode: mode })
                   }
                   ariaLabel={t('sortManual')}
-                  className="min-w-[165px]"
+                  className="min-w-[155px]"
                   testId="gallery-sort-select"
                 />
 
@@ -433,11 +462,46 @@ export function GalleryPage() {
                 )}
               </div>
 
-              {settings.gallerySortMode === 'manual' && (
-                <span className="text-[11px] text-[var(--text-secondary)]">
-                  {t('dragReorderHint')}
-                </span>
-              )}
+              <div className="flex flex-wrap items-center gap-2 ml-auto">
+                {settings.gallerySortMode === 'manual' && (
+                  <span className="text-[11px] text-[var(--text-secondary)] hidden lg:inline">
+                    {t('dragReorderHint')}
+                  </span>
+                )}
+
+                <div
+                  role="group"
+                  aria-label={t('galleryTileSizeLabel')}
+                  className="inline-flex items-center gap-1"
+                  data-testid="gallery-tile-size-group"
+                >
+                  <PixelIcon
+                    name="grid"
+                    size={14}
+                    className="text-[var(--text-secondary)] mr-0.5 hidden sm:inline-flex"
+                  />
+                  {tileSizeOptions.map((opt) => {
+                    const active = tileSize === opt.id
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() =>
+                          void updateSettings({ galleryTileSize: opt.id })
+                        }
+                        aria-pressed={active}
+                        title={`${t('galleryTileSizeLabel')}: ${opt.label}`}
+                        className={`min-h-[34px] min-w-[34px] px-2 text-xs font-bold ${
+                          active ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
+                        }`}
+                        data-testid={`gallery-tile-size-${opt.id}`}
+                      >
+                        {opt.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
             </div>
 
             {/* Image-Centric Artwork Grid -> Tapping opens Viewing Screen `/project/:id`! */}
@@ -445,7 +509,11 @@ export function GalleryPage() {
               ref={gridContainerRef}
               className="flex-1 px-3 sm:px-4 pb-10 pb-safe max-w-5xl w-full mx-auto"
             >
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+              <div
+                className={galleryGridClasses}
+                data-tile-size={tileSize}
+                data-testid="gallery-artwork-grid"
+              >
                 {sortedProjects.map((proj, idx) => {
                   const isActive = proj.id === settings.activeProjectId
                   const isDraggingThis = dragState?.draggingId === proj.id
@@ -511,18 +579,28 @@ export function GalleryPage() {
                             alt={proj.name}
                             checkerDark={settings.checkerboardDark}
                             transparentBg={true}
-                            className="w-full h-full p-2.5"
+                            className={`w-full h-full ${thumbPaddingClass}`}
                           />
                         </ViewTransition>
                       </div>
 
-                      <div className="px-2.5 py-1.5 bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] flex items-center justify-between gap-1.5">
-                        <span className="text-xs font-bold truncate">
+                      <div
+                        className={`${
+                          tileSize === 'compact' ? 'px-1.5 py-1' : 'px-2.5 py-1.5'
+                        } bg-[var(--bg-surface)] border-t-2 border-[var(--border-pixel)] flex items-center justify-between gap-1`}
+                      >
+                        <span
+                          className={`${
+                            tileSize === 'compact' ? 'text-[10px]' : 'text-xs'
+                          } font-bold truncate`}
+                        >
                           {proj.name}
                         </span>
-                        <span className="text-[10px] text-[var(--text-secondary)] shrink-0">
-                          {proj.width}×{proj.height}
-                        </span>
+                        {tileSize !== 'compact' && (
+                          <span className="text-[10px] text-[var(--text-secondary)] shrink-0">
+                            {proj.width}×{proj.height}
+                          </span>
+                        )}
                       </div>
 
                       {reorderMode && settings.gallerySortMode === 'manual' && (

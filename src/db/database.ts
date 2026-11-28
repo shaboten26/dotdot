@@ -12,6 +12,7 @@ import {
   type CustomCursorGridSize,
   type DarkThemeVariantId,
   type FrameMeta,
+  type GalleryTileSize,
   type LayerPixelRecord,
   type LayerRuntime,
   type LanguageCode,
@@ -433,6 +434,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   customCursors: [],
   activeProjectId: null,
   gallerySortMode: 'manual',
+  galleryTileSize: 'standard',
   uiSize: { ...DEFAULT_UI_SIZE_CONFIG },
   customCanvasPresets: [],
   backupMeta: { ...DEFAULT_BACKUP_META },
@@ -716,6 +718,13 @@ export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSett
     cursorSize,
     activeCursorId,
     customCursors,
+    galleryTileSize:
+      raw?.galleryTileSize === 'compact' ||
+      raw?.galleryTileSize === 'small' ||
+      raw?.galleryTileSize === 'standard' ||
+      raw?.galleryTileSize === 'large'
+        ? (raw.galleryTileSize as GalleryTileSize)
+        : 'standard',
     uiSize,
     customCanvasPresets: normalizeCustomPresets(raw?.customCanvasPresets),
     backupMeta: normalizeBackupMeta(raw?.backupMeta),

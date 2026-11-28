@@ -150,9 +150,23 @@ describe('Full React UI Workflow Integration Tests', () => {
     })
     fireEvent.keyDown(window, { key: 'Escape' })
 
-    // 8. Navigate back to Gallery -> tapping artwork tile MUST open Project Viewing Screen (`/project/:id`)!
+    // 8. Navigate back to Gallery -> verify Gallery Tile Size switcher (`極小 / 小 / 標準 / 大`) & tapping artwork tile opens Project Viewing Screen (`/project/:id`)!
     fireEvent.click(screen.getByTestId('nav-gallery-btn'))
     const createdProj = (await db.projects.toArray())[0]!
+    const galleryGrid = await screen.findByTestId('gallery-artwork-grid')
+    expect(galleryGrid.getAttribute('data-tile-size')).toBe('standard')
+    fireEvent.click(screen.getByTestId('gallery-tile-size-compact'))
+    await waitFor(() => {
+      expect(galleryGrid.getAttribute('data-tile-size')).toBe('compact')
+    })
+    fireEvent.click(screen.getByTestId('gallery-tile-size-large'))
+    await waitFor(() => {
+      expect(galleryGrid.getAttribute('data-tile-size')).toBe('large')
+    })
+    fireEvent.click(screen.getByTestId('gallery-tile-size-standard'))
+    await waitFor(() => {
+      expect(galleryGrid.getAttribute('data-tile-size')).toBe('standard')
+    })
     fireEvent.click(await screen.findByTestId(`gallery-tile-${createdProj.id}`))
 
     // Verify we are on Project Viewing Screen (`/project/:id`), NOT directly in Editor!

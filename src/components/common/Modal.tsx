@@ -31,18 +31,30 @@ export function Modal({
   const { reducedMotion } = useApp()
   const { t } = useI18n()
   const bodyScrollRef = useRef<HTMLDivElement>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const wasOpenRef = useRef(false)
+
+  // Reset scrollTop ONLY when transitioning from closed (`false`) -> open (`true`).
+  // Never depend on `onClose` here, because inline `onClose={() => ...}` callbacks recreate on every parent
+  // state update (color wheel drag, palette selection, slider drag, etc.) and would otherwise reset `scrollTop = 0`!
+  useEffect(() => {
+    if (open && !wasOpenRef.current) {
+      if (bodyScrollRef.current) {
+        bodyScrollRef.current.scrollTop = 0
+      }
+    }
+    wasOpenRef.current = open
+  }, [open])
 
   useEffect(() => {
     if (!open) return
-    if (bodyScrollRef.current) {
-      bodyScrollRef.current.scrollTop = 0
-    }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') onCloseRef.current()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  }, [open])
 
   const modalNode = (
     <AnimatePresence>

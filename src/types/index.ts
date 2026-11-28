@@ -329,6 +329,8 @@ export type LanguageCode =
 
 export type UiSizePreset = 'compact' | 'standard' | 'large' | 'custom'
 
+export type GalleryTileSize = 'compact' | 'small' | 'standard' | 'large'
+
 export type CursorDisplaySize = 'small' | 'standard' | 'large'
 
 export type CustomCursorGridSize = 8 | 16
@@ -389,6 +391,8 @@ export interface AppSettings {
   customCursors: CustomCursorData[]
   activeProjectId: string | null
   gallerySortMode: 'manual' | 'newest' | 'oldest' | 'updated' | 'name'
+  /** Tile display size in Gallery (`/`) artwork grid */
+  galleryTileSize?: GalleryTileSize
   uiSize: UiSizeConfig
   customCanvasPresets: CanvasSizePreset[]
   backupMeta: BackupReminderMeta

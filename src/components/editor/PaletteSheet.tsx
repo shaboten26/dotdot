@@ -545,7 +545,7 @@ export function PaletteSheet({
                 dragState.draggingId !== itemId
               return (
                 <button
-                  key={`${idx}-${hex}`}
+                  key={`slot-${idx}`}
                   type="button"
                   {...getItemProps(itemId)}
                   onClick={() => {

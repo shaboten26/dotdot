@@ -2,18 +2,17 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react'
 import { hsvToRgb } from '../../engine/color'
 
 /**
- * Pixel-Art Stepped Color Wheel & SV Grid Geometry
- * - Low-res 52x52 logical dot grid upscaled via nearest-neighbor (`image-rendering: pixelated`)
- *   so every ring edge, SV gradient cell, and cursor crosshair retains authentic crisp pixel-art steps!
+ * Smooth High-Precision Color Wheel & Saturation/Value Square Picker
+ * - Prioritizes effortless, accurate touch / Apple Pencil / mouse usability over coarse pixelation!
+ * - Renders at 220x220 device resolution with smooth continuous Hue Ring (0..360°) and smooth SV Square (0..100%).
+ * - Generous hit targets and clean circular reticles so dragging along the outer ring or inner SV box never slips.
  */
-export const PIXEL_WHEEL_GRID_SIZE = 52
-const WHEEL_CENTER = PIXEL_WHEEL_GRID_SIZE / 2
-const RING_OUTER_RADIUS = 25
-const RING_INNER_RADIUS = 18.2
-const RING_OUTLINE_OUTER = 26
-const RING_OUTLINE_INNER = 17.2
-const SV_BOX_MIN = 14
-const SV_BOX_MAX = 37 // inclusive -> 24x24 discrete pixel steps!
+export const PIXEL_WHEEL_GRID_SIZE = 220
+const WHEEL_CENTER = PIXEL_WHEEL_GRID_SIZE / 2 // 110
+const RING_OUTER_RADIUS = 106
+const RING_INNER_RADIUS = 80
+const SV_BOX_MIN = 54
+const SV_BOX_MAX = 166 // 112x112 smooth SV square safely inscribed inside inner radius 80!
 
 export type PixelWheelHitRegion = 'ring' | 'sv' | 'outside'
 
@@ -25,16 +24,16 @@ export function classifyWheelPoint(
   const gy = normY * PIXEL_WHEEL_GRID_SIZE
 
   if (
-    gx >= SV_BOX_MIN - 0.75 &&
-    gx <= SV_BOX_MAX + 1.75 &&
-    gy >= SV_BOX_MIN - 0.75 &&
-    gy <= SV_BOX_MAX + 1.75
+    gx >= SV_BOX_MIN - 4 &&
+    gx <= SV_BOX_MAX + 4 &&
+    gy >= SV_BOX_MIN - 4 &&
+    gy <= SV_BOX_MAX + 4
   ) {
     return 'sv'
   }
 
   const dist = Math.hypot(gx - WHEEL_CENTER, gy - WHEEL_CENTER)
-  if (dist >= RING_INNER_RADIUS - 2.2 && dist <= RING_OUTER_RADIUS + 2.8) {
+  if (dist >= RING_INNER_RADIUS - 10 && dist <= RING_OUTER_RADIUS + 12) {
     return 'ring'
   }
   return 'outside'
@@ -90,7 +89,7 @@ export function PixelColorWheel({
   const clampedS = Math.max(0, Math.min(100, Math.round(saturation)))
   const clampedV = Math.max(0, Math.min(100, Math.round(value)))
 
-  // Precompute the static 52x52 outer stepped hue ring + crisp pixel outline once
+  // Precompute smooth anti-aliased continuous 360-degree Hue Ring once
   const staticRingRgba = useMemo(() => {
     const N = PIXEL_WHEEL_GRID_SIZE
     const buf = new Uint8ClampedArray(N * N * 4)
@@ -99,32 +98,30 @@ export function PixelColorWheel({
         const dx = x + 0.5 - WHEEL_CENTER
         const dy = y + 0.5 - WHEEL_CENTER
         const d = Math.hypot(dx, dy)
-        const off = (y * N + x) * 4
+        if (d < RING_INNER_RADIUS - 1.2 || d > RING_OUTER_RADIUS + 1.2) continue
 
-        if (d >= RING_INNER_RADIUS && d <= RING_OUTER_RADIUS) {
-          const rawDeg = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360
-          // Quantize hue ring into 36 crisp retro pixel sectors (10 deg steps) for unmistakable pixel-art feel
-          const steppedHue = (Math.round(rawDeg / 10) * 10) % 360
-          const { r, g, b } = hsvToRgb(steppedHue, 100, 100)
-          buf[off] = r
-          buf[off + 1] = g
-          buf[off + 2] = b
-          buf[off + 3] = 255
-        } else if (
-          (d >= RING_OUTER_RADIUS && d <= RING_OUTLINE_OUTER) ||
-          (d >= RING_OUTLINE_INNER && d < RING_INNER_RADIUS)
-        ) {
-          buf[off] = 24
-          buf[off + 1] = 21
-          buf[off + 2] = 33
-          buf[off + 3] = 255
+        const off = (y * N + x) * 4
+        const rawDeg = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360
+        const { r, g, b } = hsvToRgb(rawDeg, 100, 100)
+
+        // Smooth sub-pixel edge feathering on ring inner/outer border for clean circular appearance
+        let alpha = 1
+        if (d < RING_INNER_RADIUS) {
+          alpha = Math.max(0, 1 - (RING_INNER_RADIUS - d) / 1.2)
+        } else if (d > RING_OUTER_RADIUS) {
+          alpha = Math.max(0, 1 - (d - RING_OUTER_RADIUS) / 1.2)
         }
+
+        buf[off] = r
+        buf[off + 1] = g
+        buf[off + 2] = b
+        buf[off + 3] = Math.round(alpha * 255)
       }
     }
     return buf
   }, [])
 
-  // Render low-res 52x52 pixel buffer whenever (H, S, V) changes
+  // Render smooth continuous Hue Ring + SV Square + crisp high-contrast handles
   useEffect(() => {
     const el = canvasRef.current
     if (!el) return
@@ -135,66 +132,92 @@ export function PixelColorWheel({
     }
     const ctx = el.getContext('2d')
     if (!ctx) return
-    ctx.imageSmoothingEnabled = false
 
     const frame = new Uint8ClampedArray(staticRingRgba)
-    const setPx = (px: number, py: number, r: number, g: number, b: number) => {
-      if (px < 0 || py < 0 || px >= N || py >= N) return
-      const o = (py * N + px) * 4
-      frame[o] = r
-      frame[o + 1] = g
-      frame[o + 2] = b
-      frame[o + 3] = 255
-    }
-
-    // 1. Crisp 1-dot dark frame around inner SV pixel matrix
-    for (let x = SV_BOX_MIN - 1; x <= SV_BOX_MAX + 1; x++) {
-      setPx(x, SV_BOX_MIN - 1, 24, 21, 33)
-      setPx(x, SV_BOX_MAX + 1, 24, 21, 33)
-    }
-    for (let y = SV_BOX_MIN - 1; y <= SV_BOX_MAX + 1; y++) {
-      setPx(SV_BOX_MIN - 1, y, 24, 21, 33)
-      setPx(SV_BOX_MAX + 1, y, 24, 21, 33)
-    }
-
-    // 2. Inner 24x24 stepped pixel-art SV grid
     const span = SV_BOX_MAX - SV_BOX_MIN
+
+    // Smooth continuous SV gradient square
     for (let y = SV_BOX_MIN; y <= SV_BOX_MAX; y++) {
-      const vCell = Math.round(((SV_BOX_MAX - y) / span) * 100)
+      const vPct = ((SV_BOX_MAX - y) / span) * 100
       for (let x = SV_BOX_MIN; x <= SV_BOX_MAX; x++) {
-        const sCell = Math.round(((x - SV_BOX_MIN) / span) * 100)
-        const { r, g, b } = hsvToRgb(clampedH, sCell, vCell)
-        setPx(x, y, r, g, b)
+        const sPct = ((x - SV_BOX_MIN) / span) * 100
+        const { r, g, b } = hsvToRgb(clampedH, sPct, vPct)
+        const off = (y * N + x) * 4
+        frame[off] = r
+        frame[off + 1] = g
+        frame[off + 2] = b
+        frame[off + 3] = 255
       }
     }
 
-    // 3. Pixel-art hollow square Reticle on Hue Ring (`3x3` white + `5x5` dark border)
+    ctx.clearRect(0, 0, N, N)
+    ctx.putImageData(new ImageData(frame, N, N), 0, 0)
+
+    // Subtle crisp frame around SV square
+    ctx.save()
+    ctx.strokeStyle = 'rgba(24, 21, 33, 0.55)'
+    ctx.lineWidth = 1.5
+    ctx.strokeRect(
+      SV_BOX_MIN - 0.5,
+      SV_BOX_MIN - 0.5,
+      span + 1,
+      span + 1
+    )
+
+    const drawCircularThumb = (
+      cx: number,
+      cy: number,
+      fillStyle: string,
+      radius: number
+    ) => {
+      if (typeof ctx.arc === 'function') {
+        ctx.beginPath()
+        ctx.arc(cx, cy, radius + 2, 0, Math.PI * 2)
+        ctx.fillStyle = '#181521'
+        ctx.fill()
+
+        ctx.beginPath()
+        ctx.arc(cx, cy, radius + 0.5, 0, Math.PI * 2)
+        ctx.fillStyle = '#ffffff'
+        ctx.fill()
+
+        ctx.beginPath()
+        ctx.arc(cx, cy, Math.max(2, radius - 2), 0, Math.PI * 2)
+        ctx.fillStyle = fillStyle
+        ctx.fill()
+      } else {
+        ctx.fillStyle = '#181521'
+        ctx.fillRect(cx - radius - 2, cy - radius - 2, (radius + 2) * 2, (radius + 2) * 2)
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2)
+      }
+    }
+
+    // 1. Hue Ring Handle
     const rad = (clampedH * Math.PI) / 180
     const midR = (RING_INNER_RADIUS + RING_OUTER_RADIUS) / 2
-    const hx = Math.round(WHEEL_CENTER + Math.cos(rad) * midR - 0.5)
-    const hy = Math.round(WHEEL_CENTER + Math.sin(rad) * midR - 0.5)
+    const hx = WHEEL_CENTER + Math.cos(rad) * midR
+    const hy = WHEEL_CENTER + Math.sin(rad) * midR
+    const pureHueRgb = hsvToRgb(clampedH, 100, 100)
+    drawCircularThumb(
+      hx,
+      hy,
+      `rgb(${pureHueRgb.r}, ${pureHueRgb.g}, ${pureHueRgb.b})`,
+      7
+    )
 
-    const drawPixelMarker = (cx: number, cy: number) => {
-      for (let dy = -2; dy <= 2; dy++) {
-        for (let dx = -2; dx <= 2; dx++) {
-          const cheb = Math.max(Math.abs(dx), Math.abs(dy))
-          if (cheb === 2) {
-            setPx(cx + dx, cy + dy, 24, 21, 33)
-          } else if (cheb === 1) {
-            setPx(cx + dx, cy + dy, 248, 246, 242)
-          }
-        }
-      }
-    }
+    // 2. SV Square Handle
+    const sx = SV_BOX_MIN + (clampedS / 100) * span
+    const sy = SV_BOX_MAX - (clampedV / 100) * span
+    const activeRgb = hsvToRgb(clampedH, clampedS, clampedV)
+    drawCircularThumb(
+      sx,
+      sy,
+      `rgb(${activeRgb.r}, ${activeRgb.g}, ${activeRgb.b})`,
+      7
+    )
 
-    drawPixelMarker(hx, hy)
-
-    // 4. Pixel-art hollow square Reticle on SV Grid
-    const sx = Math.round(SV_BOX_MIN + (clampedS / 100) * span)
-    const sy = Math.round(SV_BOX_MAX - (clampedV / 100) * span)
-    drawPixelMarker(sx, sy)
-
-    ctx.putImageData(new ImageData(frame, N, N), 0, 0)
+    ctx.restore()
   }, [staticRingRgba, clampedH, clampedS, clampedV])
 
   const getNormalizedPoint = (
@@ -203,8 +226,8 @@ export function PixelColorWheel({
     clientY: number
   ): { normX: number; normY: number } => {
     const rect = el.getBoundingClientRect()
-    const w = rect.width > 0 ? rect.width : 168
-    const h = rect.height > 0 ? rect.height : 168
+    const w = rect.width > 0 ? rect.width : 184
+    const h = rect.height > 0 ? rect.height : 184
     return {
       normX: (clientX - rect.left) / w,
       normY: (clientY - rect.top) / h,
@@ -265,7 +288,7 @@ export function PixelColorWheel({
   return (
     <div className="space-y-2" data-testid={testId}>
       <div className="flex flex-col sm:flex-row items-center gap-3">
-        <div className="p-1.5 bg-[var(--bg-panel)] border-2 border-[var(--border-pixel)] shrink-0">
+        <div className="p-2 bg-[var(--bg-panel)] border-2 border-[var(--border-pixel)] shrink-0">
           <canvas
             ref={canvasRef}
             width={PIXEL_WHEEL_GRID_SIZE}
@@ -275,7 +298,7 @@ export function PixelColorWheel({
             onPointerUp={handlePointerUpOrCancel}
             onPointerCancel={handlePointerUpOrCancel}
             style={{ touchAction: 'none' }}
-            className="w-40 h-40 sm:w-44 sm:h-44 block pixelated cursor-crosshair select-none"
+            className="w-44 h-44 sm:w-48 sm:h-48 block cursor-crosshair select-none"
             data-testid={`${testId}-canvas`}
           />
         </div>
@@ -311,7 +334,7 @@ export function PixelColorWheel({
             </div>
           </div>
 
-          {/* Stepped Pixel Quick-Hue Swatch Strip (12 retro 30-degree steps) */}
+          {/* Quick-Hue Swatch Strip (12 steps) */}
           <div className="grid grid-cols-12 gap-0.5 p-1 bg-[var(--bg-panel)] border border-[var(--border-pixel)]">
             {Array.from({ length: 12 }, (_, idx) => {
               const stepHue = idx * 30

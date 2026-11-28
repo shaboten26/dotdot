@@ -1555,17 +1555,17 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
     // Source buffer MUST remain 100% untouched!
     expect(Array.from(srcRgba.slice(0, 8))).toEqual([255, 0, 0, 255, 0, 255, 0, 255])
 
-    // PixelColorWheel hit classification & coordinate mapping
-    expect(PIXEL_WHEEL_GRID_SIZE).toBe(52)
-    // Rightmost point on hue ring (`x ~ 47.5/52`, `y = 26/52`) -> `'ring'` at Hue 0°
-    expect(classifyWheelPoint(47.5 / 52, 26 / 52)).toBe('ring')
-    expect(wheelPointToHue(47.5 / 52, 26 / 52)).toBe(0)
-    // Bottom point on hue ring (`x = 26/52`, `y = 47.5/52`) -> Hue 90°
-    expect(wheelPointToHue(26 / 52, 47.5 / 52)).toBe(90)
-    // Inner SV pixel grid corners (`14..37` in 52x52 space)
-    expect(classifyWheelPoint(14 / 52, 37 / 52)).toBe('sv')
-    expect(wheelPointToSv(14 / 52, 37 / 52)).toEqual({ s: 0, v: 0 })
-    expect(wheelPointToSv(37 / 52, 14 / 52)).toEqual({ s: 100, v: 100 })
+    // Smooth Color Wheel (220x220) hit classification & coordinate mapping
+    expect(PIXEL_WHEEL_GRID_SIZE).toBe(220)
+    // Rightmost point on hue ring (`x ~ 203/220`, `y = 110/220`) -> `'ring'` at Hue 0°
+    expect(classifyWheelPoint(203 / 220, 110 / 220)).toBe('ring')
+    expect(wheelPointToHue(203 / 220, 110 / 220)).toBe(0)
+    // Bottom point on hue ring (`x = 110/220`, `y = 203/220`) -> Hue 90°
+    expect(wheelPointToHue(110 / 220, 203 / 220)).toBe(90)
+    // Inner SV square corners (`54..166` in 220x220 space)
+    expect(classifyWheelPoint(54 / 220, 166 / 220)).toBe('sv')
+    expect(wheelPointToSv(54 / 220, 166 / 220)).toEqual({ s: 0, v: 0 })
+    expect(wheelPointToSv(166 / 220, 54 / 220)).toEqual({ s: 100, v: 100 })
 
     // 2. Render PaletteSheet with artwork context: verify top live artwork preview + PixelColorWheel + HSV/RGB/HEX tabs
     const pal = normalizeProjectPalette({
@@ -1599,7 +1599,7 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
       <AppProvider>
         <PaletteSheet
           open={true}
-          onClose={vi.fn()}
+          onClose={() => {}}
           palette={latestPalette}
           selectedIndex={0}
           libraryPalettes={[]}
@@ -1613,6 +1613,11 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
         />
       </AppProvider>
     )
+
+    // Scroll Modal body down (`scrollTop = 180`) and verify inline `onClose={() => {}}` re-renders NEVER reset `scrollTop` to 0!
+    const modalScrollBody = screen.getByTestId('modal-scroll-body')
+    modalScrollBody.scrollTop = 180
+    expect(modalScrollBody.scrollTop).toBe(180)
 
     // Top live artwork preview is mounted at the very top of PaletteSheet!
     const livePreviewBanner = await screen.findByTestId('palette-sheet-artwork-preview')
@@ -1690,7 +1695,7 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
       <AppProvider>
         <PaletteSheet
           open={true}
-          onClose={vi.fn()}
+          onClose={() => {}}
           palette={latestPalette}
           selectedIndex={0}
           libraryPalettes={[]}
@@ -1704,6 +1709,8 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
         />
       </AppProvider>
     )
+    // Modal scrollTop MUST remain 180 (NEVER reset to 0!) across color wheel updates & fresh inline `onClose` callbacks!
+    expect(modalScrollBody.scrollTop).toBe(180)
 
     // Sliders (`HSV`, `RGB`, `HEX`) remain available alongside the Color Wheel!
     fireEvent.click(screen.getByTestId('color-tab-hsv'))
