@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { AppProvider } from '../state/AppContext'
 import { PixelSelect } from '../components/common/PixelSelect'
 import { PixelIcon } from '../components/common/PixelIcon'
@@ -1238,6 +1238,7 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
     expect(clearBtn.disabled).toBe(false)
     fireEvent.click(clearBtn)
     expect(clearBtn.disabled).toBe(true)
+    vi.restoreAllMocks()
   })
 
   it('Additional Fix 3: focusing Palette Name input auto-selects existing text, preserves full selection across mouseup, commits on Enter/blur, cancels on Escape, and rejects empty names', () => {
@@ -1302,5 +1303,223 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
       name: 'Autumn Dusk 16',
       colors: ['#0F380F', '#306230', '#8BAC0F', '#9BBC0F'],
     })
+  })
+
+  it('iPad & Apple Pencil (`pointerType="pen"`): keeps DrawButton mounted, draws directly without virtual cursor duplication, preserves user zoom across viewport resizes, and still supports Fit & Canvas Resize', async () => {
+    vi.restoreAllMocks()
+    await db.projects.clear()
+    await db.layerPixels.clear()
+    await db.celBuffers.clear()
+    await db.histories.clear()
+    await db.settings.clear()
+
+    // Mock ResizeObserver & dynamic bounding rect on `[data-testid="canvas-viewport"]`
+    let mockRect = { width: 768, height: 900 }
+    let resizeListeners: Array<() => void> = []
+    const origRO = globalThis.ResizeObserver
+    const origGetBCR = HTMLElement.prototype.getBoundingClientRect
+
+    class MockResizeObserver {
+      private cb: () => void
+      constructor(cb: () => void) {
+        this.cb = cb
+      }
+      observe(el: Element) {
+        if ((el as HTMLElement).getAttribute?.('data-testid') === 'canvas-viewport') {
+          resizeListeners.push(this.cb)
+        }
+      }
+      unobserve() {}
+      disconnect() {
+        resizeListeners = resizeListeners.filter((fn) => fn !== this.cb)
+      }
+    }
+
+    let strokeCount = 0
+    const origGetContext = HTMLCanvasElement.prototype.getContext
+    HTMLCanvasElement.prototype.getContext = (function () {
+      return {
+        save: () => {},
+        restore: () => {},
+        scale: () => {},
+        translate: () => {},
+        setTransform: () => {},
+        resetTransform: () => {},
+        clearRect: () => {},
+        fillRect: () => {},
+        strokeRect: () => {},
+        beginPath: () => {},
+        rect: () => {},
+        clip: () => {},
+        moveTo: () => {},
+        lineTo: () => {},
+        stroke: () => {
+          strokeCount++
+        },
+        fill: () => {},
+        arc: () => {},
+        setLineDash: () => {},
+        putImageData: () => {},
+        drawImage: () => {},
+        strokeText: () => {},
+        fillText: () => {},
+        measureText: (txt: string) => ({ width: txt.length * 6 }),
+        imageSmoothingEnabled: false,
+      } as unknown as CanvasRenderingContext2D
+    }) as unknown as typeof HTMLCanvasElement.prototype.getContext
+
+    HTMLElement.prototype.getBoundingClientRect = function () {
+      if (this.getAttribute?.('data-testid') === 'canvas-viewport') {
+        return {
+          x: 0,
+          y: 0,
+          left: 0,
+          top: 0,
+          right: mockRect.width,
+          bottom: mockRect.height,
+          width: mockRect.width,
+          height: mockRect.height,
+          toJSON: () => ({}),
+        } as DOMRect
+      }
+      return origGetBCR.call(this)
+    }
+    globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
+
+    try {
+      window.history.pushState({}, '', '/')
+      render(<App />)
+
+      // Create a 16x16 artwork via built-in 16x16 preset and enter Editor
+      fireEvent.click(await screen.findByTestId('empty-create-artwork-btn'))
+      fireEvent.click(screen.getByTestId('builtin-preset-16x16'))
+      fireEvent.click(screen.getByTestId('confirm-create-artwork-btn'))
+
+      // 1. Initially iPad/tablet touch UI is shown (`draw-button` visible) and initial measured viewport (768x900) fits 16x16 -> scale = floor(768*0.86/16) = 41
+      const drawBtn = await screen.findByTestId('draw-button')
+      expect(drawBtn).toBeTruthy()
+      const vp = await screen.findByTestId('canvas-viewport')
+      await waitFor(() => {
+        expect(vp.textContent).toContain('×41')
+      })
+      // In initial `touch` modality, virtual brush boundary calls `ctx.stroke()`
+      expect(strokeCount).toBeGreaterThan(0)
+
+      // 2. Zoom in via wheel/pinch so user has a custom zoom scale (e.g. 41 * 1.18 * 1.18 = 57.1x)
+      fireEvent.wheel(vp, { deltaY: -100, clientX: 384, clientY: 450 })
+      fireEvent.wheel(vp, { deltaY: -100, clientX: 384, clientY: 450 })
+      expect(vp.textContent).toContain('×57.1')
+
+      // 3. Draw directly with Apple Pencil (`pointerType: 'pen'`, `eyedropperDoubleTap` off or drag stroke):
+      //    - Bottom `draw-button` MUST remain mounted!
+      //    - Virtual cursor stroke MUST NOT be drawn (`strokeCount === 0` on pen redraw)!
+      //    - Custom zoom `×57.1` MUST NOT reset!
+      //    - Pixel is actually painted onto the canvas!
+      strokeCount = 0
+      fireEvent.pointerDown(vp, {
+        pointerId: 21,
+        pointerType: 'pen',
+        button: 0,
+        clientX: 384,
+        clientY: 450,
+      })
+      fireEvent.pointerMove(vp, {
+        pointerId: 21,
+        pointerType: 'pen',
+        button: 0,
+        clientX: 450,
+        clientY: 450,
+      })
+      fireEvent.pointerUp(vp, {
+        pointerId: 21,
+        pointerType: 'pen',
+        button: 0,
+        clientX: 450,
+        clientY: 450,
+      })
+
+      expect(screen.queryByTestId('draw-button')).not.toBeNull()
+      expect(vp.textContent).toContain('×57.1')
+      // Virtual cursor is hidden in `pen` modality (zero brush-outline `ctx.stroke()` calls)
+      expect(strokeCount).toBe(0)
+
+      // Verify Apple Pencil actually drew pixels on the layer (undo button becomes enabled immediately, and IndexedDB persists after auto-save)!
+      await waitFor(() => {
+        expect((screen.getByTestId('undo-btn') as HTMLButtonElement).disabled).toBe(false)
+      })
+      await waitFor(async () => {
+        const projs = await db.projects.toArray()
+        const celRecs = await db.celBuffers
+          .where('projectId')
+          .equals(projs[0]!.id)
+          .toArray()
+        const nonTransparentCount = celRecs[0]!.data.filter((v) => v !== 255).length
+        expect(nonTransparentCount).toBeGreaterThan(0)
+      })
+
+      // 4. Resize viewport height, width, and rotate screen -> `×57.1` zoom MUST remain preserved!
+      mockRect = { width: 768, height: 740 }
+      act(() => {
+        for (const fn of resizeListeners) fn()
+      })
+      expect(vp.textContent).toContain('×57.1')
+
+      mockRect = { width: 640, height: 740 }
+      act(() => {
+        for (const fn of resizeListeners) fn()
+      })
+      expect(vp.textContent).toContain('×57.1')
+
+      mockRect = { width: 1024, height: 768 }
+      act(() => {
+        for (const fn of resizeListeners) fn()
+      })
+      expect(vp.textContent).toContain('×57.1')
+
+      // 5. Finger `touch` slide still works and restores virtual cursor without resetting zoom!
+      strokeCount = 0
+      fireEvent.pointerDown(vp, {
+        pointerId: 22,
+        pointerType: 'touch',
+        clientX: 300,
+        clientY: 300,
+      })
+      fireEvent.pointerMove(vp, {
+        pointerId: 22,
+        pointerType: 'touch',
+        clientX: 360,
+        clientY: 300,
+      })
+      fireEvent.pointerUp(vp, {
+        pointerId: 22,
+        pointerType: 'touch',
+        clientX: 360,
+        clientY: 300,
+      })
+      expect(screen.queryByTestId('draw-button')).not.toBeNull()
+      expect(vp.textContent).toContain('×57.1')
+      expect(strokeCount).toBeGreaterThan(0)
+
+      // 6. Explicit "画面に合わせる" / "Fit Canvas" (`fitScreen`) menu button DOES re-fit cleanly (1024x768 -> floor(768*0.86/16) = 41)
+      fireEvent.click(screen.getByTestId('editor-menu-btn'))
+      const menuPopover = await screen.findByTestId('editor-menu-popover')
+      const fitBtn = menuPopover.querySelector('button') as HTMLButtonElement
+      expect(fitBtn).toBeTruthy()
+      fireEvent.click(fitBtn)
+      expect(vp.textContent).toContain('×41')
+
+      // 7. Canvas resolution change (`16x16` -> `32x32`) ALSO re-fits cleanly (floor(768*0.86/32) = 20)
+      fireEvent.click(screen.getByTestId('editor-menu-btn'))
+      fireEvent.click(await screen.findByTestId('canvas-resize-btn'))
+      fireEvent.click(await screen.findByTestId('builtin-preset-32x32'))
+      fireEvent.click(screen.getByTestId('confirm-resize-btn'))
+      await waitFor(() => {
+        expect(vp.textContent).toContain('×20')
+      })
+    } finally {
+      globalThis.ResizeObserver = origRO
+      HTMLElement.prototype.getBoundingClientRect = origGetBCR
+      HTMLCanvasElement.prototype.getContext = origGetContext
+    }
   })
 })

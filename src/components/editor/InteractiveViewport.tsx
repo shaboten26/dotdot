@@ -23,6 +23,7 @@ import {
   clampCanvasPoint,
   clampViewportTransform,
   computeFitViewport,
+  resizeViewportPreservingZoom,
   screenToCanvasPixel,
   zoomAroundPoint,
   type ViewportTransform,
@@ -327,11 +328,21 @@ export function InteractiveViewport({
     w: 360,
     h: 360,
   })
+  const [hasMeasuredViewport, setHasMeasuredViewport] = useState(false)
   const [transform, setTransform] = useState<ViewportTransform>({
     scale: 8,
     panX: 24,
     panY: 24,
   })
+  const prevFitParamsRef = useRef<{
+    projectId: string
+    width: number
+    height: number
+    fitTrigger: number
+    tilePreviewGrid: TilePreviewGrid
+    hasFittedMeasured: boolean
+  } | null>(null)
+  const prevMeasuredViewportRef = useRef<{ w: number; h: number } | null>(null)
   const [modality, setModalityState] = useState<InputModality>(() =>
     detectInitialInputModality()
   )
@@ -470,7 +481,12 @@ export function InteractiveViewport({
     const updateSize = () => {
       const rect = el.getBoundingClientRect()
       if (rect.width > 0 && rect.height > 0) {
-        setViewportSize({ w: rect.width, h: rect.height })
+        setViewportSize((prev) =>
+          prev.w === rect.width && prev.h === rect.height
+            ? prev
+            : { w: rect.width, h: rect.height }
+        )
+        setHasMeasuredViewport(true)
       }
     }
     updateSize()
@@ -484,13 +500,81 @@ export function InteractiveViewport({
 
   useEffect(() => {
     if (viewportSize.w <= 0 || viewportSize.h <= 0) return
+
     const tileMult =
       tilePreviewGrid === '5x5' ? 5 : tilePreviewGrid === '3x3' ? 3 : 1
     const fitRatio = tileMult > 1 ? 0.9 / tileMult : 0.86
-    setTransform(
-      computeFitViewport(width, height, viewportSize.w, viewportSize.h, fitRatio)
-    )
-  }, [width, height, fitTrigger, viewportSize.w, viewportSize.h, tilePreviewGrid])
+
+    const prevFit = prevFitParamsRef.current
+    const explicitFitRequested =
+      !prevFit ||
+      prevFit.projectId !== projectId ||
+      prevFit.width !== width ||
+      prevFit.height !== height ||
+      prevFit.fitTrigger !== fitTrigger ||
+      prevFit.tilePreviewGrid !== tilePreviewGrid ||
+      (hasMeasuredViewport && !prevFit.hasFittedMeasured)
+
+    if (explicitFitRequested) {
+      setTransform(
+        computeFitViewport(width, height, viewportSize.w, viewportSize.h, fitRatio)
+      )
+      prevFitParamsRef.current = {
+        projectId,
+        width,
+        height,
+        fitTrigger,
+        tilePreviewGrid,
+        hasFittedMeasured: hasMeasuredViewport,
+      }
+      if (hasMeasuredViewport) {
+        prevMeasuredViewportRef.current = {
+          w: viewportSize.w,
+          h: viewportSize.h,
+        }
+      }
+      return
+    }
+
+    // Viewport container resized (e.g. dock/panel height change, browser chrome, screen rotation):
+    // strictly preserve user's zoom `scale` and keep the previous center canvas coordinate centered!
+    if (hasMeasuredViewport) {
+      const prevVp = prevMeasuredViewportRef.current
+      if (
+        prevVp &&
+        (prevVp.w !== viewportSize.w || prevVp.h !== viewportSize.h)
+      ) {
+        const prevW = prevVp.w
+        const prevH = prevVp.h
+        const nextW = viewportSize.w
+        const nextH = viewportSize.h
+        setTransform((curr) =>
+          resizeViewportPreservingZoom(
+            curr,
+            prevW,
+            prevH,
+            nextW,
+            nextH,
+            width,
+            height
+          )
+        )
+      }
+      prevMeasuredViewportRef.current = {
+        w: viewportSize.w,
+        h: viewportSize.h,
+      }
+    }
+  }, [
+    projectId,
+    width,
+    height,
+    fitTrigger,
+    viewportSize.w,
+    viewportSize.h,
+    hasMeasuredViewport,
+    tilePreviewGrid,
+  ])
 
   useEffect(() => {
     const canvas = displayCanvasRef.current
@@ -1046,8 +1130,9 @@ export function InteractiveViewport({
     }
 
     // 8. Tool-Specific Virtual Pixel Cursor
-    // Section 3-1: On PC (`modality === 'mouse'`), hide the app's custom virtual cursor and draw with OS mouse cursor!
-    if (!floatingShape && !moveSession && !isPlaying && modality !== 'mouse') {
+    // Show custom virtual pixel cursor ONLY in finger `touch` mode (`modality === 'touch'`).
+    // On PC (`modality === 'mouse'`) and Apple Pencil (`modality === 'pen'`), hide the virtual cursor so direct drawing has zero duplicate cursor!
+    if (!floatingShape && !moveSession && !isPlaying && modality === 'touch') {
       const [cellX0, cellX1] = pixelSpanX(cursor.x, 1)
       const [cellY0, cellY1] = pixelSpanY(cursor.y, 1)
       const cellW = Math.max(Math.round(2 * dpr), cellX1 - cellX0)
@@ -1373,7 +1458,7 @@ export function InteractiveViewport({
           accumFloatX: subPixelCursorRef.current.x,
           accumFloatY: subPixelCursorRef.current.y,
         }
-      } else if (e.button === 0) {
+      } else if (e.button === 0 || (detected === 'pen' && e.button <= 0)) {
         const targetPt = allowsOutOfBoundsPoint
           ? rawCanvasPt
           : clampCanvasPoint(rawCanvasPt, width, height)
@@ -1652,7 +1737,7 @@ export function InteractiveViewport({
       }
 
       if (
-        e.pointerType === 'mouse' &&
+        (e.pointerType === 'mouse' || e.pointerType === 'pen') &&
         activePointersRef.current.size === 0 &&
         !floatingShape &&
         !moveSession
@@ -1882,7 +1967,7 @@ export function InteractiveViewport({
           ? 'cursor-grab'
           : floatingShape || moveSession
             ? 'cursor-move'
-            : modality === 'mouse'
+            : modality === 'mouse' || modality === 'pen'
               ? 'cursor-crosshair'
               : ''
       }`}

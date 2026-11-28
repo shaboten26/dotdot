@@ -75,6 +75,52 @@ export function computeFitViewport(
 }
 
 /**
+ * Adjust panX/panY when the viewport container resizes (e.g., dock toggle, browser UI bar, screen rotation)
+ * while strictly preserving the user's current zoom `scale` and keeping the canvas coordinate that was at the
+ * center of the previous viewport centered in the new viewport (clamped so the canvas stays reachable).
+ * Notice `panX` / `panY` are kept as exact floating-point coordinates (mirroring `zoomAroundPoint` & drag pan)
+ * so repeated incremental resize events NEVER accumulate rounding drift!
+ */
+export function resizeViewportPreservingZoom(
+  current: ViewportTransform,
+  previousViewportWidth: number,
+  previousViewportHeight: number,
+  nextViewportWidth: number,
+  nextViewportHeight: number,
+  canvasWidth: number,
+  canvasHeight: number
+): ViewportTransform {
+  if (
+    previousViewportWidth <= 0 ||
+    previousViewportHeight <= 0 ||
+    nextViewportWidth <= 0 ||
+    nextViewportHeight <= 0 ||
+    current.scale <= 0
+  ) {
+    return current
+  }
+
+  const centerCanvasX =
+    (previousViewportWidth / 2 - current.panX) / current.scale
+  const centerCanvasY =
+    (previousViewportHeight / 2 - current.panY) / current.scale
+  const nextPanX = nextViewportWidth / 2 - centerCanvasX * current.scale
+  const nextPanY = nextViewportHeight / 2 - centerCanvasY * current.scale
+
+  return clampViewportTransform(
+    {
+      scale: current.scale,
+      panX: nextPanX,
+      panY: nextPanY,
+    },
+    canvasWidth,
+    canvasHeight,
+    nextViewportWidth,
+    nextViewportHeight
+  )
+}
+
+/**
  * Zoom around a specific focal point `(focusX, focusY)` in viewport CSS coordinates,
  * keeping the canvas pixel under the finger pinch center or mouse wheel cursor anchored (Section 3-3).
  */

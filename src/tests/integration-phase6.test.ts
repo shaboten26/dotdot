@@ -4,9 +4,14 @@ import { compositeLayers, MAX_LAYERS } from '../engine/compositor'
 import { createPixelBuffer, getPixel, setPixel } from '../engine/pixelBuffer'
 import {
   clampViewportTransform,
+  computeFitViewport,
+  MAX_ZOOM_SCALE,
+  MIN_ZOOM_SCALE,
+  resizeViewportPreservingZoom,
   screenToCanvasPixel,
   zoomAroundPoint,
 } from '../utils/coordinates'
+import { modalityFromPointerType } from '../utils/inputDetect'
 import type { LayerRuntime } from '../types'
 
 describe('Phase 6 Integration: i18n Completeness, 50-Layer Compositing & Viewport Math', () => {
@@ -82,5 +87,119 @@ describe('Phase 6 Integration: i18n Completeness, 50-Layer Compositing & Viewpor
     )
     expect(clamped.panX).toBeGreaterThan(-32 * 8)
     expect(clamped.panY).toBeLessThan(600)
+  })
+
+  it('classifies touch, mouse, pen, and unknown pointer types accurately without throwing', () => {
+    expect(modalityFromPointerType('touch')).toBe('touch')
+    expect(modalityFromPointerType('mouse')).toBe('mouse')
+    expect(modalityFromPointerType('pen')).toBe('pen')
+    expect(modalityFromPointerType('')).toBe('mouse')
+    expect(modalityFromPointerType('unknown-stylus')).toBe('mouse')
+  })
+
+  it('preserves zoom scale and center canvas coordinate across height, width, rotation, and repeated incremental viewport resizes without drift', () => {
+    const canvasW = 32
+    const canvasH = 32
+    const prevW = 768
+    const prevH = 900
+
+    // User zoomed in to 24x around an area of interest
+    const zoomedIn = { scale: 24, panX: -120, panY: -80 }
+    const origCenterCanvasX = (prevW / 2 - zoomedIn.panX) / zoomedIn.scale
+    const origCenterCanvasY = (prevH / 2 - zoomedIn.panY) / zoomedIn.scale
+
+    // 1. Height change (e.g. dock/panel toggle or browser bar)
+    const afterHeightChange = resizeViewportPreservingZoom(
+      zoomedIn,
+      prevW,
+      prevH,
+      768,
+      760,
+      canvasW,
+      canvasH
+    )
+    expect(afterHeightChange.scale).toBe(24)
+    const nextCenterX1 = (768 / 2 - afterHeightChange.panX) / afterHeightChange.scale
+    const nextCenterY1 = (760 / 2 - afterHeightChange.panY) / afterHeightChange.scale
+    expect(nextCenterX1).toBeCloseTo(origCenterCanvasX, 6)
+    expect(nextCenterY1).toBeCloseTo(origCenterCanvasY, 6)
+
+    // 2. Width change (e.g. split-view / window resize)
+    const afterWidthChange = resizeViewportPreservingZoom(
+      afterHeightChange,
+      768,
+      760,
+      620,
+      760,
+      canvasW,
+      canvasH
+    )
+    expect(afterWidthChange.scale).toBe(24)
+    const nextCenterX2 = (620 / 2 - afterWidthChange.panX) / afterWidthChange.scale
+    expect(nextCenterX2).toBeCloseTo(origCenterCanvasX, 6)
+
+    // 3. Screen rotation equivalent (768x900 -> 1024x700)
+    const rotated = resizeViewportPreservingZoom(
+      zoomedIn,
+      prevW,
+      prevH,
+      1024,
+      700,
+      canvasW,
+      canvasH
+    )
+    expect(rotated.scale).toBe(24)
+    expect((1024 / 2 - rotated.panX) / rotated.scale).toBeCloseTo(origCenterCanvasX, 6)
+    expect((700 / 2 - rotated.panY) / rotated.scale).toBeCloseTo(origCenterCanvasY, 6)
+
+    // 4. Repeated 1px incremental resize steps back and forth must NOT accumulate rounding drift!
+    let stepTransform = { ...zoomedIn }
+    let curH = prevH
+    for (let i = 0; i < 25; i++) {
+      stepTransform = resizeViewportPreservingZoom(
+        stepTransform,
+        prevW,
+        curH,
+        prevW,
+        curH - 1,
+        canvasW,
+        canvasH
+      )
+      curH -= 1
+    }
+    for (let i = 0; i < 25; i++) {
+      stepTransform = resizeViewportPreservingZoom(
+        stepTransform,
+        prevW,
+        curH,
+        prevW,
+        curH + 1,
+        canvasW,
+        canvasH
+      )
+      curH += 1
+    }
+    expect(stepTransform.scale).toBe(24)
+    expect(stepTransform.panX).toBeCloseTo(zoomedIn.panX, 6)
+    expect(stepTransform.panY).toBeCloseTo(zoomedIn.panY, 6)
+
+    // 5. Clamping & MIN_ZOOM_SCALE / MAX_ZOOM_SCALE remain enforced
+    const extreme = resizeViewportPreservingZoom(
+      { scale: MAX_ZOOM_SCALE + 50, panX: -999999, panY: 999999 },
+      prevW,
+      prevH,
+      400,
+      400,
+      canvasW,
+      canvasH
+    )
+    expect(extreme.scale).toBe(MAX_ZOOM_SCALE)
+    expect(extreme.scale).toBeGreaterThanOrEqual(MIN_ZOOM_SCALE)
+    expect(extreme.panX).toBeGreaterThan(-canvasW * MAX_ZOOM_SCALE)
+    expect(extreme.panY).toBeLessThan(400)
+
+    // Explicit fit helper remains intact
+    const fitted = computeFitViewport(canvasW, canvasH, 400, 400, 0.86)
+    expect(fitted.scale).toBe(Math.floor((400 * 0.86) / canvasW))
   })
 })
