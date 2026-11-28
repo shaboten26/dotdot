@@ -2,6 +2,7 @@
   "name": "dotdot",
   "private": true,
   "version": "2.6.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3000",

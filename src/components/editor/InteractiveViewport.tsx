@@ -14,6 +14,7 @@ import type {
 } from '../../types'
 import type { MultiStepPhase } from '../../state/useEditorController'
 import { getBrushOffsets } from '../../engine/brush'
+import { toGrayscaleRgbaBuffer } from '../../engine/color'
 import { rasterizeTransformedShape } from '../../engine/transform'
 import { resolveToolIconName } from '../../utils/toolIcon'
 import { PixelIcon, type PixelIconName } from '../common/PixelIcon'
@@ -91,7 +92,9 @@ interface InteractiveViewportProps {
   cursorSize?: CursorDisplaySize
   previewFlipX?: boolean
   previewFlipY?: boolean
+  grayscalePreview?: boolean
   onResetPreviewFlip?: () => void
+  onResetGrayscalePreview?: () => void
   fitTrigger: number
   onModalityChange?: (modality: InputModality) => void
   onMoveCursor: (pt: Point, allowOutOfBounds?: boolean) => void
@@ -305,7 +308,9 @@ export function InteractiveViewport({
   cursorSize = 'standard',
   previewFlipX = false,
   previewFlipY = false,
+  grayscalePreview = false,
   onResetPreviewFlip,
+  onResetGrayscalePreview,
   fitTrigger,
   onModalityChange,
   onMoveCursor,
@@ -732,11 +737,10 @@ export function InteractiveViewport({
       }
       const offCtx = off.getContext('2d')
       if (offCtx) {
-        const imgData = new ImageData(
-          new Uint8ClampedArray(compositedBuffer),
-          width,
-          height
-        )
+        const displayRgba: Uint8ClampedArray<ArrayBuffer> = grayscalePreview
+          ? toGrayscaleRgbaBuffer(compositedBuffer)
+          : new Uint8ClampedArray(compositedBuffer)
+        const imgData = new ImageData(displayRgba, width, height)
         offCtx.putImageData(imgData, 0, 0)
         drawMirroredCanvasImage(off)
       }
@@ -1322,6 +1326,7 @@ export function InteractiveViewport({
     cursorSize,
     previewFlipX,
     previewFlipY,
+    grayscalePreview,
   ])
 
   const mapScreenToLogicalPixel = useCallback(
@@ -1980,31 +1985,55 @@ export function InteractiveViewport({
         />
       </ViewTransition>
 
-      {(previewFlipX || previewFlipY) && (
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation()
-            onResetPreviewFlip?.()
-          }}
-          title={t('flipPreviewResetBtn')}
-          className="absolute top-2 left-2 z-10 pixel-btn pixel-btn-teal px-2 py-1 text-[11px] font-bold flex items-center gap-1"
-          data-testid="viewport-flip-preview-badge"
-        >
-          <PixelIcon
-            name={previewFlipX ? 'flipH' : 'flipV'}
-            size={12}
-          />
-          <span>
-            {previewFlipX && previewFlipY
-              ? t('flipPreviewActiveBadgeHV')
-              : previewFlipX
-                ? t('flipPreviewActiveBadgeH')
-                : t('flipPreviewActiveBadgeV')}
-          </span>
-          <PixelIcon name="close" size={10} />
-        </button>
+      {(previewFlipX || previewFlipY || grayscalePreview) && (
+        <div className="absolute top-2 left-2 z-10 flex flex-wrap items-center gap-1.5 max-w-[65%]">
+          {(previewFlipX || previewFlipY) && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                onResetPreviewFlip?.()
+              }}
+              title={t('flipPreviewResetBtn')}
+              className="pixel-btn pixel-btn-teal px-2 py-1 text-[11px] font-bold flex items-center gap-1"
+              data-testid="viewport-flip-preview-badge"
+            >
+              <PixelIcon
+                name={previewFlipX ? 'flipH' : 'flipV'}
+                size={12}
+              />
+              <span>
+                {previewFlipX && previewFlipY
+                  ? t('flipPreviewActiveBadgeHV')
+                  : previewFlipX
+                    ? t('flipPreviewActiveBadgeH')
+                    : t('flipPreviewActiveBadgeV')}
+              </span>
+              <PixelIcon name="close" size={10} />
+            </button>
+          )}
+          {grayscalePreview && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                onResetGrayscalePreview?.()
+              }}
+              title={t('grayscalePreviewResetBtn')}
+              className="pixel-btn pixel-btn-teal px-2 py-1 text-[11px] font-bold flex items-center gap-1"
+              data-testid="viewport-grayscale-preview-badge"
+            >
+              <span className="inline-flex shrink-0">
+                <span className="w-2.5 h-3 bg-[#1e1b29] border border-[var(--border-strong)]" />
+                <span className="w-2.5 h-3 bg-[#e6e2ee] border-y border-r border-[var(--border-strong)]" />
+              </span>
+              <span>{t('grayscalePreviewActiveBadge')}</span>
+              <PixelIcon name="close" size={10} />
+            </button>
+          )}
+        </div>
       )}
 
       <div

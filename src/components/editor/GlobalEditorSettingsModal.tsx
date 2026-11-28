@@ -342,6 +342,65 @@ export function GlobalEditorSettingsModal({
                 </section>
               )}
 
+              {/* 1d. Non-Destructive Grayscale / Monochrome Luminance Preview */}
+              <section
+                className="pixel-card p-3 space-y-2"
+                data-testid="global-grayscale-preview-section"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-[var(--text-primary)]">
+                    <PixelIcon
+                      name="eye"
+                      size={13}
+                      className="text-[var(--accent-teal)]"
+                    />
+                    <span>{t('grayscalePreviewSection')}</span>
+                  </div>
+                  {settings.grayscalePreview && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void updateSettings({ grayscalePreview: false })
+                      }
+                      className="pixel-btn min-h-[28px] px-2 text-[11px] font-bold flex items-center gap-1"
+                      data-testid="global-grayscale-preview-reset-btn"
+                    >
+                      <PixelIcon name="undo" size={11} />
+                      <span>{t('grayscalePreviewResetBtn')}</span>
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    void updateSettings({
+                      grayscalePreview: !settings.grayscalePreview,
+                    })
+                  }
+                  aria-pressed={Boolean(settings.grayscalePreview)}
+                  className={`w-full min-h-[38px] px-3 text-xs font-bold flex items-center justify-center gap-2 ${
+                    settings.grayscalePreview
+                      ? 'pixel-btn pixel-btn-teal'
+                      : 'pixel-btn'
+                  }`}
+                  data-testid="global-grayscale-preview-btn"
+                >
+                  <span className="inline-flex shrink-0">
+                    <span className="w-3 h-3.5 bg-[#1e1b29] border border-[var(--border-strong)]" />
+                    <span className="w-3 h-3.5 bg-[#e6e2ee] border-y border-r border-[var(--border-strong)]" />
+                  </span>
+                  <span>{t('grayscalePreviewToggleBtn')}</span>
+                  {settings.grayscalePreview && (
+                    <PixelIcon name="check" size={12} />
+                  )}
+                </button>
+
+                <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">
+                  {t('grayscalePreviewHint')}
+                </p>
+              </section>
+
               {/* 2. Cursor Speed */}
               <section className="pixel-card p-3 space-y-2.5">
                 <div className="flex items-center justify-between gap-2">

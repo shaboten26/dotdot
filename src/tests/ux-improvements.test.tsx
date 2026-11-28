@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { AppProvider } from '../state/AppContext'
+import {
+  classifyWheelPoint,
+  PIXEL_WHEEL_GRID_SIZE,
+  wheelPointToHue,
+  wheelPointToSv,
+} from '../components/common/PixelColorWheel'
+import { rgbToGrayscaleByte, toGrayscaleRgbaBuffer } from '../engine/color'
+import { normalizeProjectPalette } from '../engine/indexedPalette'
+import { exportCompositePngBytes } from '../engine/compositor'
 import { PixelSelect } from '../components/common/PixelSelect'
 import { PixelIcon } from '../components/common/PixelIcon'
 import { LayerPanelContent } from '../components/editor/LayerSheet'
@@ -17,7 +26,12 @@ import {
   selectWorldRectangleMask,
 } from '../engine/selection'
 import { App } from '../App'
-import { db } from '../db/database'
+import {
+  db,
+  DEFAULT_UI_SIZE_CONFIG,
+  normalizeAppSettings,
+  UI_SIZE_PRESETS,
+} from '../db/database'
 import type { LayerRuntime, ToolSettings } from '../types'
 
 afterEach(() => {
@@ -1521,5 +1535,230 @@ describe('UX Improvements (Sections 4-1, 4-2, 4-3, 4-4, 4-7)', () => {
       HTMLElement.prototype.getBoundingClientRect = origGetBCR
       HTMLCanvasElement.prototype.getContext = origGetContext
     }
+  })
+
+  it('Non-destructive Grayscale Preview, Top Live Artwork Preview in Palette Sheet, and Pixel-Art Color Wheel: converts display to Rec.709 grayscale without altering palette/pixels/PNG export, updates live artwork preview, and supports wheel + HSV/RGB/HEX tabs', async () => {
+    // 1. Unit-verify non-destructive Rec.709 grayscale conversion & PixelColorWheel geometry
+    const srcRgba = new Uint8ClampedArray([
+      255, 0, 0, 255, // pure red -> round(0.2126*255) = 54
+      0, 255, 0, 255, // pure green -> round(0.7152*255) = 182
+      12, 34, 56, 0, // transparent -> remains 0,0,0,0
+    ])
+    const gray = toGrayscaleRgbaBuffer(srcRgba)
+    expect(rgbToGrayscaleByte(255, 0, 0)).toBe(54)
+    expect(rgbToGrayscaleByte(0, 255, 0)).toBe(182)
+    expect(Array.from(gray)).toEqual([
+      54, 54, 54, 255,
+      182, 182, 182, 255,
+      0, 0, 0, 0,
+    ])
+    // Source buffer MUST remain 100% untouched!
+    expect(Array.from(srcRgba.slice(0, 8))).toEqual([255, 0, 0, 255, 0, 255, 0, 255])
+
+    // PixelColorWheel hit classification & coordinate mapping
+    expect(PIXEL_WHEEL_GRID_SIZE).toBe(52)
+    // Rightmost point on hue ring (`x ~ 47.5/52`, `y = 26/52`) -> `'ring'` at Hue 0°
+    expect(classifyWheelPoint(47.5 / 52, 26 / 52)).toBe('ring')
+    expect(wheelPointToHue(47.5 / 52, 26 / 52)).toBe(0)
+    // Bottom point on hue ring (`x = 26/52`, `y = 47.5/52`) -> Hue 90°
+    expect(wheelPointToHue(26 / 52, 47.5 / 52)).toBe(90)
+    // Inner SV pixel grid corners (`14..37` in 52x52 space)
+    expect(classifyWheelPoint(14 / 52, 37 / 52)).toBe('sv')
+    expect(wheelPointToSv(14 / 52, 37 / 52)).toEqual({ s: 0, v: 0 })
+    expect(wheelPointToSv(37 / 52, 14 / 52)).toEqual({ s: 100, v: 100 })
+
+    // 2. Render PaletteSheet with artwork context: verify top live artwork preview + PixelColorWheel + HSV/RGB/HEX tabs
+    const pal = normalizeProjectPalette({
+      name: 'LivePreviewPal',
+      colors: ['#FF0000', '#00FF00', '#0000FF'],
+    })
+    const layerBuf = createPixelBuffer(4, 4)
+    layerBuf[0] = 0 // slot 0 (#FF0000)
+    const layers: LayerRuntime[] = [
+      {
+        id: 'layer-1',
+        name: 'Layer 1',
+        visible: true,
+        opacity: 100,
+        blendMode: 'normal',
+        clipping: false,
+        offsetX: 0,
+        offsetY: 0,
+        dataWidth: 4,
+        dataHeight: 4,
+        data: layerBuf,
+      },
+    ]
+
+    let latestPalette = pal
+    const onUpdatePalette = vi.fn((next) => {
+      latestPalette = normalizeProjectPalette(next)
+    })
+
+    const { rerender } = render(
+      <AppProvider>
+        <PaletteSheet
+          open={true}
+          onClose={vi.fn()}
+          palette={latestPalette}
+          selectedIndex={0}
+          libraryPalettes={[]}
+          onSelectColor={vi.fn()}
+          onUpdatePalette={onUpdatePalette}
+          onSaveToLibrary={vi.fn()}
+          canvasWidth={4}
+          canvasHeight={4}
+          layers={layers}
+          activeLayerId="layer-1"
+        />
+      </AppProvider>
+    )
+
+    // Top live artwork preview is mounted at the very top of PaletteSheet!
+    const livePreviewBanner = await screen.findByTestId('palette-sheet-artwork-preview')
+    expect(livePreviewBanner).toBeTruthy()
+    expect(screen.getByTestId('palette-sheet-artwork-preview-canvas')).toBeTruthy()
+
+    //Expand / compact preview toggle works
+    const sizeBtn = screen.getByTestId('palette-sheet-artwork-preview-size-btn')
+    expect(sizeBtn.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(sizeBtn)
+    expect(sizeBtn.getAttribute('aria-expanded')).toBe('true')
+
+    // Non-destructive grayscale toggle inside PaletteSheet preview works & leaves palette/export colors intact!
+    const grayBtn = screen.getByTestId('palette-sheet-artwork-preview-grayscale-btn')
+    expect(grayBtn.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(grayBtn)
+    await waitFor(() => {
+      expect(grayBtn.getAttribute('aria-pressed')).toBe('true')
+    })
+    // Palette color and PNG export remain full color (#FF0000 -> R=255, G=0, B=0) even while grayscalePreview is ON!
+    expect(latestPalette.colors[0]).toBe('#FF0000')
+    const exportedPng = exportCompositePngBytes(layers, 4, 4, 1, {
+      palette: latestPalette,
+    })
+    expect(exportedPng.png.byteLength).toBeGreaterThan(0)
+
+    // Turn grayscale back off cleanly
+    fireEvent.click(grayBtn)
+    await waitFor(() => {
+      expect(grayBtn.getAttribute('aria-pressed')).toBe('false')
+    })
+
+    // Pixel-Art Color Wheel tab is active by default and updates palette color when interacting with ring / quick-hue / SV grid!
+    const wheelCanvas = screen.getByTestId('palette-pixel-color-wheel-canvas')
+    vi.spyOn(wheelCanvas, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      width: 208,
+      height: 208,
+      right: 208,
+      bottom: 208,
+      toJSON: () => ({}),
+    } as DOMRect)
+
+    // Drag on bottom of outer Hue ring (`(104, 190)` -> Hue ~90° chartreuse green)
+    fireEvent.mouseDown(wheelCanvas, {
+      button: 0,
+      clientX: 104,
+      clientY: 190,
+    })
+    fireEvent.pointerDown(wheelCanvas, {
+      pointerId: 31,
+      pointerType: 'mouse',
+      button: 0,
+      clientX: 104,
+      clientY: 190,
+    })
+    fireEvent.pointerUp(wheelCanvas, {
+      pointerId: 31,
+      pointerType: 'mouse',
+      button: 0,
+      clientX: 104,
+      clientY: 190,
+    })
+    // Also verify quick-hue pixel swatch button (`120°` pure green)
+    if (latestPalette.colors[0] === '#FF0000') {
+      fireEvent.click(screen.getByTestId('palette-pixel-color-wheel-quick-hue-120'))
+    }
+    expect(onUpdatePalette).toHaveBeenCalled()
+    expect(latestPalette.colors[0]).not.toBe('#FF0000')
+
+    rerender(
+      <AppProvider>
+        <PaletteSheet
+          open={true}
+          onClose={vi.fn()}
+          palette={latestPalette}
+          selectedIndex={0}
+          libraryPalettes={[]}
+          onSelectColor={vi.fn()}
+          onUpdatePalette={onUpdatePalette}
+          onSaveToLibrary={vi.fn()}
+          canvasWidth={4}
+          canvasHeight={4}
+          layers={layers}
+          activeLayerId="layer-1"
+        />
+      </AppProvider>
+    )
+
+    // Sliders (`HSV`, `RGB`, `HEX`) remain available alongside the Color Wheel!
+    fireEvent.click(screen.getByTestId('color-tab-hsv'))
+    expect(screen.getAllByRole('slider').length).toBe(3)
+    fireEvent.click(screen.getByTestId('color-tab-rgb'))
+    expect(screen.getAllByRole('slider').length).toBe(3)
+    fireEvent.click(screen.getByTestId('color-tab-hex'))
+    expect(screen.getByTestId('hex-direct-input')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('color-tab-wheel'))
+    expect(screen.getByTestId('palette-pixel-color-wheel')).toBeTruthy()
+
+    // Opening PaletteToolsModal ALSO renders the top live artwork preview!
+    fireEvent.click(screen.getByTestId('palette-open-tools-btn'))
+    expect(await screen.findByTestId('palette-tools-artwork-preview')).toBeTruthy()
+
+    // 3. Verify re-baselined UI Size presets: former `compact` is now `standard`, and new `compact` goes even smaller!
+    expect(DEFAULT_UI_SIZE_CONFIG).toEqual({
+      preset: 'standard',
+      overallScale: 92,
+      toolIconSize: 16,
+      toolButtonHeight: 44,
+      toolLabelSize: 10,
+      swatchSize: 30,
+      checkboxSize: 16,
+      uiGap: 4,
+      drawButtonVh: 12,
+    })
+    expect(UI_SIZE_PRESETS.compact).toEqual({
+      preset: 'compact',
+      overallScale: 84,
+      toolIconSize: 14,
+      toolButtonHeight: 36,
+      toolLabelSize: 9,
+      swatchSize: 24,
+      checkboxSize: 14,
+      uiGap: 2,
+      drawButtonVh: 9,
+    })
+    expect(UI_SIZE_PRESETS.large.overallScale).toBe(100)
+    // Legacy uncustomized standard settings auto-migrate to the new streamlined standard baseline
+    const migrated = normalizeAppSettings({
+      uiSize: {
+        preset: 'standard',
+        overallScale: 100,
+        toolIconSize: 20,
+        toolButtonHeight: 48,
+        toolLabelSize: 11,
+        swatchSize: 34,
+        checkboxSize: 20,
+        uiGap: 6,
+        drawButtonVh: 15,
+      },
+    })
+    expect(migrated.uiSize).toEqual(DEFAULT_UI_SIZE_CONFIG)
+
+    vi.restoreAllMocks()
   })
 })

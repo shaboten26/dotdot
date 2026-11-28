@@ -130,3 +130,32 @@ export function rgbaEquals(a: RGBA, b: RGBA): boolean {
 }
 
 export const TRANSPARENT_RGBA: RGBA = { r: 0, g: 0, b: 0, a: 0 }
+
+/**
+ * Rec.709 perceptual luminance byte (`0..255`) for non-destructive grayscale / value-check preview.
+ * `Y = round(0.2126 * R + 0.7152 * G + 0.0722 * B)`
+ */
+export function rgbToGrayscaleByte(r: number, g: number, b: number): number {
+  return clampByte(0.2126 * r + 0.7152 * g + 0.0722 * b)
+}
+
+/**
+ * Returns a NEW `Uint8ClampedArray` RGBA buffer converted to Rec.709 grayscale while preserving alpha.
+ * Non-destructive: NEVER mutates `src`!
+ */
+export function toGrayscaleRgbaBuffer(
+  src: Uint8ClampedArray | Uint8Array
+): Uint8ClampedArray<ArrayBuffer> {
+  const out = new Uint8ClampedArray(src.length)
+  for (let i = 0; i < src.length; i += 4) {
+    const a = src[i + 3]!
+    if (a === 0) continue
+    const lum = rgbToGrayscaleByte(src[i]!, src[i + 1]!, src[i + 2]!)
+    out[i] = lum
+    out[i + 1] = lum
+    out[i + 2] = lum
+    out[i + 3] = a
+  }
+  return out
+}
+

@@ -133,7 +133,7 @@ export function DrawButton({
         data-holding={isContinuousDrawing ? 'true' : 'false'}
         style={{
           touchAction: 'none',
-          height: 'clamp(64px, var(--draw-btn-vh, 15dvh), 136px)',
+          height: 'clamp(44px, var(--draw-btn-vh, 12dvh), 136px)',
         }}
         className={`flex-1 w-full flex items-center justify-center gap-3 select-none ${
           isConfirmState ? 'pixel-draw-btn pixel-draw-btn-confirm' : 'pixel-draw-btn'

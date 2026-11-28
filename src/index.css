@@ -56,14 +56,14 @@
   --canvas-well: #dfd6e4;
 
   /* Dynamic UI customization variables (updated from AppSettings.uiSize) */
-  --ui-scale: 1;
-  --tool-icon-size: 20px;
-  --tool-btn-height: 48px;
-  --tool-label-size: 11px;
-  --swatch-size: 34px;
-  --checkbox-size: 20px;
-  --ui-gap: 6px;
-  --draw-btn-vh: 15dvh;
+  --ui-scale: 0.92;
+  --tool-icon-size: 16px;
+  --tool-btn-height: 44px;
+  --tool-label-size: 10px;
+  --swatch-size: 30px;
+  --checkbox-size: 16px;
+  --ui-gap: 4px;
+  --draw-btn-vh: 12dvh;
 }
 
 :root[data-theme-variant="peach-cotton"] {

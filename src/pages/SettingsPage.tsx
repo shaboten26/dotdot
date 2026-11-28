@@ -538,14 +538,14 @@ export function SettingsPage() {
                 ].map((sample, i) => (
                   <div
                     key={i}
-                    style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
+                    style={{ minHeight: 'max(34px, var(--tool-btn-height, 44px))' }}
                     className={`px-1.5 py-1 flex flex-col items-center justify-center gap-0.5 ${
                       sample.active ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
                     }`}
                   >
                     <PixelIcon name={sample.icon} />
                     <span
-                      style={{ fontSize: 'var(--tool-label-size, 11px)' }}
+                      style={{ fontSize: 'var(--tool-label-size, 10px)' }}
                       className="leading-none font-bold truncate max-w-full"
                     >
                       {sample.label}
@@ -563,8 +563,8 @@ export function SettingsPage() {
                     <span
                       key={hex}
                       style={{
-                        width: 'var(--swatch-size, 34px)',
-                        height: 'var(--swatch-size, 34px)',
+                        width: 'var(--swatch-size, 30px)',
+                        height: 'var(--swatch-size, 30px)',
                         backgroundColor: hex,
                       }}
                       className={`inline-block border-2 ${
@@ -585,7 +585,7 @@ export function SettingsPage() {
 
               <div
                 style={{
-                  height: 'clamp(44px, calc(var(--draw-btn-vh, 15dvh) * 0.45), 76px)',
+                  height: 'clamp(34px, calc(var(--draw-btn-vh, 12dvh) * 0.45), 76px)',
                 }}
                 className="w-full pixel-draw-btn flex items-center justify-center gap-2 text-sm font-bold select-none"
               >
@@ -639,9 +639,9 @@ export function SettingsPage() {
               <UiSliderRow
                 label={t('uiOverallScale')}
                 value={ui.overallScale}
-                min={85}
+                min={75}
                 max={120}
-                step={5}
+                step={2}
                 unit="%"
                 onChange={(v) =>
                   void updateUiSize({ preset: 'custom', overallScale: v })
@@ -650,7 +650,7 @@ export function SettingsPage() {
               <UiSliderRow
                 label={t('uiToolIconSize')}
                 value={ui.toolIconSize}
-                min={16}
+                min={12}
                 max={32}
                 step={2}
                 unit="px"
@@ -661,7 +661,7 @@ export function SettingsPage() {
               <UiSliderRow
                 label={t('uiToolButtonHeight')}
                 value={ui.toolButtonHeight}
-                min={44}
+                min={34}
                 max={64}
                 step={2}
                 unit="px"
@@ -672,7 +672,7 @@ export function SettingsPage() {
               <UiSliderRow
                 label={t('uiToolLabelSize')}
                 value={ui.toolLabelSize}
-                min={10}
+                min={8}
                 max={15}
                 step={1}
                 unit="px"
@@ -683,7 +683,7 @@ export function SettingsPage() {
               <UiSliderRow
                 label={t('uiSwatchSize')}
                 value={ui.swatchSize}
-                min={28}
+                min={22}
                 max={48}
                 step={2}
                 unit="px"
@@ -694,7 +694,7 @@ export function SettingsPage() {
               <UiSliderRow
                 label={t('uiCheckboxSize')}
                 value={ui.checkboxSize}
-                min={16}
+                min={14}
                 max={28}
                 step={2}
                 unit="px"
@@ -705,7 +705,7 @@ export function SettingsPage() {
               <UiSliderRow
                 label={t('uiGapSize')}
                 value={ui.uiGap}
-                min={4}
+                min={2}
                 max={12}
                 step={1}
                 unit="px"
@@ -716,7 +716,7 @@ export function SettingsPage() {
               <UiSliderRow
                 label={t('uiDrawButtonVh')}
                 value={ui.drawButtonVh}
-                min={10}
+                min={7}
                 max={20}
                 step={1}
                 unit="%"
@@ -867,6 +867,12 @@ export function SettingsPage() {
                 checked={settings.checkerboardDark}
                 onChange={(v) => void updateSettings({ checkerboardDark: v })}
                 label={t('checkerboardDarkLabel')}
+              />
+              <PixelCheckbox
+                checked={Boolean(settings.grayscalePreview)}
+                onChange={(v) => void updateSettings({ grayscalePreview: v })}
+                label={t('grayscalePreviewLabel')}
+                testId="settings-grayscale-preview"
               />
               <PixelCheckbox
                 checked={settings.soundEnabled}

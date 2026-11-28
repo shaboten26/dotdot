@@ -105,3 +105,10 @@ npm run build
 # ローカルプレビュー（Cloudflare Pages 静的配信互換）
 npx wrangler pages dev dist --ip 0.0.0.0 --port 3000
 ```
+
+---
+
+## ライセンス
+
+本プロジェクトは [MIT License](./LICENSE) のもとで公開されています（Copyright (c) 2026 shaboten26）。
+

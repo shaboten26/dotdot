@@ -176,6 +176,17 @@ export const BUILT_IN_CANVAS_PRESETS: ReadonlyArray<CanvasSizePreset> = [
 export const UI_SIZE_PRESETS: Record<Exclude<UiSizePreset, 'custom'>, UiSizeConfig> = {
   compact: {
     preset: 'compact',
+    overallScale: 84,
+    toolIconSize: 14,
+    toolButtonHeight: 36,
+    toolLabelSize: 9,
+    swatchSize: 24,
+    checkboxSize: 14,
+    uiGap: 2,
+    drawButtonVh: 9,
+  },
+  standard: {
+    preset: 'standard',
     overallScale: 92,
     toolIconSize: 16,
     toolButtonHeight: 44,
@@ -185,8 +196,8 @@ export const UI_SIZE_PRESETS: Record<Exclude<UiSizePreset, 'custom'>, UiSizeConf
     uiGap: 4,
     drawButtonVh: 12,
   },
-  standard: {
-    preset: 'standard',
+  large: {
+    preset: 'large',
     overallScale: 100,
     toolIconSize: 20,
     toolButtonHeight: 48,
@@ -195,17 +206,6 @@ export const UI_SIZE_PRESETS: Record<Exclude<UiSizePreset, 'custom'>, UiSizeConf
     checkboxSize: 20,
     uiGap: 6,
     drawButtonVh: 15,
-  },
-  large: {
-    preset: 'large',
-    overallScale: 110,
-    toolIconSize: 24,
-    toolButtonHeight: 56,
-    toolLabelSize: 13,
-    swatchSize: 40,
-    checkboxSize: 24,
-    uiGap: 8,
-    drawButtonVh: 17,
   },
 }
 
@@ -423,6 +423,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   lowStorageSnoozedUntil: null,
   showGrid: true,
   checkerboardDark: false,
+  grayscalePreview: false,
   confirmDestructive: true,
   soundEnabled: false,
   eyedropperDoubleTap: true,
@@ -575,10 +576,27 @@ export function normalizeBackupMeta(
 }
 
 export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSettings {
-  const uiSize: UiSizeConfig = {
-    ...DEFAULT_UI_SIZE_CONFIG,
-    ...(raw?.uiSize ?? {}),
-  }
+  const rawUi = raw?.uiSize
+  // Migrate uncustomized legacy `standard` default (`overallScale: 100, toolButtonHeight: 48, swatchSize: 34, drawButtonVh: 15`)
+  // to the new `standard` baseline (former `compact`) so existing workspaces immediately reflect the streamlined standard UI!
+  const isLegacyUncustomizedStandard = Boolean(
+    rawUi &&
+      rawUi.preset === 'standard' &&
+      rawUi.overallScale === 100 &&
+      rawUi.toolIconSize === 20 &&
+      rawUi.toolButtonHeight === 48 &&
+      rawUi.toolLabelSize === 11 &&
+      rawUi.swatchSize === 34 &&
+      rawUi.checkboxSize === 20 &&
+      rawUi.uiGap === 6 &&
+      rawUi.drawButtonVh === 15
+  )
+  const uiSize: UiSizeConfig = isLegacyUncustomizedStandard
+    ? { ...DEFAULT_UI_SIZE_CONFIG }
+    : {
+        ...DEFAULT_UI_SIZE_CONFIG,
+        ...(rawUi ?? {}),
+      }
 
   let historyLimit: number | 'unlimited' = 'unlimited'
   const customized = Boolean(raw?.historyLimitCustomized)
@@ -690,6 +708,8 @@ export function normalizeAppSettings(raw?: Partial<AppSettings> | null): AppSett
       Number.isFinite(raw.lowStorageSnoozedUntil)
         ? raw.lowStorageSnoozedUntil
         : null,
+    grayscalePreview:
+      typeof raw?.grayscalePreview === 'boolean' ? raw.grayscalePreview : false,
     eyedropperDoubleTap:
       typeof raw?.eyedropperDoubleTap === 'boolean' ? raw.eyedropperDoubleTap : true,
     cursorSpeed,

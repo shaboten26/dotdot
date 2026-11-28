@@ -17,6 +17,7 @@ import {
 } from '../../engine/paletteTools'
 import { normalizeHex } from '../../engine/color'
 import { Modal } from '../common/Modal'
+import { PaletteArtworkPreview } from './PaletteArtworkPreview'
 import { PixelCheckbox } from '../common/PixelCheckbox'
 import { PixelIcon } from '../common/PixelIcon'
 import { PixelSlider } from '../common/PixelSlider'
@@ -310,9 +311,19 @@ export function PaletteToolsModal({
       maxWidthClass="max-w-lg"
     >
       <div className="space-y-3" data-testid="palette-tools-modal">
-        {/* Top Mode Tabs: Sticky inside scroll area so tabs NEVER scroll out of view */}
+        {/* Top Live Current Artwork Preview */}
+        <PaletteArtworkPreview
+          canvasWidth={canvasWidth}
+          canvasHeight={canvasHeight}
+          layers={layers}
+          palette={palette}
+          checkerDark={checkerDark}
+          testId="palette-tools-artwork-preview"
+        />
+
+        {/* Top Mode Tabs */}
         <div
-          className={`sticky top-0 z-20 -mt-1 pt-1 pb-1.5 bg-[var(--bg-panel)] grid gap-1.5 ${
+          className={`grid gap-1.5 ${
             hasArtworkContext ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'
           }`}
         >

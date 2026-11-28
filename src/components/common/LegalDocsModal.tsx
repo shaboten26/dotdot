@@ -233,6 +233,9 @@ export function LegalDocsModal({
                   dotdot Source Code &amp; Open Source Licenses
                 </h3>
                 <p className="text-[var(--text-secondary)]">
+                  License: <strong>MIT License</strong> (Copyright (c) 2026 shaboten26)
+                </p>
+                <p className="text-[var(--text-secondary)]">
                   Repository:{' '}
                   <a
                     href="https://github.com/shaboten26/dotdot"

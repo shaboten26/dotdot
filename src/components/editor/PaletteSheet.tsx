@@ -7,6 +7,7 @@ import {
   type PaletteData,
   type ProjectPalette,
 } from '../../types'
+import { updateIndexedPaletteSlotColor } from '../../engine/indexedPalette'
 import {
   clampByte,
   hexToHsv,
@@ -22,6 +23,8 @@ import {
 import { Modal } from '../common/Modal'
 import { LospecImportModal } from '../common/LospecImportModal'
 import { PaletteToolsModal } from './PaletteToolsModal'
+import { PaletteArtworkPreview } from './PaletteArtworkPreview'
+import { PixelColorWheel } from '../common/PixelColorWheel'
 import { PixelIcon } from '../common/PixelIcon'
 import { PixelSlider } from '../common/PixelSlider'
 import { PixelSelect } from '../common/PixelSelect'
@@ -89,7 +92,7 @@ export function PaletteSheet({
 }: PaletteSheetProps) {
   const { t } = useI18n()
   const { reducedMotion, showToast } = useApp()
-  const [tab, setTab] = useState<'hsv' | 'rgb' | 'hex'>('hsv')
+  const [tab, setTab] = useState<'wheel' | 'hsv' | 'rgb' | 'hex'>('wheel')
   const [toolsModalOpen, setToolsModalOpen] = useState(false)
   const swatchGridRef = useRef<HTMLDivElement | null>(null)
 
@@ -151,6 +154,19 @@ export function PaletteSheet({
     if (isTransparentSelected) return
     const norm = normalizeHex(nextHex)
     if (!norm) return
+    if (
+      Array.isArray(palette.colorTable) &&
+      Array.isArray(palette.displayOrder) &&
+      palette.displayOrder.length === palette.colors.length
+    ) {
+      const updatedPal = updateIndexedPaletteSlotColor(
+        palette,
+        editableColorIndex,
+        norm
+      )
+      onUpdatePalette(updatedPal, editableColorIndex)
+      return
+    }
     const nextColors = [...palette.colors]
     nextColors[editableColorIndex] = norm
     onUpdatePalette({ ...palette, colors: nextColors }, editableColorIndex)
@@ -261,6 +277,16 @@ export function PaletteSheet({
   return (
     <Modal open={open} title={t('paletteTitle')} onClose={onClose} maxWidthClass="max-w-lg">
       <div className="space-y-3.5">
+        {/* Top Live Current Artwork Preview (when editing inside an active artwork) */}
+        <PaletteArtworkPreview
+          canvasWidth={canvasWidth}
+          canvasHeight={canvasHeight}
+          layers={layers}
+          palette={palette}
+          checkerDark={checkerDark}
+          testId="palette-sheet-artwork-preview"
+        />
+
         {/* Palette Name & Library Controls */}
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -594,18 +620,25 @@ export function PaletteSheet({
                 </div>
               </div>
 
-              <div className="flex gap-1">
-                {(['hsv', 'rgb', 'hex'] as const).map((m) => {
-                  const active = tab === m
+              <div className="flex flex-wrap gap-1">
+                {(
+                  [
+                    { id: 'wheel', label: t('colorTabWheel') },
+                    { id: 'hsv', label: 'HSV' },
+                    { id: 'rgb', label: 'RGB' },
+                    { id: 'hex', label: 'HEX' },
+                  ] as const
+                ).map((m) => {
+                  const active = tab === m.id
                   return (
                     <button
-                      key={m}
+                      key={m.id}
                       type="button"
-                      onClick={() => setTab(m)}
-                      className={`relative min-h-[36px] px-2.5 text-xs font-bold uppercase overflow-hidden ${
+                      onClick={() => setTab(m.id)}
+                      className={`relative min-h-[36px] px-2.5 text-xs font-bold overflow-hidden ${
                         active ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
                       }`}
-                      data-testid={`color-tab-${m}`}
+                      data-testid={`color-tab-${m.id}`}
                     >
                       {active && !reducedMotion && (
                         <motion.span
@@ -619,7 +652,7 @@ export function PaletteSheet({
                           aria-hidden="true"
                         />
                       )}
-                      <span className="relative z-10">{m}</span>
+                      <span className="relative z-10">{m.label}</span>
                     </button>
                   )
                 })}
@@ -632,6 +665,17 @@ export function PaletteSheet({
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: reducedMotion ? 0 : 0.12, ease: 'easeOut' }}
             >
+              {tab === 'wheel' && (
+                <PixelColorWheel
+                  hue={hsv.h}
+                  saturation={hsv.s}
+                  value={hsv.v}
+                  onChange={handleHsvChange}
+                  hintText={t('colorWheelHint')}
+                  testId="palette-pixel-color-wheel"
+                />
+              )}
+
               {tab === 'hsv' && (
                 <div className="space-y-2">
                   <SliderNumberRow

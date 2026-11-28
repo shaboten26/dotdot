@@ -377,6 +377,8 @@ export interface AppSettings {
   lowStorageSnoozedUntil?: number | null
   showGrid: boolean
   checkerboardDark: boolean
+  /** Non-destructive grayscale / monochrome luminance preview across canvas & artwork previews (never modifies pixel or palette data) */
+  grayscalePreview?: boolean
   confirmDestructive: boolean
   soundEnabled: boolean
   eyedropperDoubleTap: boolean

@@ -183,17 +183,28 @@ describe('Full React UI Workflow Integration Tests', () => {
     fireEvent.click(largePresetBtn)
     await waitFor(() => {
       expect(document.documentElement.style.getPropertyValue('--tool-icon-size')).toBe(
-        '24px'
+        '20px'
       )
       expect(document.documentElement.style.getPropertyValue('--draw-btn-vh')).toBe(
-        '17dvh'
+        '15dvh'
+      )
+    })
+
+    const compactPresetBtn = await screen.findByTestId('ui-preset-compact')
+    fireEvent.click(compactPresetBtn)
+    await waitFor(() => {
+      expect(document.documentElement.style.getPropertyValue('--tool-icon-size')).toBe(
+        '14px'
+      )
+      expect(document.documentElement.style.getPropertyValue('--draw-btn-vh')).toBe(
+        '9dvh'
       )
     })
 
     fireEvent.click(screen.getByTestId('ui-size-reset-btn'))
     await waitFor(() => {
       expect(document.documentElement.style.getPropertyValue('--tool-icon-size')).toBe(
-        '20px'
+        '16px'
       )
     })
 

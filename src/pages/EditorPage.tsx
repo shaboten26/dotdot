@@ -392,6 +392,17 @@ export function EditorPage() {
                     />
                   </div>
 
+                  <div className="px-1 py-0.5 bg-[var(--bg-elevated)] border-2 border-[var(--border-pixel)]">
+                    <PixelCheckbox
+                      checked={Boolean(settings.grayscalePreview)}
+                      onChange={(next) =>
+                        void updateSettings({ grayscalePreview: next })
+                      }
+                      label={t('grayscalePreviewToggleBtn')}
+                      testId="menu-grayscale-checkbox"
+                    />
+                  </div>
+
                   <button
                     type="button"
                     onClick={() => {
@@ -570,9 +581,13 @@ export function EditorPage() {
             cursorSize={settings.cursorSize}
             previewFlipX={previewFlipX}
             previewFlipY={previewFlipY}
+            grayscalePreview={Boolean(settings.grayscalePreview)}
             onResetPreviewFlip={() => {
               setPreviewFlipX(false)
               setPreviewFlipY(false)
+            }}
+            onResetGrayscalePreview={() => {
+              void updateSettings({ grayscalePreview: false })
             }}
             fitTrigger={fitTrigger}
             onModalityChange={setInputModality}
@@ -835,6 +850,7 @@ export function EditorPage() {
                 hasActivePreviewFlip={
                   previewFlipX ||
                   previewFlipY ||
+                  Boolean(settings.grayscalePreview) ||
                   editor.symmetryMode !== 'none' ||
                   editor.tilePreviewGrid !== 'off' ||
                   editor.seamlessWrapMode !== 'none'

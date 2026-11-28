@@ -92,8 +92,8 @@ export function PaletteBar({
         onClick={onOpenPaletteSheet}
         title={t('toolPalette')}
         style={{
-          minWidth: 'max(44px, var(--swatch-size, 34px))',
-          minHeight: 'max(44px, var(--swatch-size, 34px))',
+          minWidth: 'max(34px, var(--swatch-size, 30px))',
+          minHeight: 'max(34px, var(--swatch-size, 30px))',
         }}
         className="pixel-btn px-2 flex flex-col items-center justify-center gap-0.5 shrink-0"
         data-testid="open-palette-btn"
@@ -112,9 +112,9 @@ export function PaletteBar({
         aria-label={t('transparentSlotLabel')}
         aria-pressed={isTransparentSelected}
         style={{
-          width: 'var(--swatch-size, 34px)',
-          height: 'var(--swatch-size, 34px)',
-          minWidth: 'var(--swatch-size, 34px)',
+          width: 'var(--swatch-size, 30px)',
+          height: 'var(--swatch-size, 30px)',
+          minWidth: 'var(--swatch-size, 30px)',
           ...getCheckerboardStyle(checkerDark, 8),
         }}
         className={`relative shrink-0 cursor-pointer flex items-center justify-center transition-transform duration-75 ${
@@ -163,9 +163,9 @@ export function PaletteBar({
                 onSelectColor(idx)
               }}
               style={{
-                width: 'var(--swatch-size, 34px)',
-                height: 'var(--swatch-size, 34px)',
-                minWidth: 'var(--swatch-size, 34px)',
+                width: 'var(--swatch-size, 30px)',
+                height: 'var(--swatch-size, 30px)',
+                minWidth: 'var(--swatch-size, 30px)',
                 backgroundColor: hex,
               }}
               className={`relative shrink-0 cursor-pointer transition-transform duration-75 ${
@@ -301,7 +301,7 @@ export function MultiRowToolGrid({
             type="button"
             onClick={() => onTapTool(item.id)}
             aria-pressed={active}
-            style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
+            style={{ minHeight: 'max(34px, var(--tool-btn-height, 44px))' }}
             className={`relative px-1 py-1 flex flex-col items-center justify-center gap-0.5 overflow-hidden ${
               active ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
             }`}
@@ -351,7 +351,7 @@ export function MultiRowToolGrid({
         type="button"
         onClick={onUndo}
         disabled={!canUndo}
-        style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
+        style={{ minHeight: 'max(34px, var(--tool-btn-height, 44px))' }}
         className="pixel-btn px-1 py-1 flex flex-col items-center justify-center gap-0.5"
         data-testid="undo-btn"
       >
@@ -368,7 +368,7 @@ export function MultiRowToolGrid({
         type="button"
         onClick={onRedo}
         disabled={!canRedo}
-        style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
+        style={{ minHeight: 'max(34px, var(--tool-btn-height, 44px))' }}
         className="pixel-btn px-1 py-1 flex flex-col items-center justify-center gap-0.5"
         data-testid="redo-btn"
       >
@@ -386,7 +386,7 @@ export function MultiRowToolGrid({
         type="button"
         onClick={onOpenGlobalSettings}
         aria-pressed={globalSettingsOpen}
-        style={{ minHeight: 'max(44px, var(--tool-btn-height, 48px))' }}
+        style={{ minHeight: 'max(34px, var(--tool-btn-height, 44px))' }}
         className={`relative px-1 py-1 flex flex-col items-center justify-center gap-0.5 ${
           globalSettingsOpen ? 'pixel-btn pixel-btn-active' : 'pixel-btn'
         }`}
